@@ -1,0 +1,25 @@
+schema_version: "1.0"
+project:
+  id: simple_two_group
+  pipeline: bulk_rnaseq
+  preset: L2
+organism:
+  species: Mus musculus
+input:
+  type: raw_counts
+  path: counts.csv
+design:
+  type: two_group
+  formula: "~ condition"
+metadata_file: metadata.csv
+contrasts_file: contrasts.csv
+upstream:
+  engine: external
+  provider: external_provider
+  quantification_method: unknown
+reference:
+  source: igenomes
+  genome: null
+thresholds:
+  padj: 0.05
+  abs_log2fc: 1.0

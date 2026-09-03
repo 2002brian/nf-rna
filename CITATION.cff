@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the repository and the release you used."
+title: "nf-rna"
+version: "0.4.3"
+date-released: 2026-09-03
+license: MIT
+authors:
+  - name: "nf-rna Contributors"
+abstract: "A versioned, provenance-oriented control plane for bulk RNA-seq FASTQ and raw-count projects."

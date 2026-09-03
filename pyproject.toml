@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nf-rna"
+version = "0.4.3"
+description = "Production-oriented bulk RNA-seq workflow with DESeq2 and preranked GO/KEGG GSEA"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "nf-rna Contributors" }]
+dependencies = [
+  "click>=8.1,<9",
+  "pydantic>=2.8,<3",
+  "PyYAML>=6,<7",
+  "typer>=0.12,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9"]
+
+[project.scripts]
+rnaseq = "rnaseq.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rnaseq"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/rnaseq", "tests", "examples", "docs", "README.md", "CHANGELOG.md", "CITATION.cff", "LICENSE", "environment.yml", "pyproject.toml", "Dockerfile", ".dockerignore"]
+exclude = [
+  "examples/**/runs/**",
+  "examples/**/work/**",
+  "examples/**/.nextflow/**",
+  "examples/**/.nextflow.log*",
+  "examples/**/downstream/**",
+  "examples/**/delivery/**",
+  "examples/**/planning/**",
+  "examples/nfcore_smoke_test/reference/salmon.tar.gz",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"

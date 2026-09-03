@@ -1,0 +1,29 @@
+schema_version: "1.0"
+project:
+  id: simple_fastq_two_group
+  pipeline: bulk_rnaseq
+  preset: L2
+organism:
+  species: Mus musculus
+input:
+  type: fastq
+  path: input/fastq
+  layout: paired_end
+design:
+  type: two_group
+  formula: "~ condition"
+metadata_file: metadata.csv
+contrasts_file: contrasts.csv
+upstream:
+  engine: nfcore_rnaseq
+  pipeline_version: "3.26.0"
+  aligner: null
+  strandedness: auto
+  quantification:
+    method: salmon
+reference:
+  source: igenomes
+  genome: null
+thresholds:
+  padj: 0.05
+  abs_log2fc: 1.0

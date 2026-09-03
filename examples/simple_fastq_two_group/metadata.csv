@@ -1,0 +1,5 @@
+sample_id,condition,sex,batch,age
+Control1,Control,M,B1,8
+Control2,Control,F,B1,9
+Treatment1,Treatment,M,B2,8
+Treatment2,Treatment,F,B2,9

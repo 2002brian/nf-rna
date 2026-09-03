@@ -1,0 +1,61 @@
+schema_version: "1.0"
+project:
+  id: gsea_two_group
+  pipeline: bulk_rnaseq
+  preset: L2
+organism:
+  species: Mus musculus
+input:
+  type: raw_counts
+  path: counts.csv
+design:
+  type: two_group
+  formula: "~ condition"
+metadata_file: metadata.csv
+contrasts_file: contrasts.csv
+upstream:
+  engine: external
+  provider: synthetic_fixture
+  quantification_method: synthetic_counts
+reference:
+  source: igenomes
+  genome: null
+thresholds:
+  padj: 0.05
+  abs_log2fc: 1.0
+annotation:
+  organism: Mus musculus
+  input_id_type: ENTREZID
+  target_id_type: ENTREZID
+  gene_symbol_output: true
+  minimum_mapping_rate: 0.70
+  minimum_mapped_foreground: 5
+  enrichment:
+    go:
+      pvalue_cutoff: 0.05
+      qvalue_cutoff: 0.2
+      p_adjust_method: BH
+    gsea:
+      minimum_ranked_genes: 50
+      min_gs_size: 10
+      max_gs_size: 500
+      pvalue_cutoff: 0.05
+      padj_cutoff: 0.05
+      p_adjust_method: BH
+      seed: 1
+    kegg:
+      resource_provider: online_kegg_rest_via_clusterprofiler
+      ora:
+        pvalue_cutoff: 0.05
+        qvalue_cutoff: 0.2
+        p_adjust_method: BH
+        min_gs_size: 10
+        max_gs_size: 500
+      gsea:
+        minimum_ranked_genes: 50
+        pvalue_cutoff: 1.0
+        padj_cutoff: 0.05
+        p_adjust_method: BH
+        min_gs_size: 10
+        max_gs_size: 500
+        seed: 1

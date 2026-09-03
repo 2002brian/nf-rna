@@ -1,0 +1,21 @@
+name: nf-rna
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - procps-ng
+  - r-base=4.5
+  - bioconductor-deseq2
+  - bioconductor-tximport
+  - bioconductor-clusterprofiler
+  - bioconductor-annotationdbi
+  - bioconductor-org.hs.eg.db
+  - bioconductor-org.mm.eg.db
+  - r-ggplot2
+  - r-pheatmap
+  - r-yaml
+  - r-jsonlite
+  - pip
+  - pip:
+      - "-e .[dev]"

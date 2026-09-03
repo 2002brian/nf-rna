@@ -1,0 +1,37 @@
+schema_version: "1.0"
+project:
+  id: go_two_group
+  pipeline: bulk_rnaseq
+  preset: L2
+organism:
+  species: Mus musculus
+input:
+  type: raw_counts
+  path: counts.csv
+design:
+  type: two_group
+  formula: "~ condition"
+metadata_file: metadata.csv
+contrasts_file: contrasts.csv
+upstream:
+  engine: external
+  provider: synthetic_fixture
+  quantification_method: synthetic_counts
+reference:
+  source: igenomes
+  genome: null
+thresholds:
+  padj: 0.05
+  abs_log2fc: 1.0
+annotation:
+  organism: Mus musculus
+  input_id_type: ENTREZID
+  target_id_type: ENTREZID
+  gene_symbol_output: true
+  minimum_mapping_rate: 0.70
+  minimum_mapped_foreground: 5
+  enrichment:
+    go:
+      pvalue_cutoff: 0.05
+      qvalue_cutoff: 0.2
+      p_adjust_method: BH

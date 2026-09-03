@@ -1,0 +1,9 @@
+// Intentionally path-free. Execution freezes this M5 resource policy per run.
+// It keeps local Docker requests below the portable 12 GiB LARGE ceiling.
+process {
+  resourceLimits = [cpus: 6, memory: '12.GB', time: '12.h']
+  withLabel:process_low { cpus = 1; memory = '2.GB'; time = '2.h' }
+  withLabel:process_medium { cpus = 4; memory = '8.GB'; time = '8.h' }
+  withLabel:process_high { cpus = 6; memory = '12.GB'; time = '12.h' }
+  withName: '.*:SALMON_QUANT' { cpus = 4; memory = '8.GB'; time = '8.h'; maxForks = 1 }
+}

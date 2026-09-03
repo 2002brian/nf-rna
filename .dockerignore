@@ -1,0 +1,11 @@
+# The production image needs only its declared build inputs. Keeping the context
+# narrow prevents local biological data, immutable runs, and build artifacts
+# from entering an image layer.
+**
+!Dockerfile
+!.dockerignore
+!environment.yml
+!pyproject.toml
+!README.md
+!src/
+!src/**

@@ -1,0 +1,31 @@
+schema_version: "1.0"
+project:
+  id: nfcore_smoke_test
+  pipeline: bulk_rnaseq
+  preset: L1
+organism:
+  species: Other
+input:
+  type: fastq
+  path: input/fastq
+  layout: paired_end
+design:
+  type: two_group
+  formula: "~ condition"
+metadata_file: metadata.csv
+contrasts_file: contrasts.csv
+upstream:
+  engine: nfcore_rnaseq
+  pipeline_version: "3.26.0"
+  aligner: null
+  strandedness: auto
+  quantification:
+    method: salmon
+reference:
+  source: custom
+  fasta: reference/genome.fasta
+  gtf: reference/genes.gtf.gz
+  transcript_fasta: reference/transcriptome.gtf_matched.fasta
+thresholds:
+  padj: 0.05
+  abs_log2fc: 1.0
