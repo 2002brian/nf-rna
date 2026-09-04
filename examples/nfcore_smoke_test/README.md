@@ -1,3 +1,5 @@
+English | [繁體中文](README_zh-TW.md)
+
 # nf-core/rnaseq 3.26.0 local smoke fixture
 
 This fixture is for Milestone 2 upstream-execution acceptance only. It is not a biological study and must not be used for downstream interpretation.

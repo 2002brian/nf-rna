@@ -1,3 +1,5 @@
+English | [繁體中文](README_zh-TW.md)
+
 # Upstream execution boundary
 
 The local Docker profile invokes the external, pinned `nf-core/rnaseq 3.26.0` pipeline and then this first-party DSL2 downstream workflow:
