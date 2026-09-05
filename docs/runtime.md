@@ -19,6 +19,8 @@ Run `rnaseq doctor <PROJECT>` before an authorized FASTQ run. It checks the runt
 
 `rnaseq-control-plane:latest` is a local mutable tag, not a source-content checksum. Rebuild it from the reviewed checkout after pulling or changing source, then run `rnaseq doctor <PROJECT>`; otherwise L1/L2/report processes can execute old Python/R code despite a current host CLI. Do not publish or retag the image as part of this procedure.
 
+On Linux and WSL, downstream Nextflow task containers run with the invoking host user's numeric UID:GID. nf-rna freezes a per-run Nextflow override equivalent to Docker `--user $(id -u):$(id -g)`, so host-created task directories remain writable without `sudo`, `chmod 777`, or changing the fixed image user. macOS keeps its existing Docker Desktop behavior and does not receive this override. `rnaseq doctor` reports the selected policy and Linux/WSL mapping before execution.
+
 ## Versioned execution
 
 The Salmon FASTQ route is pinned to nf-core/rnaseq 3.26.0. The HISAT2 route uses Biocontainers build tags for HISAT2 2.2.1, SAMtools 1.21, Subread/featureCounts 2.0.6, FastQC 0.12.1 and fastp 0.24.0, plus Seqera Wave MultiQC 1.33; each resolved Docker digest is recorded only when the runtime can inspect it. The first-party downstream image includes Python, R, DESeq2, tximport, plotting, and enrichment packages. Container image availability, host architecture, and registry access remain operator/runtime responsibilities.

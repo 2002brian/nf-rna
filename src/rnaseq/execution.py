@@ -267,6 +267,49 @@ def runtime_snapshot() -> RuntimeSnapshot:
     )
 
 
+def downstream_docker_user_mapping(
+    *, host_os: str | None = None, uid: int | None = None, gid: int | None = None,
+) -> str | None:
+    """Return the invoking Linux user's Docker identity for downstream tasks.
+
+    Nextflow creates each task work directory on the host before Docker starts.
+    On Linux (including WSL), Docker bind mounts preserve numeric ownership, so
+    the image's fixed mamba user cannot necessarily create ``.command.*`` task
+    files.  Docker Desktop on macOS already virtualizes shared-file ownership;
+    preserving its default container user avoids changing the validated macOS
+    path.  Values are resolved locally and constrained to non-negative integer
+    IDs before they are rendered into a Nextflow config.
+    """
+
+    if (host_os or platform.system()).strip().lower() != "linux":
+        return None
+    try:
+        resolved_uid = os.getuid() if uid is None else uid
+        resolved_gid = os.getgid() if gid is None else gid
+    except AttributeError:
+        return None
+    if type(resolved_uid) is not int or type(resolved_gid) is not int:
+        return None
+    if resolved_uid < 0 or resolved_gid < 0:
+        return None
+    return f"{resolved_uid}:{resolved_gid}"
+
+
+def downstream_docker_user_mapping_check() -> RuntimeCheck:
+    """Explain the downstream task-user policy in ``rnaseq doctor`` output."""
+
+    mapping = downstream_docker_user_mapping()
+    if mapping is not None:
+        return RuntimeCheck(
+            "Downstream Docker user mapping", "FOUND",
+            f"Linux/WSL downstream tasks will use --user {mapping} for host-mounted Nextflow work directories.",
+        )
+    return RuntimeCheck(
+        "Downstream Docker user mapping", "FOUND",
+        "Not applied outside Linux/WSL; Docker Desktop macOS shared-file behavior keeps the image default user.",
+    )
+
+
 def _gib(value: int | None) -> str:
     return "unavailable" if value is None else f"{value / (1024 ** 3):.1f} GiB"
 
@@ -458,6 +501,7 @@ def doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeCheck, ...]:
         check_nextflow(),
         check_docker(),
         check_container_runtime(),
+        downstream_docker_user_mapping_check(),
         *runtime_resource_checks(snapshot),
         _reference_runtime_check(project_dir),
         RuntimeCheck("Disk write access", "FOUND" if writable else "NOT FOUND", str(probe)),

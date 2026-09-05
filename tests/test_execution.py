@@ -20,6 +20,8 @@ from rnaseq.execution import (
     build_nextflow_command,
     classify_execution_failure,
     check_container_runtime,
+    downstream_docker_user_mapping,
+    downstream_docker_user_mapping_check,
     doctor_checks,
     _reference_runtime_check,
     execute_prepared_run,
@@ -241,6 +243,21 @@ def test_container_runtime_probe_requires_process_utility_python_r_and_r_package
     assert "DESeq2" in probe[-1] and "org.Mm.eg.db" in probe[-1]
     assert "python -m rnaseq.workflow_support report --help" in probe[-1]
     assert "--enrichment" in probe[-1]
+
+
+def test_downstream_docker_user_mapping_is_dynamic_on_linux_wsl_and_absent_on_macos():
+    assert downstream_docker_user_mapping(host_os="Linux", uid=24701, gid=24703) == "24701:24703"
+    assert downstream_docker_user_mapping(host_os="Darwin", uid=24701, gid=24703) is None
+    assert downstream_docker_user_mapping(host_os="Linux", uid=-1, gid=24703) is None
+    source = Path("src/rnaseq/execution.py").read_text(encoding="utf-8")
+    assert "1000:1000" not in source
+
+
+def test_doctor_explains_linux_wsl_downstream_user_mapping(monkeypatch):
+    monkeypatch.setattr("rnaseq.execution.downstream_docker_user_mapping", lambda: "24701:24703")
+    check = downstream_docker_user_mapping_check()
+    assert check.verdict == "PASS"
+    assert "--user 24701:24703" in check.detail
 
 
 def test_container_runtime_probe_reports_the_failed_prerequisite(monkeypatch):

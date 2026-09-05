@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +29,7 @@ from rnaseq.service import (
     sanitize_completed_delivery,
     taipei_run_timestamp,
     validate_case_id,
+    write_downstream_docker_user_config,
     write_downstream_observer_config,
 )
 from rnaseq.validators import validate_project
@@ -494,6 +497,45 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     assert observer_config.is_file()
     assert "overwrite = true" in observer_config.read_text(encoding="utf-8")
     assert json.loads(run.state_path.read_text(encoding="utf-8"))["status"] == "SUCCESS"
+
+
+def test_downstream_linux_docker_user_config_is_frozen_and_only_adds_a_nextflow_override(project_factory):
+    _root, _report, run = _frozen_run(project_factory)
+    config = write_downstream_docker_user_config(run, host_os="Linux", uid=24701, gid=24703)
+    assert config == run.run_dir / "frozen" / "downstream.docker-user.config"
+    assert config.read_text(encoding="utf-8") == "docker {\n  runOptions = '--user 24701:24703'\n}\n"
+    command = build_downstream_nextflow_command(run, docker_user_config=config)
+    assert command[:2] == ["nextflow", "run"]
+    assert command[command.index("-profile") + 1] == "docker"
+    assert command.count("-c") == 2
+    docker_config_index = [index for index, value in enumerate(command) if value == "-c"][-1]
+    assert command[docker_config_index + 1] == str(config.resolve())
+    assert "rnaseq-control-plane:latest" not in config.read_text(encoding="utf-8")
+    assert "1000:1000" not in config.read_text(encoding="utf-8")
+    if shutil.which("nextflow") is not None:
+        probe = config.parent / "docker_user_config_probe.nf"
+        probe.write_text("nextflow.enable.dsl=2\nworkflow { }\n", encoding="utf-8")
+        result = subprocess.run(
+            [
+                "nextflow", "run", str(probe),
+                "-c", str(Path(__file__).parents[1] / "workflow" / "nextflow.config"),
+                "-c", str(config), "-profile", "docker",
+            ],
+            cwd=config.parent,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+
+def test_downstream_macos_keeps_the_existing_container_user_contract(project_factory):
+    _root, _report, run = _frozen_run(project_factory)
+    assert write_downstream_docker_user_config(run, host_os="Darwin", uid=24701, gid=24703) is None
+    command = build_downstream_nextflow_command(run)
+    assert command[:2] == ["nextflow", "run"]
+    assert command[command.index("-profile") + 1] == "docker"
+    assert command.count("-c") == 1
 
 
 def test_failed_service_run_keeps_frozen_logs_and_provenance(monkeypatch, project_factory, tmp_path):

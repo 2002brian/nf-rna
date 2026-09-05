@@ -10,6 +10,7 @@ import csv
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -35,6 +36,7 @@ from rnaseq.execution import (
     check_container_runtime,
     check_docker,
     check_nextflow,
+    downstream_docker_user_mapping,
     generate_handoff_manifest,
     generate_hisat2_featurecounts_handoff,
     inspect_container_image,
@@ -735,6 +737,28 @@ def write_downstream_observer_config(run: CaseRun) -> Path:
     return path
 
 
+def write_downstream_docker_user_config(
+    run: CaseRun, *, host_os: str | None = None, uid: int | None = None, gid: int | None = None,
+) -> Path | None:
+    """Freeze a Linux/WSL Docker user override for one downstream run.
+
+    The override is deliberately a separate Nextflow config rather than an
+    image change or a broad filesystem permission change.  It affects only the
+    downstream task containers and only on Linux/WSL.  Numeric values are
+    produced by :func:`downstream_docker_user_mapping`, so the rendered Groovy
+    string cannot interpolate a user-controlled shell value.
+    """
+
+    mapping = downstream_docker_user_mapping(
+        host_os=host_os or platform.system(), uid=uid, gid=gid,
+    )
+    if mapping is None:
+        return None
+    path = run.run_dir / "frozen" / "downstream.docker-user.config"
+    _write_text(path, "docker {\n  runOptions = '--user " + mapping + "'\n}\n")
+    return path
+
+
 def finalize_fastq_handoff(report: ValidationReport, run: CaseRun, contract: Path, *, reused_from: str | None = None) -> Path:
     """Validate and freeze the stable nf-core handoff boundary for downstream."""
 
@@ -752,7 +776,8 @@ def finalize_fastq_handoff(report: ValidationReport, run: CaseRun, contract: Pat
 
 def build_downstream_nextflow_command(
     run: CaseRun, *, profile: str = LOCAL_PROFILE, work_dir: Path | None = None,
-    observer_config: Path | None = None, execution_inputs: ResolvedDownstreamInputs | None = None,
+    observer_config: Path | None = None, docker_user_config: Path | None = None,
+    execution_inputs: ResolvedDownstreamInputs | None = None,
 ) -> list[str]:
     root = Path(__file__).resolve().parents[2]
     contract = json.loads((run.run_dir / "frozen" / "downstream_contract.json").read_text(encoding="utf-8"))
@@ -768,6 +793,8 @@ def build_downstream_nextflow_command(
     ]
     if observer_config is not None:
         command.extend(["-c", str(observer_config.resolve())])
+    if docker_user_config is not None:
+        command.extend(["-c", str(docker_user_config.resolve())])
     command.extend([
         "-work-dir", str(resolved_work_dir.resolve()),
         "--contract", str((run.run_dir / "frozen" / "downstream_contract.json").resolve()),
@@ -960,9 +987,10 @@ def execute_service_run(
             return run
         execution_inputs = resolve_downstream_inputs(run)
         observer_config = write_downstream_observer_config(run)
+        docker_user_config = write_downstream_docker_user_config(run)
         downstream = build_downstream_nextflow_command(
             run, profile=profile, work_dir=workspace.work_dir / "downstream", observer_config=observer_config,
-            execution_inputs=execution_inputs,
+            docker_user_config=docker_user_config, execution_inputs=execution_inputs,
         )
         _write_state(run, "RUNNING", phase="downstream", downstream_command=downstream)
         result = _run_command(downstream, cwd=workspace.launch_dir, stdout_path=run.run_dir / "logs" / "downstream.stdout.log", stderr_path=run.run_dir / "logs" / "downstream.stderr.log")
