@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Iterable
 
 from rnaseq.errors import ProjectConfigError
-from rnaseq.models import DesignType, InputType, ProjectConfig, SequencingLayout
+from rnaseq.models import DesignType, InputType, Preset, ProjectConfig, SequencingLayout
 from rnaseq.project import LoadedProject, load_project
 from rnaseq.references import LocalReference, LocalReferenceError, load_local_reference
 
@@ -133,10 +133,20 @@ class ValidationReport:
         reference = self.config.reference
         if reference is None:
             return False
+        method = self.config.upstream.quantification.method if self.config.upstream.quantification else "salmon"
+        if reference.source == "igenomes":
+            # iGenomes is an nf-core/Salmon convenience route only; the
+            # first-party aligner requires checksum-bound genome assets.
+            return method == "salmon" and reference.genome is not None
+        if reference.source == "local":
+            return self.local_reference is not None and (
+                self.local_reference.salmon_index is not None if method == "salmon"
+                else self.local_reference.hisat2_index is not None
+            )
+        if method == "hisat2_featurecounts":
+            return reference.fasta is not None and reference.gtf is not None and reference.hisat2_index is not None
         if reference.source == "igenomes":
             return reference.genome is not None
-        if reference.source == "local":
-            return self.local_reference is not None and self.local_reference.salmon_index is not None
         return reference.fasta is not None and reference.gtf is not None
 
     @property
@@ -146,9 +156,17 @@ class ValidationReport:
         if self.execution_ready:
             return ()
         if self.config.reference.source == "local":
-            if self.local_reference is not None and self.local_reference.salmon_index is None:
+            method = self.config.upstream.quantification.method if self.config.upstream.quantification else "salmon"
+            if self.local_reference is not None and method == "salmon" and self.local_reference.salmon_index is None:
                 return (f"local Salmon index is not built. Run: rnaseq reference prepare {self.local_reference.root}",)
+            if self.local_reference is not None and method == "hisat2_featurecounts" and self.local_reference.hisat2_index is None:
+                return (f"local HISAT2 index is not built. Run: rnaseq reference prepare-hisat2 {self.local_reference.root}",)
+            if self.local_reference is not None:
+                return ("FASTQ input validation must pass before execution readiness can be confirmed.",)
             return ("local reference configuration or integrity validation failed",)
+        method = self.config.upstream.quantification.method if self.config.upstream.quantification else "salmon"
+        if method == "hisat2_featurecounts":
+            return ("HISAT2 requires checksum-bound custom/local FASTA, GTF, and prepared HISAT2 index",)
         return ("reference genome not configured",)
 
     def error(self, code: str, message: str) -> None:
@@ -622,12 +640,15 @@ def _build_groups_and_validate_design(report: ValidationReport) -> None:
 
     if design_type is not DesignType.PAIRED:
         return
-    if "subject_id" not in report.formula_variables:
+    pairing_variable = next(
+        (variable for variable in report.formula_variables if variable not in factors), None
+    )
+    if pairing_variable is None:
         report.error(
-            "missing_pairing_variable", "Paired design formula must include subject_id."
+            "missing_pairing_variable", "Paired design formula must include a pairing variable in addition to the contrast factor."
         )
         return
-    if "subject_id" not in metadata.columns:
+    if pairing_variable not in metadata.columns:
         return
 
     for factor in factors:
@@ -636,7 +657,7 @@ def _build_groups_and_validate_design(report: ValidationReport) -> None:
         expected_levels = set(record[factor] for record in metadata.rows)
         by_subject: dict[str, list[str]] = {}
         for record in metadata.rows:
-            by_subject.setdefault(record["subject_id"], []).append(record[factor])
+            by_subject.setdefault(record[pairing_variable], []).append(record[factor])
         for subject in sorted(by_subject):
             observed = by_subject[subject]
             if len(observed) != 2 or set(observed) != expected_levels or len(set(observed)) != 2:
@@ -672,6 +693,11 @@ def validate_project(project_dir: Path | str) -> ValidationReport:
                 )
             except LocalReferenceError as exc:
                 report.error("invalid_local_reference", str(exc))
+    # Technical FASTQ QC does not make a statistical design claim.  The
+    # template metadata/contrast files are intentionally allowed to remain
+    # incomplete until a project is promoted to L1/L2.
+    if report.config.project.preset is Preset.QC:
+        return report
     report.metadata = validate_metadata(
         report.loaded.metadata_path, report.formula_variables, report
     )

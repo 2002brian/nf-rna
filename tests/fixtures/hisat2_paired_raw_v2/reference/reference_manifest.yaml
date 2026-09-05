@@ -1,0 +1,21 @@
+schema_version: '1.0'
+reference:
+  species: Mus musculus
+  provider: synthetic-paired-uat
+  release: 1
+  assembly: paired-fixture
+  assembly_patch: v2
+files:
+  genome_fasta:
+    path: genome.fa
+    sha256: 9949abf22c8ecb687e2259b503ef7b90071736b4c5168122887b82ab7a57316d
+  annotation_gtf:
+    path: genes.gtf
+    sha256: 502564338c501de95b3cf36ef5015b83c6d680bd2b3f27a9cc46556c5646ab44
+  transcript_fasta:
+    path: transcripts.fa
+    sha256: 2a7727bc9998ba57279d8de34db53ce235a2fc43920246971b476f50df3bacb8
+salmon:
+  status: not_built
+hisat2:
+  status: not_built

@@ -8,9 +8,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
 
-SUPPORTED_SCHEMA_VERSION = "1.1"
+SUPPORTED_SCHEMA_VERSION = "1.2"
 LEGACY_SCHEMA_VERSION = "1.0"
-PIPELINE_VERSION = "0.4.3"
+PIPELINE_VERSION = "0.5.0"
 NFCORE_RNASEQ_VERSION = "3.26.0"
 PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -22,6 +22,7 @@ class StrictModel(BaseModel):
 
 
 class Preset(str, Enum):
+    QC = "QC"
     L1 = "L1"
     L2 = "L2"
 
@@ -255,9 +256,14 @@ class UpstreamConfig(StrictModel):
 
 
 class QuantificationConfig(StrictModel):
-    """The one deliberately supported M2 upstream quantification route."""
+    """Explicit FASTQ quantification route.
 
-    method: Literal["salmon"]
+    ``salmon`` remains the compatibility default for projects written before
+    this field existed.  Alignment/counting is deliberately a separate route:
+    it must never inherit tximport semantics.
+    """
+
+    method: Literal["salmon", "hisat2_featurecounts"]
 
 
 class ReferenceConfig(StrictModel):
@@ -267,6 +273,8 @@ class ReferenceConfig(StrictModel):
     gtf: StrictStr | None = None
     transcript_fasta: StrictStr | None = None
     salmon_index: StrictStr | None = None
+    hisat2_index: StrictStr | None = None
+    hisat2_splice_sites: StrictStr | None = None
     root: StrictStr | None = None
     manifest: StrictStr | None = None
 
@@ -277,8 +285,8 @@ class ReferenceConfig(StrictModel):
                 raise ValueError("reference.root is required when reference.source is local.")
             if self.manifest is None or not self.manifest.strip():
                 raise ValueError("reference.manifest is required when reference.source is local.")
-            if any(value is not None for value in (self.genome, self.fasta, self.gtf, self.transcript_fasta, self.salmon_index)):
-                raise ValueError("reference.source local resolves assets only from reference.manifest; do not set genome/fasta/gtf/transcript_fasta/salmon_index in project.yaml.")
+            if any(value is not None for value in (self.genome, self.fasta, self.gtf, self.transcript_fasta, self.salmon_index, self.hisat2_index, self.hisat2_splice_sites)):
+                raise ValueError("reference.source local resolves assets only from reference.manifest; do not set genome/fasta/gtf/transcript_fasta/salmon_index/hisat2_index/hisat2_splice_sites in project.yaml.")
         return self
 
 
@@ -301,15 +309,17 @@ class ProjectConfig(StrictModel):
     @field_validator("schema_version")
     @classmethod
     def validate_schema_version(cls, value: str) -> str:
-        if value not in {LEGACY_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSION}:
+        if value not in {LEGACY_SCHEMA_VERSION, "1.1", SUPPORTED_SCHEMA_VERSION}:
             raise ValueError(
                 f"Unsupported project schema version: {value}. "
-                f"Supported schema versions: {LEGACY_SCHEMA_VERSION}, {SUPPORTED_SCHEMA_VERSION}"
+                f"Supported schema versions: {LEGACY_SCHEMA_VERSION}, 1.1, {SUPPORTED_SCHEMA_VERSION}"
             )
         return value
 
     @model_validator(mode="after")
     def validate_input_upstream_contract(self) -> "ProjectConfig":
+        if self.project.preset is Preset.QC and self.input.type is not InputType.FASTQ:
+            raise ValueError("QC preset is available only for FASTQ projects.")
         if self.input.type is InputType.FASTQ:
             if self.upstream.engine != "nfcore_rnaseq":
                 raise ValueError("FASTQ projects require upstream.engine: nfcore_rnaseq.")
@@ -320,12 +330,18 @@ class ProjectConfig(StrictModel):
                 )
             if self.upstream.strandedness is None:
                 raise ValueError("FASTQ projects require upstream.strandedness.")
+            method = self.upstream.quantification.method if self.upstream.quantification else "salmon"
+            if method == "hisat2_featurecounts" and self.upstream.strandedness == "auto":
+                raise ValueError(
+                    "HISAT2 + featureCounts requires explicit upstream.strandedness: "
+                    "unstranded, forward, or reverse; auto inference is not implemented."
+                )
         elif self.upstream.engine != "external":
             raise ValueError("raw_counts projects require upstream.engine: external.")
         if self.annotation is not None and self.annotation.organism != self.organism.species.value:
             raise ValueError("annotation.organism must match organism.species.")
         if self.schema_version == SUPPORTED_SCHEMA_VERSION and self.analysis is None:
-            raise ValueError("schema_version 1.1 requires an explicit analysis.enrichment list (it may be empty).")
+            raise ValueError(f"schema_version {SUPPORTED_SCHEMA_VERSION} requires an explicit analysis.enrichment list (it may be empty).")
         selected = self.analysis.enrichment if self.analysis is not None else ()
         if selected and self.annotation is None:
             raise ValueError("analysis.enrichment requires an explicit annotation contract.")

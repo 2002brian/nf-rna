@@ -30,11 +30,15 @@ from rnaseq.execution import (
     ExecutionWorkspace,
     _validate_custom_reference_files,
     build_nextflow_command,
+    build_hisat2_featurecounts_command,
     classify_execution_failure,
     check_container_runtime,
     check_docker,
     check_nextflow,
     generate_handoff_manifest,
+    generate_hisat2_featurecounts_handoff,
+    inspect_container_image,
+    resolved_upstream_implementation,
     nfcore_runtime_params,
     prepare_execution_workspace,
     RESOURCE_CONTRACTS,
@@ -43,7 +47,8 @@ from rnaseq.execution import (
     resolve_execution_workspace,
     runtime_snapshot,
 )
-from rnaseq.models import FastqPreprocessing, InputType, production_enrichment_backends
+from rnaseq.models import FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, production_enrichment_backends
+from rnaseq.hisat2_featurecounts import FASTP_IMAGE, FASTP_VERSION, FASTQC_IMAGE, FASTQC_VERSION, HISAT2_IMAGE, HISAT2_VERSION, MULTIQC_IMAGE, MULTIQC_VERSION, SAMTOOLS_IMAGE, SAMTOOLS_VERSION, SUBREAD_IMAGE, SUBREAD_VERSION
 from rnaseq.planner import render_manifest
 from rnaseq.validators import ValidationReport
 
@@ -213,7 +218,7 @@ def resolve_downstream_inputs(run: CaseRun) -> ResolvedDownstreamInputs:
     if not isinstance(source, dict):
         raise UpstreamExecutionError("Frozen downstream contract has no source mapping.")
     source_type = source.get("type")
-    if source_type not in {"raw_counts", "salmon_tximport"}:
+    if source_type not in {"raw_counts", "salmon_tximport", "featurecounts_raw_counts"}:
         raise UpstreamExecutionError(f"Unsupported downstream source type: {source_type!r}.")
     project = frozen / "project.yaml"
     metadata = frozen / "metadata.csv"
@@ -243,6 +248,22 @@ def resolve_downstream_inputs(run: CaseRun) -> ResolvedDownstreamInputs:
                 raise UpstreamExecutionError(f"Frozen count matrix is unavailable: {expected}")
             _copy_snapshot(expected, temporary / "source" / "counts.csv")
             execution_source = {"type": "raw_counts", "counts": "source/counts.csv"}
+        elif source_type == "featurecounts_raw_counts":
+            expected_handoff = frozen / "upstream_handoff_manifest.yaml"
+            observed_handoff = Path(source.get("upstream_handoff", "")).resolve() if isinstance(source.get("upstream_handoff"), str) else None
+            if observed_handoff != expected_handoff.resolve():
+                raise UpstreamExecutionError("Frozen featureCounts provenance does not point to this run's frozen upstream handoff manifest.")
+            handoff = _read_yaml_mapping(expected_handoff, "frozen upstream handoff manifest")
+            featurecounts = handoff.get("featurecounts")
+            if not isinstance(featurecounts, dict):
+                raise UpstreamExecutionError("Frozen upstream handoff has no featureCounts artifact mapping.")
+            matrix = _safe_existing_under(run.run_dir, featurecounts.get("canonical_matrix"), "featurecounts.canonical_matrix", allowed_root=run.run_dir / "upstream" / "hisat2_featurecounts")
+            with matrix.open(encoding="utf-8", newline="") as handle:
+                header = next(csv.reader(handle), [])
+            if header != ["gene_id", *samples]:
+                raise UpstreamExecutionError("Frozen featureCounts matrix sample IDs disagree with frozen metadata.")
+            _copy_snapshot(matrix, temporary / "source" / "canonical_counts.csv")
+            execution_source = {"type": "featurecounts_raw_counts", "counts": "source/canonical_counts.csv"}
         else:
             expected_handoff = frozen / "upstream_handoff_manifest.yaml"
             observed_handoff = Path(source.get("upstream_handoff", "")).resolve() if isinstance(source.get("upstream_handoff"), str) else None
@@ -481,19 +502,25 @@ def freeze_case_inputs(report: ValidationReport, run: CaseRun, *, profile: str, 
         # client run; execution re-verifies those checksum-bound source files.
         manifest_snapshot = frozen / "reference" / "reference_manifest.yaml"
         _copy_snapshot(report.local_reference.manifest_path, manifest_snapshot)
-        reference_paths = {
-            option.removeprefix("--"): path
-            for option, path in report.local_reference.nfcore_arguments()
-        }
+        method = report.config.upstream.quantification.method if report.config.input.type is InputType.FASTQ and report.config.upstream.quantification else "salmon"
+        reference_paths = {option.removeprefix("--"): path for option, path in (
+            report.local_reference.nfcore_arguments() if method == "salmon" else report.local_reference.hisat2_arguments()
+        )}
     elif report.config.reference.source == "custom":
-        for key in ("fasta", "gtf", "transcript_fasta", "salmon_index"):
+        for key in ("fasta", "gtf", "transcript_fasta", "salmon_index", "hisat2_index", "hisat2_splice_sites"):
             configured = getattr(report.config.reference, key)
             if configured is None:
                 continue
             source_reference = (report.project_dir / configured).resolve()
-            target_reference = frozen / "reference" / source_reference.name
-            _copy_snapshot(source_reference, target_reference)
-            reference_paths[key] = target_reference.resolve()
+            if source_reference.is_dir():
+                # Indexes are immutable, potentially large assets. They stay at
+                # their checksum-validated project path; the frozen manifest
+                # records their exact configured identity.
+                reference_paths[key] = source_reference
+            else:
+                target_reference = frozen / "reference" / source_reference.name
+                _copy_snapshot(source_reference, target_reference)
+                reference_paths[key] = target_reference.resolve()
     samplesheet: Path | None = None
     source: dict[str, Any]
     if report.config.input.type is InputType.RAW_COUNTS:
@@ -515,9 +542,10 @@ def freeze_case_inputs(report: ValidationReport, run: CaseRun, *, profile: str, 
                 _copy_snapshot(item, fastq_dir / item.name)
         samplesheet = frozen / "samplesheet.csv"
         _write_text(samplesheet, _staged_fastq_samplesheet(report, fastq_dir))
+        method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
         source = {
-            "type": "salmon_tximport",
-            "construction_method": "DESeqDataSetFromTximport",
+            "type": "salmon_tximport" if method == "salmon" else "featurecounts_raw_counts",
+            "construction_method": "DESeqDataSetFromTximport" if method == "salmon" else "DESeqDataSetFromMatrix",
             "upstream_handoff": None,
             "fastq_preprocessing": report.config.input.preprocessing.value,
             "skip_trimming": report.config.input.preprocessing is FastqPreprocessing.PRETRIMMED,
@@ -529,7 +557,11 @@ def freeze_case_inputs(report: ValidationReport, run: CaseRun, *, profile: str, 
         "timezone": "Asia/Taipei",
         "profile": profile,
         "command": command,
-        "pipeline": {"name": report.config.project.pipeline, "version": "0.4.3"},
+        "pipeline": {"name": report.config.project.pipeline, "version": PIPELINE_VERSION},
+        "upstream_implementation": (
+            resolved_upstream_implementation(report)
+            if report.config.input.type is InputType.FASTQ else None
+        ),
         "reference": (
             report.local_reference.provenance()
             if report.local_reference is not None
@@ -601,19 +633,35 @@ def _provenance(
         pass
     nextflow = check_nextflow()
     runtime = runtime_snapshot()
+    method = report.config.upstream.quantification.method if report.config and report.config.upstream.quantification else None
+    def tool_identity(version: str, image: str) -> dict[str, object]:
+        return {"version": version, **inspect_container_image(image)}
+
+    control_plane = inspect_container_image("rnaseq-control-plane:latest")
     return {
         "case_id": run.case_id,
         "run_id": run.run_id,
         "timezone": "Asia/Taipei",
         "started_at": run.started_at,
-        "pipeline_version": "0.4.3",
+        "pipeline_version": PIPELINE_VERSION,
         "git_commit": git_commit,
         "python_version": sys.version.split()[0],
         "nextflow_version": nextflow.detail if nextflow.state == "FOUND" else None,
-        "nfcore_rnaseq_version": report.config.upstream.pipeline_version if report.config and report.config.input.type is InputType.FASTQ else None,
+        "upstream_implementation": (resolved_upstream_implementation(report) if report.config and report.config.input.type is InputType.FASTQ else None),
+        "nfcore_rnaseq_version": (report.config.upstream.pipeline_version if method == "salmon" else None),
+        "fastq_backend": method,
+        "hisat2_featurecounts_tools": (
+            {
+                "hisat2": tool_identity(HISAT2_VERSION, HISAT2_IMAGE),
+                "samtools": tool_identity(SAMTOOLS_VERSION, SAMTOOLS_IMAGE),
+                "subread": tool_identity(SUBREAD_VERSION, SUBREAD_IMAGE),
+                "fastqc": tool_identity(FASTQC_VERSION, FASTQC_IMAGE),
+                "fastp": tool_identity(FASTP_VERSION, FASTP_IMAGE),
+                "multiqc": tool_identity(MULTIQC_VERSION, MULTIQC_IMAGE),
+            } if method == "hisat2_featurecounts" else None
+        ),
         "container_runtime": "docker",
-        "container_image": "rnaseq-control-plane:latest",
-        "container_digest": None,
+        "container_image": control_plane,
         "runtime_resources": {
             "host_os": runtime.host_os,
             "host_architecture": runtime.host_architecture,
@@ -691,12 +739,13 @@ def finalize_fastq_handoff(report: ValidationReport, run: CaseRun, contract: Pat
     """Validate and freeze the stable nf-core handoff boundary for downstream."""
 
     prepared = PreparedRun(report, "unavailable", "docker")
-    handoff = generate_handoff_manifest(prepared, run.run_dir)
+    method = report.config.upstream.quantification.method if report.config and report.config.upstream.quantification else "salmon"
+    handoff = generate_handoff_manifest(prepared, run.run_dir) if method == "salmon" else generate_hisat2_featurecounts_handoff(report, run.run_dir)
     frozen_handoff = run.run_dir / "frozen" / "upstream_handoff_manifest.yaml"
     _copy_snapshot(handoff, frozen_handoff)
     _update_contract(
         contract,
-        {"source": {"type": "salmon_tximport", "construction_method": "DESeqDataSetFromTximport", "upstream_handoff": str(frozen_handoff.resolve()), "reused_from": reused_from}},
+        {"source": {"type": "salmon_tximport" if method == "salmon" else "featurecounts_raw_counts", "construction_method": "DESeqDataSetFromTximport" if method == "salmon" else "DESeqDataSetFromMatrix", "upstream_handoff": str(frozen_handoff.resolve()), "reused_from": reused_from}},
     )
     return frozen_handoff
 
@@ -882,21 +931,33 @@ def execute_service_run(
             assert frozen.samplesheet and frozen.upstream_params and frozen.upstream_config
             reused_from = reuse_upstream_if_compatible(run, frozen, reuse_upstream) if reuse_upstream else None
             if reused_from is None:
-                upstream = build_nextflow_command(
+                method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
+                upstream = (build_nextflow_command(
                     report, samplesheet=frozen.samplesheet, output_dir=run.run_dir / "upstream" / "nfcore_rnaseq",
                     profile=profile, params_file=frozen.upstream_params, config_file=frozen.upstream_config,
                     reference_paths=frozen.reference_paths, work_dir=workspace.work_dir / "upstream",
-                )
+                ) if method == "salmon" else build_hisat2_featurecounts_command(
+                    report, samplesheet=frozen.samplesheet, output_dir=run.run_dir / "upstream" / "hisat2_featurecounts",
+                    profile=profile, reference_paths=frozen.reference_paths, work_dir=workspace.work_dir / "upstream",
+                ))
                 _write_state(run, "RUNNING", phase="upstream", upstream_command=upstream)
                 result = _run_command(upstream, cwd=workspace.launch_dir, stdout_path=run.run_dir / "logs" / "upstream.stdout.log", stderr_path=run.run_dir / "logs" / "upstream.stderr.log")
                 if result != 0:
                     raise UpstreamExecutionError(
                         classify_execution_failure(
-                            "nf-core/rnaseq", result, run.run_dir / "logs" / "upstream.stderr.log",
+                            "nf-core/rnaseq" if method == "salmon" else "HISAT2 + featureCounts", result, run.run_dir / "logs" / "upstream.stderr.log",
                             resource=RESOURCE_CONTRACTS["MEDIUM"],
                         )
                     )
             finalize_fastq_handoff(report, run, frozen.contract, reused_from=reused_from)
+        if report.config.project.preset is Preset.QC:
+            # QC projects intentionally stop at the immutable FASTQ backend.
+            # MultiQC and frozen provenance are still assembled into the normal
+            # client delivery package, but no metadata-dependent downstream
+            # statistical workflow is launched.
+            delivery = assemble_delivery(run)
+            _write_state(run, "SUCCESS", phase="delivery", delivery=str(delivery), downstream_skipped="technical_qc_only")
+            return run
         execution_inputs = resolve_downstream_inputs(run)
         observer_config = write_downstream_observer_config(run)
         downstream = build_downstream_nextflow_command(

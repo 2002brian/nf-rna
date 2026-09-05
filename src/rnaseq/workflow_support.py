@@ -117,8 +117,8 @@ def _source_config(contract: dict[str, Any], inputs: Path) -> dict[str, Any]:
     source = manifest.get("source")
     if not isinstance(source, dict) or source.get("type") != contract.get("source", {}).get("type"):
         raise ValueError("staged execution source disagrees with frozen provenance contract")
-    if source["type"] == "raw_counts":
-        return {"source_type": "raw_counts", "counts": str(_staged_file(root, source.get("counts"), "raw-count matrix"))}
+    if source["type"] in {"raw_counts", "featurecounts_raw_counts"}:
+        return {"source_type": source["type"], "counts": str(_staged_file(root, source.get("counts"), "raw-count matrix"))}
     samples = _samples(inputs)
     quant = source.get("quant_sf")
     if not isinstance(quant, dict) or set(quant) != set(samples):
@@ -323,7 +323,7 @@ def _report_l1_only(
         "<h2>L2 — GSEA</h2><p>Not requested for this L1 project.</p>",
         "<h2>Methods and reproducibility</h2>",
         "<ul>"
-        f"<li>Import: {escape('DESeqDataSetFromMatrix raw-count import' if contract['source']['type'] == 'raw_counts' else 'Salmon/tximport import')}</li>"
+        f"<li>Import: {escape('Salmon/tximport import' if contract['source']['type'] == 'salmon_tximport' else 'DESeqDataSetFromMatrix raw-count import')}</li>"
         f"<li>Filtering: {escape(str(l1_summary.get('filter', {}).get('rule', 'not available')))}</li>"
         f"<li>Normalization: {escape(str(l1_summary.get('normalization', {}).get('method', 'not available')))}</li>"
         f"<li>VST: {escape(str(l1_summary.get('vst', {}).get('method', 'not available')))}</li>"

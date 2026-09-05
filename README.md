@@ -4,9 +4,9 @@ English | [繁體中文](README_zh-TW.md)
 
 `nf-rna` is a reproducible bulk RNA-seq analysis workflow for researchers who start with either FASTQ files or raw gene-count matrices. It turns validated project inputs into quality-control results, differential-expression and optional GSEA results, figures, tables, a technical report, and the provenance needed to understand how those results were produced.
 
-For FASTQ projects, nf-rna combines pinned nf-core/rnaseq 3.26.0, Salmon, and tximport with first-party DESeq2 and clusterProfiler analysis. Scientific and execution settings are explicit rather than inferred, so the same declared project can be reviewed and rerun with a clear record of its inputs and choices.
+For FASTQ projects, nf-rna supports pinned nf-core/rnaseq 3.26.0 + Salmon/tximport and an explicitly configured first-party HISAT2 + featureCounts route, both feeding first-party DESeq2 and clusterProfiler analysis. Scientific and execution settings are explicit rather than inferred, so the same declared project can be reviewed and rerun with a clear record of its inputs and choices.
 
-The public project is `nf-rna` (`v0.4.3`). Its stable CLI and Python namespace are both `rnaseq`; the validated production Docker image remains `rnaseq-control-plane:latest` for compatibility with existing immutable run provenance.
+The public project is `nf-rna` (`v0.5.0`). Its stable CLI and Python namespace are both `rnaseq`; the validated production Docker image remains `rnaseq-control-plane:latest` for compatibility with existing immutable run provenance.
 
 ## Overview
 
@@ -74,6 +74,32 @@ FASTQ projects support paired-end and single-end reads. They explicitly declare 
 
 Use this route when nf-rna should own read processing as well as downstream analysis.
 
+### FASTQ: HISAT2 + featureCounts
+
+```text
+FASTQ → fastp/FastQC → HISAT2 → sorted BAM → featureCounts → DESeqDataSetFromMatrix → nf-rna downstream analysis
+```
+
+Set `upstream.quantification.method: hisat2_featurecounts`, use a checksum-bound custom or local reference with a prepared HISAT2 index, and declare `upstream.strandedness` as `unstranded`, `forward`, or `reverse`. `auto` is intentionally rejected for this route. The default count contract is `exon`/`gene_id`; it excludes multimappers, multi-gene overlaps, fractional counts, and secondary/supplementary alignments. Before counting, a separate BAM excludes flags `0x100` and `0x800` while retaining the original diagnostic BAM and all alignment tags, so ambiguity remains detectable. Paired-end data use `-p --countReadPairs -B -C`; single-end data are counted as reads. These are nf-rna defaults, not universal recommendations.
+
+`upstream.engine: nfcore_rnaseq` and `pipeline_version: "3.26.0"` remain required legacy FASTQ configuration fields for compatibility. They select and describe the Salmon implementation only. A HISAT2 run records `nf-rna/hisat2_featurecounts`, its nf-rna version, and the SHA-256 of `workflow/hisat2_featurecounts.nf` as the resolved executed implementation; it is never attributed to nf-core/rnaseq.
+
+```yaml
+schema_version: "1.2"
+upstream:
+  engine: nfcore_rnaseq
+  pipeline_version: "3.26.0"
+  strandedness: reverse
+  quantification: {method: hisat2_featurecounts}
+reference:
+  source: custom
+  fasta: reference/genome.fa
+  gtf: reference/genes.gtf
+  hisat2_index: reference/hisat2/index
+```
+
+For a managed local reference, run `rnaseq reference prepare-hisat2 /absolute/reference-root`, then `rnaseq plan PROJECT` and `rnaseq run PROJECT --case-id CASE --profile local --yes`. Raw HISAT2 runs publish per-lane fastp HTML/JSON reports under `upstream/hisat2_featurecounts/qc/fastp`; the JSON reports are also included in MultiQC. The route pins HISAT2 2.2.1, SAMtools 1.21, Subread/featureCounts 2.0.6, FastQC 0.12.1 and fastp 0.24.0 through Biocontainers build tags, plus MultiQC 1.33 through the Seqera Wave library. Docker records a resolved digest only at execution time; a source checkout does not claim an unobserved digest.
+
 ### Raw counts
 
 ```text
@@ -96,7 +122,7 @@ conda activate nf-rna
 docker build -t rnaseq-control-plane:latest .
 ```
 
-Python 3.11+ is required. Install Nextflow before using the FASTQ route, and ensure Docker Desktop or another compatible Docker daemon is running.
+Python 3.11+ is required. Install Nextflow before using the FASTQ route, and ensure Docker Desktop or another compatible Docker daemon is running. `rnaseq-control-plane:latest` is the supported runtime selection for current code, so rebuild that tag from the reviewed checkout after pulling or changing source; a pre-existing `latest` image can otherwise execute older downstream Python/R code.
 
 ### 2. Check the runtime
 
@@ -127,6 +153,17 @@ rnaseq new
 ```
 
 The interactive command creates `project.yaml`, `metadata.csv`, `contrasts.csv`, `input/`, and `planning/`. Populate `input/` with either your FASTQs or count matrix; complete metadata with `sample_id` and every design-formula variable; and provide directional contrasts for L2 differential-expression work.
+
+The wizard supports Human and Mouse only, offers Salmon or HISAT2 + featureCounts for FASTQ, and displays a review before it writes anything. It can import a strict FASTQ samplesheet (`sample,fastq_1,fastq_2,strandedness`) while preserving lane files, or copy a raw integer count matrix with metadata and contrasts. For repeatable automation, use the same choices explicitly; this example imports raw counts without prompts:
+
+```bash
+rnaseq new --name demo --destination projects --species human \
+  --input-type raw_counts --counts source/counts.csv \
+  --metadata source/metadata.csv --contrasts source/contrasts.csv \
+  --preset L2 --design-type two_group --condition-column condition --yes
+```
+
+Use `--scaffold` when source files are not ready. The resulting project is intentionally incomplete and `rnaseq validate` will say what remains. FASTQ `--preset qc` runs quantification and technical QC only; it does not start the metadata-dependent statistical workflow.
 
 ## What you get
 
@@ -187,6 +224,8 @@ At the public-packaging review, the non-expensive regression suite completed wit
 
 These are software and regression checks. They demonstrate that the implemented workflow paths behaved as expected for their fixtures; they do not establish biological validity for a new study or replace experimental-design review.
 
+Milestone A adds a hand-constructed real-tool featureCounts fixture. It verifies single-end reads, paired fragments, forward/reverse strand selection, multimapper and overlapping-gene exclusion, both-mates and chimeric-fragment policy, secondary/supplementary exclusion, and technical-lane merge counts. It is supplementary host validation, not a substitute for the pinned-container smoke run; see [runtime](docs/runtime.md) for the recorded status.
+
 ## Requirements and limitations
 
 - Python 3.11+, Docker, and adequate local storage are required.
@@ -208,4 +247,4 @@ These are software and regression checks. They demonstrate that the implemented 
 
 ## Citation and license
 
-nf-rna `v0.4.3` is released under the [MIT License](LICENSE). Cite the specific release you use; the machine-readable record is [CITATION.cff](CITATION.cff).
+nf-rna `v0.5.0` is released under the [MIT License](LICENSE). Cite the specific release you use; the machine-readable record is [CITATION.cff](CITATION.cff).

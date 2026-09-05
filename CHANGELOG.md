@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here.
 
+## 0.5.0 — 2026-09-05
+
+- Added the explicitly configured HISAT2 + featureCounts FASTQ backend, including a source-aware count-matrix handoff to existing L1/L2 analysis.
+- Added local-reference HISAT2 index preparation, explicit count/strand contracts, and backend-aware readiness/planning.
+- Added the reviewed interactive and explicit non-interactive project-creation interface, including strict FASTQ samplesheet import and safe scaffolding.
+- Kept Salmon/tximport and external raw-count routes compatible with their existing contracts.
+
 ## 0.4.3 — 2026-09-03
 
 Initial public release of nf-rna.

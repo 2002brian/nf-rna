@@ -8,7 +8,7 @@
 
 對於 FASTQ 專案，nf-rna 將固定版本的 nf-core/rnaseq 3.26.0、Salmon 與 tximport，結合 first-party 的 DESeq2 和 clusterProfiler 分析。科學與執行設定都必須明確宣告，而非由系統猜測；因此，同一個已宣告的專案可以被審查與重跑，並保有清楚的輸入與設定紀錄。
 
-公開專案名稱為 `nf-rna`（`v0.4.3`）。穩定的 CLI 與 Python namespace 都是 `rnaseq`；為了相容既有 immutable run 的 provenance，已驗證的 production Docker image 維持為 `rnaseq-control-plane:latest`。
+公開專案名稱為 `nf-rna`（`v0.5.0`）。穩定的 CLI 與 Python namespace 都是 `rnaseq`；為了相容既有 immutable run 的 provenance，已驗證的 production Docker image 維持為 `rnaseq-control-plane:latest`。
 
 ## 概覽
 
@@ -76,6 +76,28 @@ FASTQ 專案支援 paired-end 與 single-end reads。使用者必須明確指定
 
 若希望 nf-rna 同時負責 read processing 與 downstream analysis，請使用此路徑。
 
+### FASTQ：HISAT2 + featureCounts
+
+```text
+FASTQ → fastp/FastQC → HISAT2 → sorted BAM → featureCounts → DESeqDataSetFromMatrix → nf-rna downstream analysis
+```
+
+在 `upstream.quantification.method` 指定 `hisat2_featurecounts`，並使用已準備 HISAT2 index 的 checksum-bound custom 或 local reference。此 route 必須明確指定 `upstream.strandedness: unstranded|forward|reverse`；`auto` 會被拒絕，Milestone A 不提供 strand inference。預設以 `exon`/`gene_id` 計數，不納入 multimapper、跨 gene ambiguous assignment、fractional count，或 secondary/supplementary alignment。計數前會產生只排除 `0x100` 與 `0x800` flags 的獨立 BAM，同時保留原始 diagnostic BAM 與所有 alignment tags，因此仍可辨識 ambiguous mapping。paired-end 使用 `-p --countReadPairs -B -C`，single-end 以 read 計數；這些是 nf-rna 預設，並非所有實驗的通用建議。
+
+為了相容既有 FASTQ project，`upstream.engine: nfcore_rnaseq` 與 `pipeline_version: "3.26.0"` 仍是必要的 legacy configuration fields；它們只描述並選擇 Salmon implementation。HISAT2 run 會將實際執行 implementation 記錄為 `nf-rna/hisat2_featurecounts`、nf-rna version 與 `workflow/hisat2_featurecounts.nf` 的 SHA-256，絕不會歸因為 nf-core/rnaseq。
+
+Local reference 請先執行 `rnaseq reference prepare-hisat2 /absolute/reference-root`，再執行 `rnaseq plan PROJECT` 與 `rnaseq run PROJECT --case-id CASE --profile local --yes`。paired-end raw FASTQ 會以 fastp 的 `--detect_adapter_for_pe` 偵測 adapter；每條 lane 的 fastp HTML/JSON 會輸出於 `upstream/hisat2_featurecounts/qc/fastp`，JSON 也會納入 MultiQC。此 route 以 Biocontainers build tag 固定 HISAT2 2.2.1、SAMtools 1.21、Subread/featureCounts 2.0.6、FastQC 0.12.1、fastp 0.24.0，並以 Seqera Wave library 固定 MultiQC 1.33。Docker image digest 只在實際 resolve 後記錄；原始碼不會虛構尚未觀察到的 digest。
+
+### Milestone A 驗證（2026-09-05）
+
+已在 arm64 Docker Desktop 上以 amd64 emulation 執行 production pinned SAMtools 1.21 與 featureCounts 2.0.6 的語意 fixture；single-end、paired fragment、forward/reverse strand、overlap/multimapper、secondary/supplementary、both-mates、chimeric fragment 與 technical-lane merge 都符合預期。`samtools view -bh -F 0x900` 移除 multimapper secondary record 後，保留下來的 primary `NH:i:2` 仍被 featureCounts 排除，沒有被誤當作 unique read。
+
+同日以目前 checkout 建立的 arm64 control-plane image（ID `sha256:dc5cd9f336c411eb65ac80c360e6a7abe9f40acfa6cd86fcab05018b073d3171`）完成 raw L2 run `MILESTONE-A-RAW-L2-FINAL/20260905-115310+0800`，並另完成 pretrimmed L1 run `MILESTONE-A-PRETRIMMED-L1/20260905-115200+0800`。raw L2 run 實際產出 original/count-only BAM lineage、alignment/QC、featureCounts、canonical matrix/sample map、`featurecounts_raw_counts` → `DESeqDataSetFromMatrix`、L1、L2、report 與 delivery；完整機器可讀證據位於 immutable run directory。此小型合成資料未啟用 enrichment，因此驗證的是文件化的 no-enrichment graceful route，不宣稱 GO/KEGG 生物學結果。
+
+獨立的 interactive single-end QC 驗收 run `WIZARD-HISAT2-QC-R3/20260905-144237+0800` 亦於同日通過；它僅以 single-end synthetic fixture 驗證 raw preprocessing、HISAT2、featureCounts、FastQC/MultiQC 與 QC delivery，沒有宣稱 paired fragment accounting 或 L1/L2/enrichment。這些項目分別由後述 paired UAT 與上述 Milestone A smoke records 支持。
+
+同日的 interactive paired-end QC 驗收 run 為 `PAIRED-HISAT2-QC-UAT-R3/20260905-150643+0800`；其 immutable validation record 保留於未發布的本機 workspace。可重現的小型合成 fixture 位於 `tests/fixtures/hisat2_paired_raw_v2`；在空白 destination 用 `python tests/fixtures/hisat2_paired_raw/generate_fixture.py --root PATH/TO/EMPTY/hisat2_paired_raw_v2` 產生後，再以 `rnaseq reference prepare-hisat2 PATH/TO/EMPTY/hisat2_paired_raw_v2/reference` 建立 managed index。fixture 是 forward stranded（HISAT2 `FR`、featureCounts `-s 1`），PairAlpha 的兩條 technical lane 應合併為 `GeneA=3, GeneB=1`，獨立 PairBeta 應為 `GeneA=0, GeneB=2`。實際 run 的 raw/retained R1/R2 均同步；每條 lane 的 adapter pair 都被剪除 2 reads／66 bases、mapping rate 100%，且 canonical matrix 與先驗值完全一致。featureCounts 使用 `-p --countReadPairs -B -C`；PairAlpha 的 8 個 alignment records 代表 4 個 fragments，PairBeta 的 4 個 records 代表 2 個 fragments，兩者不可混為同一數量。original/count-only BAM 均通過 `samtools quickcheck`，count-only BAM 沒有 `0x900` records 且所有 mapped records 保有 `NH:i:1`。MultiQC 含 FastQC、fastp、HISAT2、featureCounts；QC scope 沒有執行 L1/L2/enrichment。這是 software-contract fixture，不是 biological evidence。
+
 ### Raw counts
 
 ```text
@@ -98,7 +120,7 @@ conda activate nf-rna
 docker build -t rnaseq-control-plane:latest .
 ```
 
-需要 Python 3.11 以上版本。使用 FASTQ route 前，請安裝 Nextflow，並確認 Docker Desktop 或其他相容的 Docker daemon 已啟動。
+需要 Python 3.11 以上版本。使用 FASTQ route 前，請安裝 Nextflow，並確認 Docker Desktop 或其他相容的 Docker daemon 已啟動。`rnaseq-control-plane:latest` 是 current code 支援的 runtime selection；pull 或變更 source 後，必須從已審查的 checkout 重新建立這個 tag，否則既有的 `latest` image 可能執行較舊的 downstream Python/R code。
 
 ### 2. 檢查 runtime
 
@@ -129,6 +151,17 @@ rnaseq new
 ```
 
 這個互動式命令會建立 `project.yaml`、`metadata.csv`、`contrasts.csv`、`input/` 與 `planning/`。請在 `input/` 放入 FASTQ 或 count matrix；在 metadata 中填入 `sample_id` 與 design formula 使用的每個 variable；若要進行 L2 differential-expression analysis，則提供具有方向性的 contrast。
+
+wizard 僅提供 Human 與 Mouse，FASTQ 可選 Salmon 或 HISAT2 + featureCounts，寫入前會顯示完整 review。它可匯入嚴格四欄 FASTQ samplesheet（`sample,fastq_1,fastq_2,strandedness`）並保留 lane 檔名，或複製 raw integer count matrix、metadata 與 contrasts。可重複執行的自動化使用相同選項，例如：
+
+```bash
+rnaseq new --name demo --destination projects --species human \
+  --input-type raw_counts --counts source/counts.csv \
+  --metadata source/metadata.csv --contrasts source/contrasts.csv \
+  --preset L2 --design-type two_group --condition-column condition --yes
+```
+
+輸入尚未備妥時可使用 `--scaffold`；建立的 project 會刻意保持 incomplete，`rnaseq validate` 會說明缺少項目。FASTQ 的 `--preset qc` 僅執行 quantification 與 technical QC，不會啟動依賴 metadata 的統計分析流程。
 
 ## 執行後會得到什麼
 
@@ -189,6 +222,8 @@ nf-rna 會在分析前驗證 input；不會靜默加入 metadata variable、重�
 
 這些是 software 與 regression check，代表已實作的 workflow path 在對應 fixture 上如預期運作；它們不代表新的研究已取得 biological validity，也不能取代 experimental-design review。
 
+Milestone A 新增 hand-constructed 的 real-tool featureCounts fixture，驗證 single-end、paired fragment、forward/reverse strandedness、multimapper 與 overlapping-gene 排除、both-mates/chimeric policy、secondary/supplementary 排除，以及 technical-lane merge count。這是補充的 host validation，不取代 pinned-container smoke run；實際狀態請見 [runtime](docs/runtime.md)。
+
 ## Requirement 與限制
 
 - 需要 Python 3.11 以上、Docker 與足夠的 local storage。
@@ -210,4 +245,4 @@ nf-rna 會在分析前驗證 input；不會靜默加入 metadata variable、重�
 
 ## Citation 與 license
 
-nf-rna `v0.4.3` 依 [MIT License](LICENSE) 發布。請引用實際使用的 release；機器可讀紀錄位於 [CITATION.cff](CITATION.cff)。
+nf-rna `v0.5.0` 依 [MIT License](LICENSE) 發布。請引用實際使用的 release；機器可讀紀錄位於 [CITATION.cff](CITATION.cff)。

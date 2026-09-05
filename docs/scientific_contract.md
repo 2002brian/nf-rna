@@ -11,6 +11,8 @@ This repository produces technical bulk RNA-seq analysis artifacts. It does not 
 - The count/metadata sample sets must agree exactly; their ordering may differ.
 - Contrasts are case-sensitive, directional, and must reference a factor and existing levels present in the design.
 - FASTQ preprocessing is user-declared. The pipeline does not infer whether data are trimmed from names, paths, or contents.
+- The Salmon route preserves tximport average-transcript-length offsets. The HISAT2 + featureCounts route uses only nonnegative integral gene counts with `DESeqDataSetFromMatrix`; the two sources are never combined.
+- HISAT2 + featureCounts requires explicit `unstranded`, `forward`, or `reverse` library strandedness. It counts exons grouped by `gene_id`, excludes multimappers and ambiguous overlaps, and counts from a separate BAM that excludes secondary/supplementary records (`samtools -F 0x900`) while retaining the original tagged diagnostic BAM; paired-end data count fragments with both mates mapped while excluding chimeras.
 
 ## L1
 
@@ -32,4 +34,4 @@ The ranking uses all finite tested-gene DESeq2 Wald statistics, without a DEG, a
 
 ## Reference and provenance
 
-Reference identity is explicit: species, assembly/release, checksums, Salmon strategy, and index status are frozen for a run. No reference is downloaded, auto-discovered, or silently migrated during validation/planning. External runtime behavior and versions are captured in provenance without changing the scientific configuration.
+Reference identity is explicit: species, assembly/release, checksums, selected-backend index status, and index-build provenance are frozen for a run. HISAT2 preparation records annotation-derived splice sites and its genome-index inputs; it never reuses a Salmon index. No reference is downloaded, auto-discovered, or silently migrated during validation/planning. External runtime behavior and versions are captured in provenance without changing the scientific configuration.

@@ -19,13 +19,12 @@ def digest(path: Path) -> str:
 def test_new_creates_versioned_project_without_placeholder_counts(tmp_path):
     result = runner.invoke(
         app,
-        ["new"],
-        input=f"created_project\n{tmp_path}\nMus musculus\nraw_counts\nL2\ntwo_group\n",
+        ["new", "--name", "created_project", "--destination", str(tmp_path), "--species", "mouse", "--input-type", "raw_counts", "--preset", "L2", "--design-type", "two_group", "--scaffold", "--yes"],
     )
     assert result.exit_code == 0, result.output
     root = tmp_path / "created_project"
     config = yaml.safe_load((root / "project.yaml").read_text(encoding="utf-8"))
-    assert config["schema_version"] == "1.1"
+    assert config["schema_version"] == "1.2"
     assert isinstance(config["schema_version"], str)
     assert (root / "input").is_dir()
     assert (root / "planning").is_dir()
@@ -37,8 +36,7 @@ def test_new_refuses_to_overwrite(tmp_path):
     (tmp_path / "existing").mkdir()
     result = runner.invoke(
         app,
-        ["new"],
-        input=f"existing\n{tmp_path}\nMus musculus\nraw_counts\nL1\ntwo_group\n",
+        ["new", "--name", "existing", "--destination", str(tmp_path), "--species", "mouse", "--input-type", "raw_counts", "--preset", "L1", "--design-type", "two_group", "--scaffold", "--yes"],
     )
     assert result.exit_code == 1
     assert "already exists" in result.output
@@ -49,8 +47,7 @@ def test_new_uses_an_empty_same_named_destination_without_nesting(tmp_path):
     target.mkdir()
     result = runner.invoke(
         app,
-        ["new"],
-        input=f"client_case\n{target}\nMus musculus\nraw_counts\nL1\ntwo_group\n",
+        ["new", "--name", "client_case", "--destination", str(target), "--species", "mouse", "--input-type", "raw_counts", "--preset", "L1", "--design-type", "two_group", "--scaffold", "--yes"],
     )
     assert result.exit_code == 0, result.output
     assert (target / "project.yaml").is_file()
@@ -60,8 +57,7 @@ def test_new_uses_an_empty_same_named_destination_without_nesting(tmp_path):
 def test_new_defaults_to_fastq_project(tmp_path):
     result = runner.invoke(
         app,
-        ["new"],
-        input=f"fastq_project\n{tmp_path}\nMus musculus\n\n\nL1\ntwo_group\n",
+        ["new", "--name", "fastq_project", "--destination", str(tmp_path), "--species", "mouse", "--input-type", "fastq", "--preset", "L1", "--design-type", "two_group", "--scaffold", "--yes"],
     )
     assert result.exit_code == 0, result.output
     config = yaml.safe_load((tmp_path / "fastq_project" / "project.yaml").read_text())
@@ -72,6 +68,154 @@ def test_new_defaults_to_fastq_project(tmp_path):
         "preprocessing": "raw",
     }
     assert config["upstream"]["pipeline_version"] == "3.26.0"
+
+
+def test_new_imports_raw_counts_with_metadata_and_contrasts(tmp_path):
+    counts = tmp_path / "source_counts.csv"
+    metadata = tmp_path / "source_metadata.csv"
+    contrasts = tmp_path / "source_contrasts.csv"
+    counts.write_text("gene_id,C1,T1\nGeneA,2,5\n", encoding="utf-8")
+    metadata.write_text("sample_id,condition\nC1,Control\nT1,Treatment\n", encoding="utf-8")
+    contrasts.write_text("contrast_id,factor,numerator,denominator\nT_vs_C,condition,Treatment,Control\n", encoding="utf-8")
+
+    result = runner.invoke(app, [
+        "new", "--name", "imported", "--destination", str(tmp_path), "--species", "human",
+        "--input-type", "raw_counts", "--counts", str(counts), "--metadata", str(metadata),
+        "--contrasts", str(contrasts), "--preset", "L1", "--design-type", "two_group", "--yes",
+    ])
+
+    assert result.exit_code == 0, result.output
+    root = tmp_path / "imported"
+    assert (root / "input" / "counts.csv").read_bytes() == counts.read_bytes()
+    assert (root / "metadata.csv").read_bytes() == metadata.read_bytes()
+    assert runner.invoke(app, ["validate", str(root)]).exit_code == 0
+
+
+def test_new_imports_lane_fastqs_and_preserves_explicit_hisat2_backend(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    for name in ("S1_L001_R1.fastq.gz", "S1_L001_R2.fastq.gz", "S1_L002_R1.fastq.gz", "S1_L002_R2.fastq.gz", "S2_L001_R1.fastq.gz", "S2_L001_R2.fastq.gz"):
+        (source / name).write_bytes(b"not-inspected-by-creation")
+    sheet = source / "samplesheet.csv"
+    sheet.write_text(
+        "sample,fastq_1,fastq_2,strandedness\n"
+        "S1,S1_L001_R1.fastq.gz,S1_L001_R2.fastq.gz,forward\n"
+        "S1,S1_L002_R1.fastq.gz,S1_L002_R2.fastq.gz,forward\n"
+        "S2,S2_L001_R1.fastq.gz,S2_L001_R2.fastq.gz,forward\n",
+        encoding="utf-8",
+    )
+    metadata = source / "metadata.csv"
+    metadata.write_text("sample_id,condition\nS1,Control\nS2,Treatment\n", encoding="utf-8")
+    contrasts = source / "contrasts.csv"
+    contrasts.write_text("contrast_id,factor,numerator,denominator\nT_vs_C,condition,Treatment,Control\n", encoding="utf-8")
+    fasta, gtf = source / "genome.fa", source / "genes.gtf"
+    fasta.write_text(">chr1\nA\n", encoding="utf-8")
+    gtf.write_text("# annotation\n", encoding="utf-8")
+
+    result = runner.invoke(app, [
+        "new", "--name", "lanes", "--destination", str(tmp_path), "--species", "human",
+        "--input-type", "fastq", "--fastq-samplesheet", str(sheet), "--metadata", str(metadata),
+        "--contrasts", str(contrasts), "--method", "hisat2_featurecounts", "--strandedness", "forward",
+        "--reference-source", "custom", "--reference-fasta", str(fasta), "--reference-gtf", str(gtf),
+        "--preset", "L1", "--design-type", "two_group", "--yes",
+    ])
+
+    assert result.exit_code == 0, result.output
+    root = tmp_path / "lanes"
+    config = yaml.safe_load((root / "project.yaml").read_text(encoding="utf-8"))
+    assert config["upstream"]["quantification"]["method"] == "hisat2_featurecounts"
+    assert config["upstream"]["strandedness"] == "forward"
+    assert (root / "input" / "fastq" / "S1_L002_R2.fastq.gz").is_file()
+    assert (root / "planning" / "imported_fastq_samplesheet.csv").read_bytes() == sheet.read_bytes()
+    validation = runner.invoke(app, ["validate", str(root)])
+    assert validation.exit_code == 0, validation.output
+    assert "NOT READY" in validation.output
+    assert "HISAT2 requires" in validation.output
+
+
+def test_new_rejects_mixed_fastq_strandedness_without_creating_project(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    for name in ("S1_R1.fastq.gz", "S1_R2.fastq.gz", "S2_R1.fastq.gz", "S2_R2.fastq.gz"):
+        (source / name).write_bytes(b"x")
+    sheet = source / "samplesheet.csv"
+    sheet.write_text(
+        "sample,fastq_1,fastq_2,strandedness\nS1,S1_R1.fastq.gz,S1_R2.fastq.gz,forward\nS2,S2_R1.fastq.gz,S2_R2.fastq.gz,reverse\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(app, [
+        "new", "--name", "bad", "--destination", str(tmp_path), "--species", "mouse", "--input-type", "fastq",
+        "--fastq-samplesheet", str(sheet), "--method", "salmon", "--preset", "qc", "--design-type", "two_group", "--yes",
+    ])
+    assert result.exit_code == 1
+    assert "mixed strandedness" in result.output
+    assert not (tmp_path / "bad").exists()
+
+
+def test_fastq_qc_scope_validates_and_plans_without_statistical_metadata(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    for name in ("S1_R1.fastq.gz", "S1_R2.fastq.gz"):
+        (source / name).write_bytes(b"x")
+    sheet = source / "samplesheet.csv"
+    sheet.write_text("sample,fastq_1,fastq_2,strandedness\nS1,S1_R1.fastq.gz,S1_R2.fastq.gz,auto\n", encoding="utf-8")
+    result = runner.invoke(app, [
+        "new", "--name", "technical_qc", "--destination", str(tmp_path), "--species", "mouse", "--input-type", "fastq",
+        "--fastq-samplesheet", str(sheet), "--method", "salmon", "--reference-source", "igenomes",
+        "--preset", "qc", "--yes",
+    ])
+    assert result.exit_code == 0, result.output
+    root = tmp_path / "technical_qc"
+    assert runner.invoke(app, ["validate", str(root)]).exit_code == 0
+    planned = runner.invoke(app, ["plan", str(root)])
+    assert planned.exit_code == 0, planned.output
+    assert "technical FASTQ QC only" in (root / "planning" / "analysis_plan.md").read_text(encoding="utf-8")
+
+
+def test_new_cancellation_writes_no_partial_project(tmp_path):
+    result = runner.invoke(app, [
+        "new", "--name", "cancelled", "--destination", str(tmp_path), "--species", "mouse",
+        "--input-type", "raw_counts", "--preset", "L1", "--design-type", "two_group", "--scaffold",
+    ], input="n\n")
+    assert result.exit_code == 0, result.output
+    assert "cancelled" in result.output
+    assert not (tmp_path / "cancelled").exists()
+
+
+def test_new_requires_flags_when_stdin_is_not_a_terminal():
+    result = runner.invoke(app, ["new"])
+    assert result.exit_code == 1
+    assert "interactive terminal" in result.output
+
+
+def test_invalid_import_is_rejected_before_project_becomes_visible(tmp_path):
+    counts, metadata, contrasts = (tmp_path / "counts.csv", tmp_path / "metadata.csv", tmp_path / "contrasts.csv")
+    counts.write_text("gene_id,C1,T1\nGeneA,2,5\n", encoding="utf-8")
+    metadata.write_text("sample_id,condition\nC1,Control\nWRONG,Treatment\n", encoding="utf-8")
+    contrasts.write_text("contrast_id,factor,numerator,denominator\nT_vs_C,condition,Treatment,Control\n", encoding="utf-8")
+    result = runner.invoke(app, [
+        "new", "--name", "invalid_import", "--destination", str(tmp_path), "--species", "human",
+        "--input-type", "raw_counts", "--counts", str(counts), "--metadata", str(metadata), "--contrasts", str(contrasts),
+        "--preset", "L1", "--design-type", "two_group", "--yes",
+    ])
+    assert result.exit_code == 1
+    assert "strict validation" in result.output
+    assert not (tmp_path / "invalid_import").exists()
+
+
+def test_new_uses_imported_metadata_fields_for_noninteractive_formula(tmp_path):
+    counts, metadata, contrasts = (tmp_path / "counts.csv", tmp_path / "metadata.csv", tmp_path / "contrasts.csv")
+    counts.write_text("gene_id,S1,S2,S3,S4\nGeneA,1,2,3,4\n", encoding="utf-8")
+    metadata.write_text("sample_id,subject,condition,batch\nS1,A,Control,B1\nS2,A,Treatment,B1\nS3,B,Control,B2\nS4,B,Treatment,B2\n", encoding="utf-8")
+    contrasts.write_text("contrast_id,factor,numerator,denominator\nT_vs_C,condition,Treatment,Control\n", encoding="utf-8")
+    result = runner.invoke(app, [
+        "new", "--name", "paired", "--destination", str(tmp_path), "--species", "mouse", "--input-type", "raw_counts",
+        "--counts", str(counts), "--metadata", str(metadata), "--contrasts", str(contrasts), "--preset", "L2",
+        "--design-type", "paired", "--condition-column", "condition", "--pairing-column", "subject", "--covariate", "batch", "--yes",
+    ])
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load((tmp_path / "paired" / "project.yaml").read_text(encoding="utf-8"))
+    assert config["design"]["formula"] == "~ subject + condition + batch"
 
 
 def test_validate_example_passes():
@@ -113,7 +257,7 @@ def test_plan_is_deterministic_and_records_schema_version():
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     assert manifest["schema"]["project_schema_version"] == "1.0"
     assert isinstance(manifest["schema"]["project_schema_version"], str)
-    assert manifest["pipeline"]["version"] == "0.4.3"
+    assert manifest["pipeline"]["version"] == "0.5.0"
 
     second = runner.invoke(app, ["plan", str(example)])
     assert second.exit_code == 0, second.output

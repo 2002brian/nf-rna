@@ -12,6 +12,7 @@ from pathlib import Path
 import yaml
 
 from rnaseq.models import FastqPreprocessing, InputType, PIPELINE_VERSION, Preset
+from rnaseq.hisat2_featurecounts import HISAT2_VERSION, SAMTOOLS_VERSION, SUBREAD_VERSION
 from rnaseq.validators import ValidationReport
 
 PLANNED_STATUS = "PLANNED — awaiting immutable case/run execution"
@@ -36,6 +37,8 @@ L2_ADDITIONAL_MODULES = (
 
 
 def planned_modules(preset: Preset):
+    if preset is Preset.QC:
+        return ()
     return L1_MODULES if preset is Preset.L1 else L1_MODULES + L2_ADDITIONAL_MODULES
 
 
@@ -50,8 +53,10 @@ def sha256_file(path: Path) -> str:
 def _require_valid_report(report: ValidationReport) -> None:
     if not report.is_valid:
         raise ValueError("Cannot generate a plan for an invalid project.")
-    if not all((report.loaded, report.config, report.metadata, report.contrasts)):
+    if not report.loaded or not report.config:
         raise ValueError("Validated project is missing required planning data.")
+    if report.config.project.preset is not Preset.QC and not (report.metadata and report.contrasts):
+        raise ValueError("Validated analytical project is missing metadata or contrasts.")
     if report.config.input.type is InputType.RAW_COUNTS and report.counts is None:
         raise ValueError("Validated raw-count project is missing count data.")
     if report.config.input.type is InputType.FASTQ and report.fastq is None:
@@ -117,21 +122,36 @@ def render_analysis_plan(report: ValidationReport) -> str:
         files_per_record = 2 if report.fastq.layout.value == "paired_end" else 1
         preprocessing_arguments = ["--skip_trimming"] if config.input.preprocessing is FastqPreprocessing.PRETRIMMED else []
         lines.extend([f"- FASTQ directory: `{config.input.path}`", f"- FASTQ files: {len(report.fastq.records) * files_per_record}", f"- Biological samples: {len(report.fastq.sample_ids)}", f"- Sequencing layout: `{report.fastq.layout.value}`", f"- FASTQ preprocessing: `{config.input.preprocessing.value}`", f"- nf-core skip_trimming: `{str(config.input.preprocessing is FastqPreprocessing.PRETRIMMED).lower()}`", f"- nf-core preprocessing arguments: `{', '.join(preprocessing_arguments) if preprocessing_arguments else 'none'}`", "- nf-core samplesheet: `planning/samplesheet.csv`"])
-    lines.extend([
+    if config.project.preset is Preset.QC:
+        lines.extend([
+            "", "## Analysis scope", "", "- Quantification and technical FASTQ QC only.",
+            "- No downstream normalization, differential expression, metadata design, or contrasts are run.", "",
+        ])
+    else:
+        lines.extend([
         "", "## Species", "", config.organism.species.value, "", "## Experimental design", "",
         f"- Design type: `{config.design.type.value}`", f"- Formula: `{config.design.formula}`",
         f"- Design variables: {', '.join(report.formula_variables)}", "",
         "Only variables explicitly present in the formula are part of the planned design. Additional metadata columns are preserved but are not added automatically.",
         "", "## Contrasts", "",
-    ])
-    lines.extend(_contrast_lines(report))
+        ])
+        lines.extend(_contrast_lines(report))
     if config.input.type is InputType.FASTQ:
         reference = config.reference
         assert reference is not None
+        method = config.upstream.quantification.method if config.upstream.quantification else "salmon"
         lines.extend([
-            "## Upstream processing", "", f"- Pipeline: `nf-core/rnaseq {config.upstream.pipeline_version}`",
+            "## Upstream processing", "", f"- Backend: `{method}`",
             f"- Strandedness: `{config.upstream.strandedness}`", f"- Reference source: `{reference.source}`",
         ])
+        if method == "salmon":
+            lines.append(f"- Pipeline: `nf-core/rnaseq {config.upstream.pipeline_version}`")
+        else:
+            lines.extend([
+                f"- Pinned tools: HISAT2 {HISAT2_VERSION}; SAMtools {SAMTOOLS_VERSION}; Subread/featureCounts {SUBREAD_VERSION}.",
+                "- Counting: exon/gene_id; multimappers, multi-gene overlaps, fractional counts and duplicate removal are disabled; MAPQ is 0.",
+                "- Paired-end uses fragment counting with both mates mapped and chimeras excluded; single-end uses read counting.",
+            ])
         if report.local_reference is not None:
             local = report.local_reference
             lines.extend([
@@ -141,23 +161,25 @@ def render_analysis_plan(report: ValidationReport) -> str:
                 f"- GTF: `{local.annotation_gtf.path}` (SHA256 `{local.annotation_gtf.sha256}`)",
                 f"- Transcript FASTA asset: `{local.transcript_fasta.path}` (SHA256 `{local.transcript_fasta.sha256}`; runtime used: `{str(local.external_transcript_fasta_used).lower()}`)",
                 f"- Transcriptome strategy: `{local.transcriptome_strategy}`",
-                f"- Salmon index strategy: {local.salmon_strategy}",
+                f"- {'Salmon' if method == 'salmon' else 'HISAT2'} index strategy: {local.salmon_strategy if method == 'salmon' else local.hisat2_status}",
             ])
             if local.salmon_transcriptome is not None:
                 lines.append(
                     f"- Adopted GTF-derived transcriptome: `{local.salmon_transcriptome.path}` "
                     f"(SHA256 `{local.salmon_transcriptome.sha256}`; provenance only, not an nf-core `--transcript_fasta` argument)"
                 )
-            if local.salmon_index is not None:
+            if method == "salmon" and local.salmon_index is not None:
                 lines.append("- nf-core reference arguments: " + " ".join(
                     f"`{option} {path}`" for option, path in local.nfcore_arguments()
                 ))
-            else:
+            elif method == "salmon":
                 lines.append(f"- Reference preparation required: `rnaseq reference prepare {local.root}`")
+            elif local.hisat2_index is None:
+                lines.append(f"- Reference preparation required: `rnaseq reference prepare-hisat2 {local.root}`")
         else:
             lines.append(f"- Reference genome: `{reference.genome}`")
         lines.extend([
-            "- FASTQ QC, alignment / quantification, and MultiQC: **PLANNED — executed by the immutable case/run nf-core/rnaseq route, not by `rnaseq plan`**", "",
+            f"- FASTQ QC, alignment / quantification, and MultiQC: **PLANNED — executed by the immutable case/run {'nf-core/rnaseq' if method == 'salmon' else 'first-party HISAT2 + featureCounts'} route, not by `rnaseq plan`**", "",
             "## Execution readiness", "", f"- Status: `{'READY' if report.execution_ready else 'NOT READY'}`",
         ])
         lines.extend(f"- Blocking requirement: {item}" for item in report.execution_blockers)
@@ -197,7 +219,7 @@ def _fastq_manifest_files(report: ValidationReport) -> list[dict[str, str]]:
 def render_manifest(report: ValidationReport) -> str:
     _require_valid_report(report)
     loaded, config, metadata, contrasts = report.loaded, report.config, report.metadata, report.contrasts
-    assert loaded and config and metadata and contrasts
+    assert loaded and config
     manifest: dict[str, object] = {
         "schema": {"project_schema_version": config.schema_version},
         "pipeline": {"name": config.project.pipeline, "version": PIPELINE_VERSION, "preset": config.project.preset.value},
@@ -238,8 +260,8 @@ def render_manifest(report: ValidationReport) -> str:
             else config.reference.model_dump()
         )
     manifest.update({
-        "metadata": {"file": config.metadata_file, "sha256": sha256_file(metadata.path), "design_variables": list(report.formula_variables)},
-        "contrasts": {"file": config.contrasts_file, "sha256": sha256_file(contrasts.path), "definitions": [item.__dict__ for item in contrasts.contrasts]},
+        "metadata": ({"file": config.metadata_file, "sha256": sha256_file(metadata.path), "design_variables": list(report.formula_variables)} if metadata is not None else None),
+        "contrasts": ({"file": config.contrasts_file, "sha256": sha256_file(contrasts.path), "definitions": [item.__dict__ for item in contrasts.contrasts]} if contrasts is not None else None),
         "organism": {"species": config.organism.species.value},
         "design": {"type": config.design.type.value, "formula": config.design.formula},
         "planned_downstream": {
@@ -257,9 +279,10 @@ def render_upstream_preview(report: ValidationReport) -> str:
         raise ValueError("Upstream previews are only generated for FASTQ projects.")
     config = report.config
     assert config.reference is not None
+    method = config.upstream.quantification.method if config.upstream.quantification else "salmon"
     preview = {
         "engine": {"name": "nextflow"},
-        "pipeline": {"name": "nf-core/rnaseq", "version": config.upstream.pipeline_version},
+        "pipeline": ({"name": "nf-core/rnaseq", "version": config.upstream.pipeline_version} if method == "salmon" else {"name": "nf-rna/hisat2_featurecounts", "versions": {"hisat2": HISAT2_VERSION, "samtools": SAMTOOLS_VERSION, "subread": SUBREAD_VERSION}}),
         "input": {"samplesheet": "planning/samplesheet.csv", "project_working_directory": "."},
         "sequencing": {"layout": report.fastq.layout.value, "strandedness": config.upstream.strandedness},
         "preprocessing": config.input.preprocessing.value,
@@ -307,6 +330,9 @@ def render_upstream_preview(report: ValidationReport) -> str:
         "status": {"execution_ready": report.execution_ready},
         "blocking_requirements": list(report.execution_blockers),
     }
+    if method == "hisat2_featurecounts":
+        preview["counting"] = {"feature_type": "exon", "grouping_attribute": "gene_id", "paired_end": "-p --countReadPairs -B -C", "single_end": "read", "strand_mapping": {"unstranded": 0, "forward": 1, "reverse": 2}}
+        preview["reference_readiness"] = "HISAT2 index required; iGenomes is not an execution route for this backend"
     return yaml.safe_dump(preview, sort_keys=False, allow_unicode=True)
 
 

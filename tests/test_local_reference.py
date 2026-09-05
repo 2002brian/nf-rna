@@ -229,6 +229,21 @@ def test_not_built_local_reference_is_valid_but_not_execution_ready(tmp_path):
         )
 
 
+def test_empty_fastq_input_does_not_misreport_a_valid_local_reference(tmp_path):
+    root, reference = _local_fastq_project(tmp_path)
+    _mark_salmon_built(reference)
+    for path in (root / "input" / "fastq").iterdir():
+        path.unlink()
+
+    report = validate_project(root)
+
+    assert not report.is_valid
+    assert report.local_reference is not None
+    assert report.execution_blockers == (
+        "FASTQ input validation must pass before execution readiness can be confirmed.",
+    )
+
+
 def test_built_local_reference_passes_index_without_external_transcript_fasta(tmp_path):
     root, reference = _local_fastq_project(tmp_path)
     index = _mark_salmon_built(reference)

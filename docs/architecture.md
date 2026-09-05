@@ -44,9 +44,9 @@ The graph does not infer L2 from the presence of contrasts, condition metadata, 
 
 ## FASTQ boundary
 
-For FASTQ projects the control plane invokes pinned nf-core/rnaseq 3.26.0 with Salmon pseudoalignment and a frozen params file. The stable downstream handoff contains the validated Salmon quantification files and tx2gene material needed by tximport. The downstream workflow receives a narrow task-staged bundle rather than arbitrary host paths from provenance.
+For `upstream.quantification.method: salmon`, the control plane invokes pinned nf-core/rnaseq 3.26.0 with Salmon pseudoalignment and a frozen params file. Its stable downstream handoff contains validated `quant.sf` and tx2gene material needed by tximport. For `hisat2_featurecounts`, a first-party Nextflow graph performs lane alignment, per-sample BAM merge/index, featureCounts and deterministic matrix assembly; it hands off a staged canonical integer matrix to `DESeqDataSetFromMatrix`. The downstream workflow receives a narrow task-staged bundle rather than arbitrary host paths from provenance.
 
-FASTQ preprocessing is declared as `raw` or `pretrimmed`; `pretrimmed` maps to the native boolean `skip_trimming: true`. Local references are checksum-bound by a manifest, and a declared prebuilt Salmon index is used directly rather than recreated during a client run.
+FASTQ preprocessing is declared as `raw` or `pretrimmed`. The Salmon route maps `pretrimmed` to nf-core's native `skip_trimming: true`; the HISAT2 route bypasses fastp while retaining QC. Local references are checksum-bound by a manifest and require the index appropriate to the selected backend. HISAT2 does not consume a Salmon index.
 
 ## Immutable case/run lifecycle
 

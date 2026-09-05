@@ -20,7 +20,8 @@ from typing import Any
 import yaml
 
 from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
-from rnaseq.models import FastqPreprocessing, InputType, NFCORE_RNASEQ_VERSION, ReferenceConfig
+from rnaseq.models import FastqPreprocessing, InputType, NFCORE_RNASEQ_VERSION, PIPELINE_VERSION, ReferenceConfig
+from rnaseq.hisat2_featurecounts import COUNTING_POLICY, HISAT2_VERSION, SAMTOOLS_VERSION, SUBREAD_VERSION
 from rnaseq.planner import render_manifest, render_samplesheet
 from rnaseq.references import LocalReferenceError, load_local_reference
 from rnaseq.validators import ValidationReport
@@ -30,6 +31,7 @@ CONTAINER_PROFILE = "docker"
 RUN_STATES = {"CREATED", "RUNNING", "SUCCESS", "FAILED"}
 EXECUTION_ROOT_ENV = "RNASEQ_EXECUTION_ROOT"
 CONTROL_PLANE_IMAGE = "rnaseq-control-plane:latest"
+HISAT2_WORKFLOW = Path(__file__).resolve().parents[2] / "workflow" / "hisat2_featurecounts.nf"
 CONTAINER_R_PACKAGES = (
     "DESeq2", "tximport", "ggplot2", "pheatmap", "yaml", "jsonlite",
     "clusterProfiler", "AnnotationDbi", "org.Hs.eg.db", "org.Mm.eg.db",
@@ -137,8 +139,73 @@ def _utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def hisat2_workflow_identity() -> dict[str, str]:
+    """Return the immutable identity of the first-party H2 workflow source."""
+
+    digest = hashlib.sha256(HISAT2_WORKFLOW.read_bytes()).hexdigest()
+    return {
+        "name": "nf-rna/hisat2_featurecounts",
+        "nf_rna_version": PIPELINE_VERSION,
+        "workflow_path": "workflow/hisat2_featurecounts.nf",
+        "workflow_sha256": digest,
+    }
+
+
+def resolved_upstream_implementation(report: ValidationReport) -> dict[str, object]:
+    """Separate accepted legacy config metadata from the executable route."""
+
+    assert report.config is not None
+    method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
+    if method == "salmon":
+        return {"implementation": {"name": "nf-core/rnaseq", "version": report.config.upstream.pipeline_version}}
+    return {
+        "implementation": hisat2_workflow_identity(),
+        "legacy_fastq_config": {
+            "engine": report.config.upstream.engine,
+            "pipeline_version": report.config.upstream.pipeline_version,
+            "meaning": "accepted compatibility metadata; not executed by the HISAT2 + featureCounts backend",
+        },
+    }
+
+
 def _run_capture(arguments: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(arguments, capture_output=True, text=True, check=False)
+
+
+def inspect_container_image(image: str) -> dict[str, object]:
+    """Return Docker's observed immutable identity for an already-resolved image.
+
+    A build tag is mutable and a locally built image has no registry digest, so
+    provenance must preserve Docker's content ID as well as any observed
+    RepoDigests.  This helper never pulls an image and is deliberately best
+    effort: a failed inspection is recorded as unavailable rather than guessed.
+    """
+
+    observed: dict[str, object] = {
+        "reference": image,
+        "image_id": None,
+        "repo_digests": [],
+        "architecture": None,
+    }
+    try:
+        result = _run_capture(["docker", "image", "inspect", image, "--format", "{{json .}}"])
+        if result.returncode != 0:
+            return observed
+        payload = json.loads(result.stdout)
+    except (FileNotFoundError, json.JSONDecodeError, TypeError):
+        return observed
+    if not isinstance(payload, dict):
+        return observed
+    identifier = payload.get("Id")
+    if isinstance(identifier, str) and identifier:
+        observed["image_id"] = identifier
+    digests = payload.get("RepoDigests")
+    if isinstance(digests, list):
+        observed["repo_digests"] = sorted(item for item in digests if isinstance(item, str) and item)
+    architecture = _normalise_architecture(str(payload.get("Architecture") or ""))
+    if architecture:
+        observed["architecture"] = architecture
+    return observed
 
 
 def _normalise_architecture(value: str | None) -> str | None:
@@ -355,7 +422,7 @@ def check_container_runtime() -> RuntimeCheck:
 
 def _reference_runtime_check(project_dir: Path | None) -> RuntimeCheck:
     if project_dir is None:
-        return RuntimeCheck("Reference readiness", "NOT FOUND", "Project-specific; run 'rnaseq doctor PROJECT' to inspect adopted Salmon index readiness.", "WARN")
+        return RuntimeCheck("Reference readiness", "NOT FOUND", "Project-specific; run 'rnaseq doctor PROJECT' to inspect selected backend index readiness.", "WARN")
     try:
         from rnaseq.validators import validate_project
 
@@ -366,11 +433,13 @@ def _reference_runtime_check(project_dir: Path | None) -> RuntimeCheck:
         details = "; ".join(issue.message for issue in report.errors[:3]) or "reference readiness is unavailable"
         return RuntimeCheck("Reference readiness", "NOT FOUND", f"Project validation failed: {details}", "FAIL")
     if report.config.input.type is InputType.RAW_COUNTS:
-        return RuntimeCheck("Reference readiness", "FOUND", "Raw-count route does not require a Salmon index.")
+        return RuntimeCheck("Reference readiness", "FOUND", "Raw-count route does not require a FASTQ index.")
+    method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
     reference = report.local_reference
     if reference is not None:
-        detail = f"local strategy={reference.salmon_strategy}; index_status={reference.salmon_status}"
-        if reference.salmon_status == "built":
+        status = reference.salmon_status if method == "salmon" else reference.hisat2_status
+        detail = f"backend={method}; local index_status={status}"
+        if status == "built":
             return RuntimeCheck("Reference readiness", "FOUND", detail)
         return RuntimeCheck("Reference readiness", "NOT FOUND", detail + "; execution would require an unavailable index.", "FAIL")
     return RuntimeCheck("Reference readiness", "FOUND", f"source={report.config.reference.source}; no dynamic reference preparation is performed by doctor.", "WARN")
@@ -413,8 +482,8 @@ def _require_fastq_execution_report(report: ValidationReport) -> None:
         raise ExecutionPreflightError(
             "FASTQ execution configuration is incomplete: upstream.quantification.method is required."
         )
-    if report.config.upstream.quantification.method != "salmon":
-        raise ExecutionPreflightError("Milestone 2 supports only upstream.quantification.method: salmon.")
+    if report.config.upstream.quantification.method not in {"salmon", "hisat2_featurecounts"}:
+        raise ExecutionPreflightError("Unsupported FASTQ quantification method.")
 
 
 def _load_current_plan_manifest(report: ValidationReport) -> dict[str, Any]:
@@ -465,7 +534,7 @@ def _validate_custom_reference_files(report: ValidationReport) -> None:
     required = (("fasta", reference.fasta), ("gtf", reference.gtf))
     optional = tuple(
         (label, value)
-        for label, value in (("transcript_fasta", reference.transcript_fasta), ("salmon_index", reference.salmon_index))
+        for label, value in (("transcript_fasta", reference.transcript_fasta), ("salmon_index", reference.salmon_index), ("hisat2_index", reference.hisat2_index), ("hisat2_splice_sites", reference.hisat2_splice_sites))
         if value is not None
     )
     for label, value in required + optional:
@@ -477,7 +546,13 @@ def _validate_custom_reference_files(report: ValidationReport) -> None:
             raise ExecutionPreflightError(
                 f"Custom reference {label} must use a relative path inside the project."
             ) from exc
-        if not candidate.is_file():
+        if label == "hisat2_index":
+            from rnaseq.references import validate_hisat2_index
+            try:
+                validate_hisat2_index(candidate)
+            except LocalReferenceError as exc:
+                raise ExecutionPreflightError(str(exc)) from exc
+        elif not candidate.is_file():
             raise ExecutionPreflightError(f"Custom reference file not found: {candidate}")
 
 
@@ -568,6 +643,8 @@ def nfcore_runtime_params(report: ValidationReport) -> dict[str, bool]:
     """
 
     assert report.config is not None and report.config.input.type is InputType.FASTQ
+    if report.config.upstream.quantification and report.config.upstream.quantification.method == "hisat2_featurecounts":
+        return {}
     params = {"skip_alignment": True}
     if report.config.input.preprocessing is FastqPreprocessing.PRETRIMMED:
         params["skip_trimming"] = True
@@ -588,7 +665,7 @@ def _freeze_inputs(prepared: PreparedRun, run_dir: Path) -> tuple[Path, Path, Pa
     _write_text(samplesheet, _render_execution_samplesheet(report))
     upstream = {
         "engine": "nextflow",
-        "pipeline": {"name": "nf-core/rnaseq", "version": report.config.upstream.pipeline_version},
+        **resolved_upstream_implementation(report),
         "execution_profile": LOCAL_PROFILE,
         "container_runtime": prepared.container_runtime,
         "reference": (
@@ -682,6 +759,52 @@ def build_nextflow_command(
     return command
 
 
+def build_hisat2_featurecounts_command(
+    report: ValidationReport, *, samplesheet: Path, output_dir: Path, profile: str,
+    reference_paths: dict[str, Path] | None = None, work_dir: Path | None = None,
+) -> list[str]:
+    """Build the first-party alignment/counting command without a shell."""
+
+    _require_fastq_execution_report(report)
+    if profile != LOCAL_PROFILE:
+        raise ExecutionPreflightError("Only '--profile local' is implemented.")
+    assert report.config is not None and report.fastq is not None
+    if report.config.upstream.quantification.method != "hisat2_featurecounts":
+        raise ExecutionPreflightError("HISAT2 command requested for a non-HISAT2 project.")
+    reference = report.config.reference
+    paths = reference_paths or {}
+    if reference.source == "local":
+        local = report.local_reference
+        if local is None:
+            local = load_local_reference(reference, report.config.organism.species.value)
+        reference_arguments = {
+            "fasta": paths.get("fasta", local.genome_fasta.path),
+            "gtf": paths.get("gtf", local.annotation_gtf.path),
+            "hisat2_index": paths.get("hisat2_index", local.hisat2_index),
+        }
+    else:
+        if not reference.fasta or not reference.gtf or not reference.hisat2_index:
+            raise ExecutionPreflightError("HISAT2 requires reference.fasta, reference.gtf, and reference.hisat2_index.")
+        reference_arguments = {
+            key: paths.get(key, (report.project_dir / value).resolve())
+            for key, value in (("fasta", reference.fasta), ("gtf", reference.gtf), ("hisat2_index", reference.hisat2_index))
+        }
+    if any(value is None for value in reference_arguments.values()):
+        raise ExecutionPreflightError("HISAT2 reference is not prepared.")
+    command = [
+        "nextflow", "run", str(HISAT2_WORKFLOW), "-profile", CONTAINER_PROFILE,
+        "--input", str(samplesheet.resolve()), "--outdir", str(output_dir.resolve()),
+        "--fasta", str(reference_arguments["fasta"]), "--gtf", str(reference_arguments["gtf"]),
+        "--hisat2_index", str(reference_arguments["hisat2_index"]),
+        "--assembly_script", str((Path(__file__).resolve().parent / "hisat2_featurecounts.py")),
+        "--layout", report.fastq.layout.value, "--strandedness", report.config.upstream.strandedness,
+        "--pretrimmed", str(report.config.input.preprocessing is FastqPreprocessing.PRETRIMMED).lower(),
+    ]
+    if work_dir is not None:
+        command.extend(["-work-dir", str(work_dir.resolve())])
+    return command
+
+
 def _relative_to_run(run_dir: Path, path: Path) -> str:
     return path.resolve().relative_to(run_dir.resolve()).as_posix()
 
@@ -764,6 +887,48 @@ def generate_handoff_manifest(prepared: PreparedRun, run_dir: Path) -> Path:
             "html": _relative_to_run(run_dir, multiqc),
             "data_directory": _relative_to_run(run_dir, multiqc_data),
         },
+    }
+    path = run_dir / "handoff" / "upstream_manifest.yaml"
+    _write_text(path, yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True))
+    return path
+
+
+def generate_hisat2_featurecounts_handoff(report: ValidationReport, run_dir: Path) -> Path:
+    """Validate the first-party H2/featureCounts boundary before downstream use."""
+
+    assert report.config is not None and report.fastq is not None
+    output = run_dir / "upstream" / "hisat2_featurecounts"
+    matrix = output / "counts" / "canonical_counts.csv"
+    sample_map = output / "counts" / "sample_map.csv"
+    multiqc = output / "multiqc" / "multiqc_report.html"
+    required = (matrix, sample_map, multiqc)
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise UpstreamExecutionError("HISAT2 + featureCounts completed without required artifacts: " + ", ".join(missing))
+    with matrix.open(encoding="utf-8", newline="") as handle:
+        header = next(csv.reader(handle), [])
+    samples = list(report.fastq.sample_ids)
+    if header != ["gene_id", *samples]:
+        raise UpstreamExecutionError("Canonical featureCounts matrix columns do not match declared sample IDs.")
+    manifest = {
+        "pipeline": {**hisat2_workflow_identity(), "versions": {"hisat2": HISAT2_VERSION, "samtools": SAMTOOLS_VERSION, "subread": SUBREAD_VERSION}},
+        "quantification": {"method": "hisat2_featurecounts", "route": "first_party_alignment_counting"},
+        "counting": COUNTING_POLICY,
+        "strandedness": report.config.upstream.strandedness,
+        "samples": samples,
+        "featurecounts": {
+            "canonical_matrix": _relative_to_run(run_dir, matrix),
+            "sample_map": _relative_to_run(run_dir, sample_map),
+            "per_sample_directory": _relative_to_run(run_dir, output / "counts" / "per_sample"),
+            "assignment_summary_directory": _relative_to_run(run_dir, output / "counts" / "per_sample"),
+        },
+        "alignment": {
+            "bam_directory": _relative_to_run(run_dir, output / "bam"),
+            "count_only_bam_directory": _relative_to_run(run_dir, output / "bam" / "count_only"),
+            "count_only_transformation": "samtools view -bh -F 0x900; retain the original coordinate-sorted BAM and its tags",
+        },
+        "multiqc": {"html": _relative_to_run(run_dir, multiqc)},
+        "reference": report.local_reference.provenance() if report.local_reference is not None else report.config.reference.model_dump(),
     }
     path = run_dir / "handoff" / "upstream_manifest.yaml"
     _write_text(path, yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True))

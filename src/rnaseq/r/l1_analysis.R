@@ -8,7 +8,7 @@ rownames(metadata) <- metadata$sample_id
 samples <- unlist(cfg$samples, use.names = FALSE)
 metadata <- metadata[samples, , drop = FALSE]
 formula <- as.formula(cfg$formula)
-if (cfg$source_type == "raw_counts") {
+if (cfg$source_type == "raw_counts" || cfg$source_type == "featurecounts_raw_counts") {
   table <- read.csv(cfg$counts, check.names = FALSE, stringsAsFactors = FALSE)
   ids <- table[[1]]
   matrix_counts <- as.matrix(table[, samples, drop = FALSE])

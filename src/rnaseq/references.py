@@ -33,6 +33,11 @@ SALMON_STRATEGIES = frozenset((SALMON_STRATEGY_TRANSCRIPTOME_ONLY, SALMON_STRATE
 ADOPTED_EXISTING_INDEX = "adopted_existing_index"
 RSEM_IMAGE = "community.wave.seqera.io/library/rsem_star:5acb4e8c03239c32"
 SALMON_IMAGE = "quay.io/biocontainers/salmon:1.10.3--h6dccd9a_2"
+HISAT2_VERSION = "2.2.1"
+HISAT2_IMAGE = "quay.io/biocontainers/hisat2:2.2.1--h87f3376_4"
+HISAT2_NOT_BUILT = "not_built"
+HISAT2_BUILT = "built"
+REQUIRED_HISAT2_INDEX_SUFFIXES = tuple(f".{index}.ht2" for index in range(1, 9))
 REQUIRED_SALMON_INDEX_FILES = (
     "complete_ref_lens.bin", "ctable.bin", "ctg_offsets.bin", "duplicate_clusters.tsv",
     "info.json", "mphf.bin", "pos.bin", "rank.bin", "refAccumLengths.bin", "reflengths.bin",
@@ -82,6 +87,10 @@ class LocalReference:
     salmon_transcriptome: LocalReferenceAsset | None = None
     salmon_index_metadata: dict[str, object] | None = None
     salmon_validation: dict[str, object] | None = None
+    hisat2_index: Path | None = None
+    hisat2_splice_sites: LocalReferenceAsset | None = None
+    hisat2_status: str = HISAT2_NOT_BUILT
+    hisat2_provenance: dict[str, object] | None = None
 
     @property
     def salmon_strategy(self) -> str:
@@ -104,6 +113,13 @@ class LocalReference:
 
     def assets(self) -> tuple[LocalReferenceAsset, ...]:
         return (self.genome_fasta, self.annotation_gtf, self.transcript_fasta)
+
+    def hisat2_arguments(self) -> list[tuple[str, Path]]:
+        if self.hisat2_index is None:
+            raise LocalReferenceError(
+                f"Local reference HISAT2 index is not built. Run: rnaseq reference prepare-hisat2 {self.root}"
+            )
+        return [("--fasta", self.genome_fasta.path), ("--gtf", self.annotation_gtf.path), ("--hisat2_index", self.hisat2_index)]
 
     def nfcore_arguments(self) -> list[tuple[str, Path]]:
         if self.salmon_index is None:
@@ -156,6 +172,12 @@ class LocalReference:
                 "provenance": self.salmon_provenance,
                 "index_metadata": self.salmon_index_metadata,
                 "validation": self.salmon_validation,
+            },
+            "hisat2": {
+                "status": self.hisat2_status,
+                "index": str(self.hisat2_index) if self.hisat2_index is not None else None,
+                "splice_sites": ({"path": str(self.hisat2_splice_sites.path), "sha256": self.hisat2_splice_sites.sha256} if self.hisat2_splice_sites else None),
+                "provenance": self.hisat2_provenance,
             },
         }
 
@@ -255,6 +277,20 @@ def validate_salmon_index(index: Path) -> None:
         if empty:
             details.append("empty " + ", ".join(empty))
         raise LocalReferenceError("Local reference Salmon index is incomplete: " + "; ".join(details) + ".")
+
+
+def validate_hisat2_index(index: Path) -> None:
+    """Reject incomplete HISAT2 indexes before they can become executable."""
+
+    if not index.is_dir():
+        raise LocalReferenceError(f"Local reference hisat2.index directory not found: {index}")
+    # HISAT2 supports both small (.ht2) and large (.ht2l) indexes.  A valid
+    # index has one complete numbered family, never a partial mixture.
+    small = [index / f"genome{suffix}" for suffix in REQUIRED_HISAT2_INDEX_SUFFIXES]
+    large = [index / f"genome.{number}.ht2l" for number in range(1, 9)]
+    family = small if all(path.is_file() for path in small) else large
+    if not all(path.is_file() and path.stat().st_size > 0 for path in family):
+        raise LocalReferenceError("Local reference HISAT2 index is incomplete; expected genome.1..8.ht2 or .ht2l files.")
 
 
 def _load_json_mapping(path: Path, label: str) -> dict[str, Any]:
@@ -462,6 +498,24 @@ def _load_local_reference_root(
                 salmon.get("provenance"), genome_fasta, annotation_gtf
             )
             salmon_strategy_type = SALMON_STRATEGY_DECOY_AWARE
+    # HISAT2 was added after the original manifest contract.  Its absence is a
+    # valid historical state and means only that this reference is not ready
+    # for the alignment/counting backend.
+    hisat2 = manifest.get("hisat2", {"status": HISAT2_NOT_BUILT})
+    hisat2 = _require_mapping(hisat2, "hisat2")
+    hisat2_status = _require_string(hisat2.get("status"), "hisat2.status")
+    hisat2_index: Path | None = None
+    hisat2_splice_sites: LocalReferenceAsset | None = None
+    hisat2_provenance: dict[str, object] | None = None
+    if hisat2_status == HISAT2_BUILT:
+        hisat2_index = _resolve_under(root, _require_string(hisat2.get("index"), "hisat2.index"), "hisat2.index", directory=True)
+        validate_hisat2_index(hisat2_index)
+        hisat2_splice_sites = _asset_from_payload(root, _require_mapping(hisat2.get("splice_sites"), "hisat2.splice_sites"), "hisat2.splice_sites", "hisat2_splice_sites")
+        hisat2_provenance = _require_mapping(hisat2.get("provenance"), "hisat2.provenance")
+        for key, expected in (("hisat2_version", HISAT2_VERSION), ("genome_fasta_sha256", genome_fasta.sha256), ("annotation_gtf_sha256", annotation_gtf.sha256)):
+            _require_equal(hisat2_provenance.get(key), expected, f"hisat2.provenance.{key}")
+    elif hisat2_status != HISAT2_NOT_BUILT:
+        raise LocalReferenceError("Local reference hisat2.status must be 'not_built' or 'built'.")
     return LocalReference(
         root=root,
         manifest_path=manifest_path,
@@ -481,6 +535,10 @@ def _load_local_reference_root(
         salmon_transcriptome=salmon_transcriptome,
         salmon_index_metadata=salmon_index_metadata,
         salmon_validation=salmon_validation,
+        hisat2_index=hisat2_index,
+        hisat2_splice_sites=hisat2_splice_sites,
+        hisat2_status=hisat2_status,
+        hisat2_provenance=hisat2_provenance,
     ), manifest
 
 
@@ -722,4 +780,81 @@ def prepare_local_reference(
         raise
     finally:
         shutil.rmtree(temporary_root, ignore_errors=True)
+    return load_local_reference_root(reference.root)
+
+
+def prepare_local_hisat2_reference(
+    reference_root: Path | str,
+    *,
+    threads: int = 4,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> LocalReference:
+    """Build and atomically register the HISAT2 genome index for one reference.
+
+    A complete index is moved into place only after every numbered file and
+    generated splice-site file has been checked.  The final-directory refusal
+    is also the concurrency guard: a competing completed preparation is never
+    overwritten.
+    """
+
+    if threads < 1:
+        raise ReferencePreparationError("Reference preparation threads must be at least 1.")
+    reference, manifest = _load_local_reference_root(Path(reference_root).expanduser().resolve(), "reference_manifest.yaml", None)
+    if reference.hisat2_status == HISAT2_BUILT:
+        raise ReferencePreparationError(f"Local reference HISAT2 index is already built: {reference.hisat2_index}.")
+    final_root = reference.root / "hisat2"
+    final_index = final_root / "index"
+    if final_index.exists():
+        raise ReferencePreparationError(f"Refusing to overwrite existing local HISAT2 index directory: {final_index}.")
+    temporary = reference.root / f".rnaseq-hisat2-prepare-{uuid.uuid4().hex}"
+    temporary_index = temporary / "index"
+    temporary.mkdir()
+    # hisat2-build creates the numbered files but not their parent directory.
+    # Create this private staging directory before entering the container so a
+    # successful build can still be atomically moved into the final location.
+    temporary_index.mkdir()
+    try:
+        genome = _container_path(reference, reference.genome_fasta.path)
+        gtf = _container_path(reference, reference.annotation_gtf.path)
+        mount = f"type=bind,src={reference.root},dst=/reference"
+        work = "/reference/" + temporary.relative_to(reference.root).as_posix()
+        script = (
+            f"hisat2_extract_splice_sites.py {gtf} > splice_sites.txt && "
+            f"hisat2-build --threads {threads} --ss splice_sites.txt {genome} index/genome"
+        )
+        _run_reference_container(["docker", "run", "--rm", "--mount", mount, "-w", work, HISAT2_IMAGE, "sh", "-ec", script], runner)
+        validate_hisat2_index(temporary_index)
+        splice = temporary / "splice_sites.txt"
+        # A valid single-exon annotation has no junctions.  HISAT2 accepts an
+        # empty --ss file, so preserve it as the explicit, reproducible result
+        # rather than rejecting an otherwise valid reference.
+        if not splice.is_file():
+            raise ReferencePreparationError("HISAT2 splice-site extraction produced no artifact.")
+        final_root.mkdir(exist_ok=True)
+        temporary_index.replace(final_index)
+        final_splice = final_root / "splice_sites.txt"
+        splice.replace(final_splice)
+        manifest["hisat2"] = {
+            "status": HISAT2_BUILT,
+            "index": "hisat2/index",
+            "splice_sites": {"path": "hisat2/splice_sites.txt", "sha256": sha256_file(final_splice)},
+            "provenance": {
+                "hisat2_version": HISAT2_VERSION,
+                "container": HISAT2_IMAGE,
+                "genome_fasta_sha256": reference.genome_fasta.sha256,
+                "annotation_gtf_sha256": reference.annotation_gtf.sha256,
+                "threads": threads,
+                "splice_site_command": "hisat2_extract_splice_sites.py GTF",
+                "index_command": "hisat2-build --ss splice_sites.txt FASTA index/genome",
+                "built_at": now().astimezone(UTC).replace(microsecond=0).isoformat(),
+            },
+        }
+        _write_manifest_atomically(reference.manifest_path, manifest)
+    except Exception:
+        if final_index.exists() and reference.hisat2_status == HISAT2_NOT_BUILT:
+            shutil.rmtree(final_index)
+        raise
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
     return load_local_reference_root(reference.root)

@@ -9,13 +9,24 @@ docker build -t rnaseq-control-plane:latest .
 rnaseq doctor
 ```
 
-`rnaseq new` is interactive. Choose a project name, destination, species, input type, layout (for FASTQ), L1/L2 preset, and supported design.
+`rnaseq new` is an interactive reviewed wizard. It limits species to Human or Mouse, offers FASTQ or raw counts, Salmon or HISAT2 + featureCounts when FASTQ is selected, managed/custom reference choices, and QC-only/L1/L2 scopes. It checks imported files before writing and never overwrites a populated target.
 
 ```bash
 rnaseq new
 ```
 
-It creates `project.yaml`, `metadata.csv`, `contrasts.csv`, `input/`, and `planning/`. It never creates a placeholder biological matrix or FASTQ.
+It creates `project.yaml`, `metadata.csv`, `contrasts.csv`, `input/`, and `planning/`. Choose import mode to copy source data, or `--scaffold` for templates only; a scaffold deliberately remains invalid until real inputs and analytical metadata are supplied.
+
+The exact same interface is scriptable without prompts:
+
+```bash
+rnaseq new --name demo --destination projects --species mouse \
+  --input-type raw_counts --counts source/counts.csv \
+  --metadata source/metadata.csv --contrasts source/contrasts.csv \
+  --preset L2 --design-type two_group --condition-column condition --yes
+```
+
+For FASTQ import, pass `--fastq-samplesheet` with exact columns `sample,fastq_1,fastq_2,strandedness`. The wizard retains source lane filenames, infers layout, rejects mixed layouts or strandedness, and requires explicit strandedness for HISAT2 + featureCounts.
 
 ## 2. Configure a raw-count project
 
@@ -66,7 +77,7 @@ rnaseq run path/to/project --case-id CASE-001 --profile local --yes
 rnaseq status path/to/project
 ```
 
-This creates a new immutable case/run directory. L1 projects stop after L1 and the L1 report. L2 projects may run L2 and explicitly selected GSEA. Never use a small fixture or an unreplicated comparison to draw biological conclusions.
+This creates a new immutable case/run directory. QC-only FASTQ projects stop after the upstream backend and MultiQC delivery. L1 projects stop after L1 and the L1 report. L2 projects may run L2 and explicitly selected GSEA. Never use a small fixture or an unreplicated comparison to draw biological conclusions.
 
 ## Public smoke fixture
 

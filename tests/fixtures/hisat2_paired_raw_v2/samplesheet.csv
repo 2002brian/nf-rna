@@ -1,0 +1,4 @@
+sample,fastq_1,fastq_2,strandedness
+PairAlpha,fastq/PairAlpha_L001_R1.fastq.gz,fastq/PairAlpha_L001_R2.fastq.gz,forward
+PairAlpha,fastq/PairAlpha_L002_R1.fastq.gz,fastq/PairAlpha_L002_R2.fastq.gz,forward
+PairBeta,fastq/PairBeta_L001_R1.fastq.gz,fastq/PairBeta_L001_R2.fastq.gz,forward

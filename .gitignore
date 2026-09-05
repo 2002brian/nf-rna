@@ -97,5 +97,27 @@ quant.sf
 !examples/nfcore_smoke_test/reference/transcriptome.fasta
 !examples/nfcore_smoke_test/reference/transcriptome.gtf_matched.fasta
 
+# Deliberately small paired-end HISAT2 acceptance fixture. Its generated
+# HISAT2 index stays ignored: reproduce it from the tracked source assets.
+!tests/
+!tests/fixtures/
+!tests/fixtures/hisat2_paired_raw/
+!tests/fixtures/hisat2_paired_raw/generate_fixture.py
+tests/fixtures/hisat2_paired_raw/design.md
+tests/fixtures/hisat2_paired_raw/expected_counts.csv
+tests/fixtures/hisat2_paired_raw/samplesheet.csv
+!tests/fixtures/hisat2_paired_raw_v2/
+!tests/fixtures/hisat2_paired_raw_v2/design.md
+!tests/fixtures/hisat2_paired_raw_v2/expected_counts.csv
+!tests/fixtures/hisat2_paired_raw_v2/samplesheet.csv
+!tests/fixtures/hisat2_paired_raw_v2/fastq/
+!tests/fixtures/hisat2_paired_raw_v2/fastq/*.fastq.gz
+!tests/fixtures/hisat2_paired_raw_v2/reference/
+!tests/fixtures/hisat2_paired_raw_v2/reference/genome.fa
+!tests/fixtures/hisat2_paired_raw_v2/reference/genes.gtf
+!tests/fixtures/hisat2_paired_raw_v2/reference/transcripts.fa
+!tests/fixtures/hisat2_paired_raw_v2/reference/reference_manifest.yaml
+tests/fixtures/hisat2_paired_raw_v2/reference/hisat2/
+
 # A bundled Salmon index is never a public source fixture, even when tiny.
 examples/nfcore_smoke_test/reference/salmon.tar.gz

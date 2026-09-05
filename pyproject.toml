@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nf-rna"
-version = "0.4.3"
+version = "0.5.0"
 description = "Production-oriented bulk RNA-seq workflow with DESeq2 and preranked GO/KEGG GSEA"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -37,6 +37,12 @@ exclude = [
   "examples/**/delivery/**",
   "examples/**/planning/**",
   "examples/nfcore_smoke_test/reference/salmon.tar.gz",
+  "tests/fixtures/hisat2_paired_raw/design.md",
+  "tests/fixtures/hisat2_paired_raw/expected_counts.csv",
+  "tests/fixtures/hisat2_paired_raw/samplesheet.csv",
+  "tests/fixtures/hisat2_paired_raw/fastq/**",
+  "tests/fixtures/hisat2_paired_raw/reference/**",
+  "tests/fixtures/hisat2_paired_raw_v2/reference/hisat2/**",
 ]
 
 [tool.pytest.ini_options]
