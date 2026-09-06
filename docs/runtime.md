@@ -15,7 +15,7 @@ docker build -t rnaseq-control-plane:latest .
 rnaseq doctor
 ```
 
-Run `rnaseq doctor <PROJECT>` before an authorized FASTQ run. It checks the runtime image and its required executables/packages, reports host/Docker facts, and evaluates project/reference readiness. It does not execute a workflow.
+Run `rnaseq doctor <PROJECT>` before an authorized FASTQ run. It checks the runtime image and its required executables/packages, reports host and Docker CPU/RAM, the selected local ceiling, free space at the configured Nextflow work location, and project/reference readiness. It warns when Docker has fewer CPUs or less memory than the selected local ceiling. It does not execute a workflow.
 
 Only the local execution profile is implemented. Workstation/HPC and SLURM execution remain deferred to the resource-profile milestone.
 
@@ -53,9 +53,9 @@ The default local contracts are intentionally conservative:
 | --- | ---: | ---: | ---: |
 | SMALL | 1 | 2 GiB | 2 h |
 | MEDIUM | 4 | 8 GiB | 8 h |
-| LARGE | 6 | 12 GiB | 12 h |
+| LARGE | 8 | 12 GiB | 12 h |
 
-The global local ceiling is 6 CPUs, 12 GiB, and 12 hours. L1/report processes are SMALL; L2 and each GSEA task are MEDIUM; enrichment and Salmon quantification are constrained to avoid uncontrolled concurrent memory use. These are scheduling bounds only and do not alter quantification, filtering, DESeq2, thresholds, rankings, or GSEA calculations.
+The global local ceiling is 8 CPUs, 12 GiB, and 12 hours, with one project run at a time. Salmon and HISAT2 alignment each use `maxForks 1`; BAM sorting/processing and featureCounts use `maxForks 2`; cohort aggregation, MultiQC, L1/L2, enrichment, and reporting use `maxForks 1`. The first-party HISAT2 workflow binds fastp, HISAT2, supported SAMtools operations, and featureCounts threads to `task.cpus`. Each FASTQ run freezes one path-free local Nextflow configuration and its SHA-256, and supplies it to nf-core Salmon, HISAT2/featureCounts, and downstream. These are scheduling bounds only and do not alter quantification, filtering, DESeq2, thresholds, rankings, or GSEA calculations.
 
 ## Filesystem layout
 

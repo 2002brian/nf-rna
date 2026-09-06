@@ -50,6 +50,25 @@ def test_hisat2_workflow_publishes_fastp_reports_and_feeds_upstream_reports_to_m
         assert f".mix({channel})" in text
 
 
+def test_hisat2_workflow_binds_supported_tool_threads_and_local_resources():
+    text = (Path(__file__).parents[1] / "workflow" / "hisat2_featurecounts.nf").read_text(encoding="utf-8")
+    for process, cpus, memory, forks in (
+        ("FASTP_PREPARE", 4, "6 GB", 1), ("HISAT2_ALIGN", 4, "6 GB", 1),
+        ("SORT_LANE_BAM", 4, "6 GB", 2), ("MERGE_AND_INDEX", 4, "6 GB", 2),
+        ("PREPARE_COUNT_BAM", 2, "3 GB", 2), ("FEATURECOUNTS", 4, "6 GB", 2),
+        ("ASSEMBLE_COUNTS", 1, "2 GB", 1), ("MULTIQC", 1, "2 GB", 1),
+    ):
+        section = text.split(f"process {process} {{", 1)[1].split("\nprocess ", 1)[0]
+        assert f"cpus {cpus}" in section and f"memory '{memory}'" in section and f"maxForks {forks}" in section
+    assert "fastp --thread ${task.cpus}" in text
+    assert "hisat2 -p ${task.cpus}" in text
+    assert "samtools sort -@ ${task.cpus}" in text
+    assert "samtools merge -@ ${task.cpus}" in text
+    assert "samtools view -@ ${task.cpus}" in text
+    assert "samtools index -@ ${task.cpus}" in text
+    assert "featureCounts -T ${task.cpus}" in text
+
+
 def test_featurecounts_assembly_uses_declared_sample_ids_and_rejects_mismatched_genes(tmp_path: Path):
     c1, t1 = tmp_path / "lane_a.txt", tmp_path / "lane_b.txt"
     _featurecounts(c1, [("GeneB", 1), ("GeneA", 2)])
@@ -99,8 +118,11 @@ def test_hisat2_command_uses_first_party_workflow_and_custom_index(tmp_path: Pat
     (root / "project.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     report = validate_project(root)
     assert report.is_valid and report.execution_ready
-    command = build_hisat2_featurecounts_command(report, samplesheet=root / "samples.csv", output_dir=root / "out", profile="local")
+    local_config = root / "local.config"
+    local_config.write_text("process { resourceLimits = [cpus: 8, memory: '12.GB'] }\n", encoding="utf-8")
+    command = build_hisat2_featurecounts_command(report, samplesheet=root / "samples.csv", output_dir=root / "out", profile="local", config_file=local_config)
     assert any(item.endswith("workflow/hisat2_featurecounts.nf") for item in command)
+    assert command[command.index("-c") + 1] == str(local_config.resolve())
     assert command[command.index("--strandedness") + 1] == "reverse"
     assert command[command.index("--hisat2_index") + 1] == str(index)
     resolved = resolved_upstream_implementation(report)

@@ -132,7 +132,7 @@ docker build -t rnaseq-control-plane:latest .
 rnaseq doctor
 ```
 
-`rnaseq doctor` 會以不變更系統狀態的方式檢查 local runtime prerequisite；提供專案路徑時，也會評估 project 與 reference readiness。
+`rnaseq doctor` 會以不變更系統狀態的方式檢查 local runtime prerequisite；提供專案路徑時，也會評估 project 與 reference readiness。它會報告 host 與 Docker 的 CPU/RAM、選定的 local ceiling，以及 Nextflow work location 的可用空間；Docker 少於要求的 8 CPU 或 12 GiB 時會提出警告。
 
 目前僅支援 local execution；workstation/HPC 與 SLURM profile 明確延後，0.5.1 不宣稱支援。
 
@@ -210,7 +210,7 @@ runs/<case-id>/<run-id>/
 
 nf-rna 會在分析前驗證 input；不會靜默加入 metadata variable、重新解讀 preprocessing、變更 reference，或修改統計設定。對於未變動的 input，planning 會以 deterministic 方式記錄預定分析。
 
-每次 execution 都會建立新的 immutable run directory，而非覆寫先前分析。run 會保存 frozen configuration、選用的 reference strategy、runtime fact 與 provenance，因此可以追溯某項結果是由哪些已宣告的 input 與設定產生。downstream R runtime 以 container 執行；bounded local resource profile 則有助於避免 Docker 不受控的資源超額使用，而不改變任何科學計算。
+每次 execution 都會建立新的 immutable run directory，而非覆寫先前分析。run 會保存 frozen configuration、選用的 reference strategy、runtime fact 與 provenance，因此可以追溯某項結果是由哪些已宣告的 input 與設定產生。FASTQ run 會凍結同一份 resolved local Nextflow configuration 與其 SHA-256，並傳入 nf-core Salmon、HISAT2/featureCounts 與 downstream workflow。downstream R runtime 以 container 執行；bounded local resource profile 則有助於避免 Docker 不受控的資源超額使用，而不改變任何科學計算。
 
 ## 架構
 

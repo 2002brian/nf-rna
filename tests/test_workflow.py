@@ -87,11 +87,12 @@ def test_all_downstream_processes_use_the_doctor_checked_runtime_image():
 
 def test_downstream_resource_contracts_are_explicit_and_keep_gsea_serialized():
     config = (WORKFLOW / "nextflow.config").read_text(encoding="utf-8")
-    assert "resourceLimits = [cpus: 6, memory: '12 GB', time: '12 h']" in config
+    assert "executor {\n  cpus = 8\n  memory = '12 GB'\n}" in config
+    assert "resourceLimits = [cpus: 8, memory: '12 GB', time: '12 h']" in config
     for process in ("L1_ANALYSIS", "L2_ANALYSIS", "ENRICHMENT_ANALYSIS", "TECHNICAL_REPORT", "TECHNICAL_REPORT_L1"):
         assert f"withName: {process}" in config
-    assert "withName: L1_ANALYSIS { cpus = 1; memory = '2 GB'; time = '2 h' }" in config
-    assert "withName: ENRICHMENT_ANALYSIS { cpus = 4; memory = '8 GB'; time = '8 h' }" in config
+    assert "withName: L1_ANALYSIS { cpus = 1; memory = '2 GB'; time = '2 h'; maxForks = 1 }" in config
+    assert "withName: ENRICHMENT_ANALYSIS { cpus = 4; memory = '8 GB'; time = '8 h'; maxForks = 1 }" in config
     main = (WORKFLOW / "main.nf").read_text(encoding="utf-8")
     assert re.search(r"process ENRICHMENT_ANALYSIS \{(?P<body>.*?)maxForks 1", main, flags=re.DOTALL)
 

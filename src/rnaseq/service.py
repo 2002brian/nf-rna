@@ -591,6 +591,16 @@ def freeze_case_inputs(report: ValidationReport, run: CaseRun, *, profile: str, 
             "skip_trimming": report.config.input.preprocessing is FastqPreprocessing.PRETRIMMED,
         }
 
+    params: Path | None = None
+    runtime: Path | None = None
+    if report.config.input.type is InputType.FASTQ:
+        params = frozen / "nfcore.params.json"
+        _write_text(params, json.dumps(nfcore_runtime_params(report), sort_keys=True) + "\n")
+        # This single path-free config is passed to Salmon, HISAT2/featureCounts,
+        # and the first-party downstream workflow for every local FASTQ run.
+        runtime = frozen / "nfcore.local.config"
+        _write_text(runtime, render_local_resource_config())
+
     execution = {
         "case_id": run.case_id,
         "run_id": run.run_id,
@@ -624,6 +634,10 @@ def freeze_case_inputs(report: ValidationReport, run: CaseRun, *, profile: str, 
             nfcore_runtime_params(report)
             if report.config.input.type is InputType.FASTQ else None
         ),
+        "local_nextflow_config": (
+            {"path": runtime.relative_to(run.run_dir).as_posix(), "sha256": _sha256(runtime)}
+            if runtime is not None else None
+        ),
     }
     _write_yaml(frozen / "execution_manifest.yaml", execution)
     contract = {
@@ -645,13 +659,6 @@ def freeze_case_inputs(report: ValidationReport, run: CaseRun, *, profile: str, 
     }
     contract_path = frozen / "downstream_contract.json"
     _write_text(contract_path, json.dumps(contract, indent=2, sort_keys=True) + "\n")
-    params: Path | None = None
-    runtime: Path | None = None
-    if report.config.input.type is InputType.FASTQ:
-        params = frozen / "nfcore.params.json"
-        _write_text(params, json.dumps(nfcore_runtime_params(report), sort_keys=True) + "\n")
-        runtime = frozen / "nfcore.local.config"
-        _write_text(runtime, render_local_resource_config())
     return FrozenInputs(samplesheet, contract_path, manifest_path, params, runtime, reference_paths)
 
 
@@ -685,6 +692,7 @@ def _provenance(
         "workflow/main.nf": _sha256(source_root / "workflow" / "main.nf"),
         "workflow/hisat2_featurecounts.nf": _sha256(HISAT2_WORKFLOW),
     }
+    local_config = run.run_dir / "frozen" / "nfcore.local.config"
     return {
         "case_id": run.case_id,
         "run_id": run.run_id,
@@ -713,6 +721,11 @@ def _provenance(
         "container_image": control_plane,
         "production_intended": bool(report.config and report.config.reference.acceptance == "production"),
         "runtime_resources": {
+            "selected_local_ceiling": {
+                "cpus": RESOURCE_CONTRACTS["LARGE"].cpus,
+                "memory_gib": RESOURCE_CONTRACTS["LARGE"].memory_gib,
+                "one_project_at_a_time": True,
+            },
             "host_os": runtime.host_os,
             "host_architecture": runtime.host_architecture,
             "logical_cpus": runtime.logical_cpus,
@@ -723,6 +736,10 @@ def _provenance(
             "control_plane_image_architecture": runtime.control_plane_image_architecture,
             "resource_profile": "M5_LOCAL_SMALL_MEDIUM_LARGE",
         },
+        "frozen_local_nextflow_config": (
+            {"path": local_config.relative_to(run.run_dir).as_posix(), "sha256": _sha256(local_config)}
+            if local_config.is_file() else None
+        ),
         "profile": profile,
         "command": command,
         "execution_root": str(workspace.root),
@@ -847,6 +864,7 @@ def build_downstream_nextflow_command(
     run: CaseRun, *, profile: str = LOCAL_PROFILE, work_dir: Path | None = None,
     observer_config: Path | None = None, docker_user_config: Path | None = None,
     execution_inputs: ResolvedDownstreamInputs | None = None, runtime_config: Path | None = None,
+    local_resource_config: Path | None = None,
 ) -> list[str]:
     root = Path(__file__).resolve().parents[2]
     contract = json.loads((run.run_dir / "frozen" / "downstream_contract.json").read_text(encoding="utf-8"))
@@ -864,6 +882,8 @@ def build_downstream_nextflow_command(
         command.extend(["-c", str(observer_config.resolve())])
     if runtime_config is not None:
         command.extend(["-c", str(runtime_config.resolve())])
+    if local_resource_config is not None:
+        command.extend(["-c", str(local_resource_config.resolve())])
     if docker_user_config is not None:
         command.extend(["-c", str(docker_user_config.resolve())])
     command.extend([
@@ -1045,6 +1065,7 @@ def execute_service_run(
                 ) if method == "salmon" else build_hisat2_featurecounts_command(
                     report, samplesheet=frozen.samplesheet, output_dir=run.run_dir / "upstream" / "hisat2_featurecounts",
                     profile=profile, reference_paths=frozen.reference_paths, work_dir=workspace.work_dir / "upstream",
+                    config_file=frozen.upstream_config,
                 ))
                 _write_state(run, "RUNNING", phase="upstream", upstream_command=upstream)
                 result = _run_command(upstream, cwd=workspace.launch_dir, stdout_path=run.run_dir / "logs" / "upstream.stdout.log", stderr_path=run.run_dir / "logs" / "upstream.stderr.log")
@@ -1071,6 +1092,7 @@ def execute_service_run(
         downstream = build_downstream_nextflow_command(
             run, profile=profile, work_dir=workspace.work_dir / "downstream", observer_config=observer_config,
             docker_user_config=docker_user_config, execution_inputs=execution_inputs, runtime_config=runtime_config,
+            local_resource_config=frozen.upstream_config,
         )
         _write_state(run, "RUNNING", phase="downstream", downstream_command=downstream)
         result = _run_command(downstream, cwd=workspace.launch_dir, stdout_path=run.run_dir / "logs" / "downstream.stdout.log", stderr_path=run.run_dir / "logs" / "downstream.stderr.log")

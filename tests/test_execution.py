@@ -337,8 +337,8 @@ def test_doctor_distinguishes_missing_nextflow_and_docker_from_architecture_warn
     assert by_name["Docker"].verdict == "FAIL"
     assert by_name["Docker runtime"].verdict == "FAIL"
     assert by_name["Control-plane image architecture"].verdict == "WARN"
-    assert by_name["Local resource ceiling"].verdict == "WARN"
-    assert "cannot confirm" in by_name["Local resource ceiling"].detail
+    assert by_name["Selected local ceiling"].verdict == "WARN"
+    assert "cannot be confirmed" in by_name["Selected local ceiling"].detail
     assert "architecture=arm64" in by_name["Host runtime"].detail
 
 
@@ -346,12 +346,12 @@ def test_runtime_doctor_warns_for_amd64_image_on_arm64_and_low_docker_memory():
     checks = runtime_resource_checks(RuntimeSnapshot(
         host_os="Darwin", host_architecture="arm64", logical_cpus=12, host_memory_bytes=24 * 1024**3,
         docker_architecture="arm64", docker_memory_bytes=8 * 1024**3, docker_version="28.0.1",
-        control_plane_image_architecture="amd64",
+        control_plane_image_architecture="amd64", docker_cpus=12,
     ))
     by_name = {item.name: item for item in checks}
     assert by_name["Control-plane image architecture"].verdict == "WARN"
     assert "Rosetta" in by_name["Control-plane image architecture"].detail
-    assert by_name["Local resource ceiling"].verdict == "WARN"
+    assert by_name["Selected local ceiling"].verdict == "WARN"
 
 
 def test_project_doctor_surfaces_a_missing_adopted_reference_error(monkeypatch, tmp_path):
@@ -378,8 +378,9 @@ def test_runtime_failure_classification_is_actionable_and_does_not_change_resour
 
 def test_rendered_resource_contract_bounds_salmon_concurrency_without_touching_nfcore_params(tmp_path):
     rendered = render_local_resource_config()
-    assert "SMALL" in rendered and "MEDIUM" in rendered and "LARGE" in rendered
-    assert "resourceLimits = [cpus: 6, memory: '12.GB', time: '12.h']" in rendered
+    assert "SMALL" in rendered and "MEDIUM" in rendered and "LARGE=8/12 GiB" in rendered
+    assert "executor { cpus = 8; memory = '12.GB' }" in rendered
+    assert "resourceLimits = [cpus: 8, memory: '12.GB', time: '12.h']" in rendered
     assert "SALMON_QUANT" in rendered and "maxForks = 1" in rendered
     assert "skip_alignment" not in rendered and "skip_trimming" not in rendered
 

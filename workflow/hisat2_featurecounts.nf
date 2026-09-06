@@ -34,6 +34,8 @@ def featureCountsStrand(value) { ['unstranded':'0', 'forward':'1', 'reverse':'2'
 process FASTQC_RAW {
     tag { "raw ${sample}" }
     container params.fastqc_container
+    cpus 2
+    memory '2 GB'
     publishDir "${params.outdir}/qc/fastqc/raw", mode: 'copy', overwrite: false
     input:
     tuple val(sample), val(strandedness), path(reads)
@@ -50,6 +52,9 @@ process FASTQC_RAW {
 process FASTP_PREPARE {
     tag { sample }
     container params.fastp_container
+    cpus 4
+    memory '6 GB'
+    maxForks 1
     publishDir "${params.outdir}/qc/fastp", mode: 'copy', overwrite: false
     input:
     tuple val(sample), val(strandedness), path(reads)
@@ -66,14 +71,14 @@ process FASTP_PREPARE {
         """
         mkdir -p prepared
         if ${pretrimmed}; then cp ${reads[0]} prepared/${r1}.fastq.gz; cp ${reads[1]} prepared/${r2}.fastq.gz
-        else fastp -i ${reads[0]} -I ${reads[1]} --detect_adapter_for_pe -o prepared/${r1}.fastq.gz -O prepared/${r2}.fastq.gz -h fastp_${r1}.html -j fastp_${r1}.json
+        else fastp --thread ${task.cpus} -i ${reads[0]} -I ${reads[1]} --detect_adapter_for_pe -o prepared/${r1}.fastq.gz -O prepared/${r2}.fastq.gz -h fastp_${r1}.html -j fastp_${r1}.json
         fi
         """
     } else {
         """
         mkdir -p prepared
         if ${pretrimmed}; then cp ${reads[0]} prepared/${r1}.fastq.gz
-        else fastp -i ${reads[0]} -o prepared/${r1}.fastq.gz -h fastp_${r1}.html -j fastp_${r1}.json
+        else fastp --thread ${task.cpus} -i ${reads[0]} -o prepared/${r1}.fastq.gz -h fastp_${r1}.html -j fastp_${r1}.json
         fi
         """
     }
@@ -82,6 +87,9 @@ process FASTP_PREPARE {
 process HISAT2_ALIGN {
     tag { sample }
     container params.hisat2_container
+    cpus 4
+    memory '6 GB'
+    maxForks 1
     publishDir "${params.outdir}/alignment/lane_summaries", mode: 'copy', overwrite: false
     input:
     tuple val(sample), val(strandedness), path(reads)
@@ -94,13 +102,15 @@ process HISAT2_ALIGN {
     def inputs = paired ? "-1 ${reads[0]} -2 ${reads[1]}" : "-U ${reads[0]}"
     def lane = reads[0].baseName.replaceFirst(/\\.fastq$/, '')
     """
-    hisat2 -x ${index}/genome ${inputs} ${strand} --summary-file ${lane}.hisat2.summary -S ${lane}.lane.sam
+    hisat2 -p ${task.cpus} -x ${index}/genome ${inputs} ${strand} --summary-file ${lane}.hisat2.summary -S ${lane}.lane.sam
     """
 }
 
 process FASTQC_PROCESSED {
     tag { "processed ${sample}" }
     container params.fastqc_container
+    cpus 2
+    memory '2 GB'
     publishDir "${params.outdir}/qc/fastqc/processed", mode: 'copy', overwrite: false
     input:
     tuple val(sample), val(strandedness), path(reads)
@@ -117,6 +127,9 @@ process FASTQC_PROCESSED {
 process SORT_LANE_BAM {
     tag { sample }
     container params.samtools_container
+    cpus 4
+    memory '6 GB'
+    maxForks 2
     input:
     tuple val(sample), val(strandedness), path(sam), path(summary)
     output:
@@ -131,6 +144,9 @@ process SORT_LANE_BAM {
 process MERGE_AND_INDEX {
     tag { sample }
     container params.samtools_container
+    cpus 4
+    memory '6 GB'
+    maxForks 2
     publishDir "${params.outdir}/bam", mode: 'copy', overwrite: false
     input:
     tuple val(sample), val(strandedness_values), path(bams), path(summaries)
@@ -144,7 +160,7 @@ process MERGE_AND_INDEX {
     """
     samtools merge -@ ${task.cpus} -o ${sample}.merged.bam ${bams}
     samtools sort -@ ${task.cpus} -o ${sample}.bam ${sample}.merged.bam
-    samtools index ${sample}.bam
+    samtools index -@ ${task.cpus} ${sample}.bam
     samtools quickcheck -v ${sample}.bam
     samtools flagstat ${sample}.bam > ${sample}.flagstat.txt
     """
@@ -153,6 +169,9 @@ process MERGE_AND_INDEX {
 process FEATURECOUNTS {
     tag { sample }
     container params.subread_container
+    cpus 4
+    memory '6 GB'
+    maxForks 2
     publishDir "${params.outdir}/counts/per_sample", mode: 'copy', overwrite: false
     input:
     tuple val(sample), path(bam), path(bai), path(flagstat), path(gtf)
@@ -163,13 +182,16 @@ process FEATURECOUNTS {
     def pairArgs = paired ? '-p --countReadPairs -B -C' : ''
     def strand = featureCountsStrand(params.strandedness)
     """
-    featureCounts -a ${gtf} -o ${sample}.counts.txt -t exon -g gene_id -s ${strand} -Q 0 --primary ${pairArgs} ${bam}
+    featureCounts -T ${task.cpus} -a ${gtf} -o ${sample}.counts.txt -t exon -g gene_id -s ${strand} -Q 0 --primary ${pairArgs} ${bam}
     """
 }
 
 process PREPARE_COUNT_BAM {
     tag { sample }
     container params.samtools_container
+    cpus 2
+    memory '3 GB'
+    maxForks 2
     publishDir "${params.outdir}/bam/count_only", mode: 'copy', overwrite: false
     input:
     tuple val(sample), path(bam), path(bai), path(flagstat)
@@ -181,7 +203,7 @@ process PREPARE_COUNT_BAM {
     # count input excludes secondary (0x100) and supplementary (0x800)
     # records without modifying NH or other alignment tags.
     samtools view -@ ${task.cpus} -bh -F 0x900 -o ${sample}.countable.bam ${bam}
-    samtools index ${sample}.countable.bam
+    samtools index -@ ${task.cpus} ${sample}.countable.bam
     samtools quickcheck -v ${sample}.countable.bam
     """
 }
@@ -189,6 +211,9 @@ process PREPARE_COUNT_BAM {
 process ASSEMBLE_COUNTS {
     tag 'canonical featureCounts matrix'
     container 'quay.io/biocontainers/python:3.10.4'
+    cpus 1
+    memory '2 GB'
+    maxForks 1
     publishDir "${params.outdir}/counts", mode: 'copy', overwrite: false
     input:
     path counts
@@ -208,6 +233,9 @@ process ASSEMBLE_COUNTS {
 process MULTIQC {
     tag 'MultiQC'
     container params.multiqc_container
+    cpus 1
+    memory '2 GB'
+    maxForks 1
     publishDir "${params.outdir}/multiqc", mode: 'copy', overwrite: false
     input:
     path reports

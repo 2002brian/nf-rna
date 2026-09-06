@@ -66,7 +66,7 @@ class ResourceContract:
 RESOURCE_CONTRACTS = {
     "SMALL": ResourceContract("SMALL", cpus=1, memory_gib=2, time_hours=2),
     "MEDIUM": ResourceContract("MEDIUM", cpus=4, memory_gib=8, time_hours=8),
-    "LARGE": ResourceContract("LARGE", cpus=6, memory_gib=12, time_hours=12),
+    "LARGE": ResourceContract("LARGE", cpus=8, memory_gib=12, time_hours=12),
 }
 LOCAL_RESOURCE_CEILING = RESOURCE_CONTRACTS["LARGE"]
 
@@ -81,6 +81,7 @@ class RuntimeSnapshot:
     docker_memory_bytes: int | None
     docker_version: str | None
     control_plane_image_architecture: str | None
+    docker_cpus: int | None = None
 
 
 @dataclass(frozen=True)
@@ -235,6 +236,7 @@ def runtime_snapshot(image: str = CONTROL_PLANE_IMAGE) -> RuntimeSnapshot:
 
     host_architecture = _normalise_architecture(platform.machine()) or "unknown"
     docker_architecture: str | None = None
+    docker_cpus: int | None = None
     docker_memory_bytes: int | None = None
     docker_version: str | None = None
     image_architecture: str | None = None
@@ -246,6 +248,8 @@ def runtime_snapshot(image: str = CONTROL_PLANE_IMAGE) -> RuntimeSnapshot:
                 docker_architecture = _normalise_architecture(str(payload.get("Architecture") or ""))
                 memory = payload.get("MemTotal")
                 docker_memory_bytes = memory if isinstance(memory, int) and memory > 0 else None
+                cpus = payload.get("NCPU")
+                docker_cpus = cpus if isinstance(cpus, int) and cpus > 0 else None
                 version = payload.get("ServerVersion")
                 docker_version = str(version) if version else None
             image_result = _run_capture(["docker", "image", "inspect", image, "--format", "{{json .}}"])
@@ -264,6 +268,7 @@ def runtime_snapshot(image: str = CONTROL_PLANE_IMAGE) -> RuntimeSnapshot:
         docker_memory_bytes=docker_memory_bytes,
         docker_version=docker_version,
         control_plane_image_architecture=image_architecture,
+        docker_cpus=docker_cpus,
     )
 
 
@@ -326,7 +331,7 @@ def runtime_resource_checks(snapshot: RuntimeSnapshot) -> tuple[RuntimeCheck, ..
     else:
         docker = RuntimeCheck(
             "Docker runtime", "FOUND",
-            f"architecture={snapshot.docker_architecture}; memory={_gib(snapshot.docker_memory_bytes)}; version={snapshot.docker_version or 'unavailable'}",
+            f"architecture={snapshot.docker_architecture}; logical_cpus={snapshot.docker_cpus or 'unavailable'}; memory={_gib(snapshot.docker_memory_bytes)}; version={snapshot.docker_version or 'unavailable'}",
         )
     checks: list[RuntimeCheck] = [host, docker]
     if snapshot.control_plane_image_architecture is None:
@@ -335,13 +340,19 @@ def runtime_resource_checks(snapshot: RuntimeSnapshot) -> tuple[RuntimeCheck, ..
         checks.append(RuntimeCheck("Control-plane image architecture", "FOUND", "amd64 image on arm64 host; Docker/Rosetta emulation may reduce throughput.", "WARN"))
     else:
         checks.append(RuntimeCheck("Control-plane image architecture", "FOUND", f"image={snapshot.control_plane_image_architecture}; host={snapshot.host_architecture}"))
-    required = LOCAL_RESOURCE_CEILING.memory_gib * 1024 ** 3
-    if snapshot.docker_memory_bytes is None:
-        checks.append(RuntimeCheck("Local resource ceiling", "NOT FOUND", f"Docker memory allocation is unavailable; cannot confirm the {_gib(required)} LARGE ceiling.", "WARN"))
-    elif snapshot.docker_memory_bytes < required:
-        checks.append(RuntimeCheck("Local resource ceiling", "NOT FOUND", f"LARGE requests {_gib(required)} but Docker exposes {_gib(snapshot.docker_memory_bytes)}.", "WARN"))
+    required_memory = LOCAL_RESOURCE_CEILING.memory_gib * 1024 ** 3
+    requested = f"{LOCAL_RESOURCE_CEILING.cpus} CPUs / {_gib(required_memory)}"
+    unavailable = snapshot.docker_memory_bytes is None or snapshot.docker_cpus is None
+    exceeds = (
+        (snapshot.docker_memory_bytes is not None and snapshot.docker_memory_bytes < required_memory)
+        or (snapshot.docker_cpus is not None and snapshot.docker_cpus < LOCAL_RESOURCE_CEILING.cpus)
+    )
+    if unavailable:
+        checks.append(RuntimeCheck("Selected local ceiling", "NOT FOUND", f"Requested local ceiling is {requested}; Docker CPU or memory allocation is unavailable, so capacity cannot be confirmed.", "WARN"))
+    elif exceeds:
+        checks.append(RuntimeCheck("Selected local ceiling", "NOT FOUND", f"Requested local ceiling is {requested}; Docker exposes {snapshot.docker_cpus} CPUs / {_gib(snapshot.docker_memory_bytes)}. Reduce the requested profile or increase Docker allocation.", "WARN"))
     else:
-        checks.append(RuntimeCheck("Local resource ceiling", "FOUND", f"SMALL=1 CPU/2 GiB; MEDIUM=4 CPUs/8 GiB; LARGE=6 CPUs/12 GiB."))
+        checks.append(RuntimeCheck("Selected local ceiling", "FOUND", f"SMALL=1 CPU/2 GiB; MEDIUM=4 CPUs/8 GiB; LARGE={LOCAL_RESOURCE_CEILING.cpus} CPUs/{LOCAL_RESOURCE_CEILING.memory_gib} GiB; one project at a time."))
     checks.append(RuntimeCheck("nf-core upstream image architecture", "FOUND", "nf-core/rnaseq resolves process images dynamically; inspect the frozen Nextflow trace for per-process image architecture.", "WARN"))
     return tuple(checks)
 
@@ -351,7 +362,9 @@ def render_local_resource_config() -> str:
 
     small, medium, large = (RESOURCE_CONTRACTS[name] for name in ("SMALL", "MEDIUM", "LARGE"))
     return (
-        "// M5 local resource contract: SMALL=1/2 GiB, MEDIUM=4/8 GiB, LARGE=6/12 GiB.\n"
+        "// Local research resource contract: SMALL=1/2 GiB, MEDIUM=4/8 GiB, LARGE=8/12 GiB; one project at a time.\n"
+        "// The local executor treats these as the aggregate per-run budget.\n"
+        f"executor {{ cpus = {large.cpus}; memory = '{large.memory_gib}.GB' }}\n"
         "process {\n"
         f"  resourceLimits = [cpus: {large.cpus}, memory: '{large.memory_gib}.GB', time: '{large.time_hours}.h']\n"
         f"  withLabel:process_low {{ cpus = {small.cpus}; memory = '{small.memory_gib}.GB'; time = '{small.time_hours}.h' }}\n"
@@ -359,6 +372,11 @@ def render_local_resource_config() -> str:
         f"  withLabel:process_high {{ cpus = {large.cpus}; memory = '{large.memory_gib}.GB'; time = '{large.time_hours}.h' }}\n"
         "  // One 8 GiB Salmon task at a time avoids local Docker oversubscription.\n"
         f"  withName: '.*:SALMON_QUANT' {{ cpus = {medium.cpus}; memory = '{medium.memory_gib}.GB'; time = '{medium.time_hours}.h'; maxForks = 1 }}\n"
+        "  // First-party workflow process names are deliberately explicit and match its task directives.\n"
+        "  withName: '.*HISAT2_ALIGN' { maxForks = 1 }\n"
+        "  withName: '.*(SORT_LANE_BAM|MERGE_AND_INDEX|PREPARE_COUNT_BAM)' { maxForks = 2 }\n"
+        "  withName: '.*FEATURECOUNTS' { maxForks = 2 }\n"
+        "  withName: '.*(ASSEMBLE_COUNTS|MULTIQC|L1_ANALYSIS|L2_ANALYSIS|ENRICHMENT_ANALYSIS|TECHNICAL_REPORT.*)' { maxForks = 1 }\n"
         "}\n"
     )
 
@@ -504,6 +522,16 @@ def doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeCheck, ...]:
     observed_image = inspect_container_image(requested_image)
     snapshot = runtime_snapshot(requested_image)
 
+    workspace = resolve_execution_workspace("doctor", "resource-check").work_dir
+    disk_probe = workspace
+    while not disk_probe.exists() and disk_probe != disk_probe.parent:
+        disk_probe = disk_probe.parent
+    try:
+        free = shutil.disk_usage(disk_probe).free
+        disk_check = RuntimeCheck("Execution work-directory free space", "FOUND", f"path={workspace}; available_at={disk_probe}; free={_gib(free)}")
+    except OSError as exc:
+        disk_check = RuntimeCheck("Execution work-directory free space", "NOT FOUND", f"path={workspace}; unable to inspect free space: {exc}", "WARN")
+
     return (
         RuntimeCheck("Python", "FOUND", "Python runtime is active."),
         check_nextflow(),
@@ -520,6 +548,7 @@ def doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeCheck, ...]:
         *runtime_resource_checks(snapshot),
         _reference_runtime_check(project_dir),
         RuntimeCheck("Disk write access", "FOUND" if writable else "NOT FOUND", str(probe)),
+        disk_check,
         *r_runtime_checks(),
     )
 
@@ -821,6 +850,7 @@ def build_nextflow_command(
 def build_hisat2_featurecounts_command(
     report: ValidationReport, *, samplesheet: Path, output_dir: Path, profile: str,
     reference_paths: dict[str, Path] | None = None, work_dir: Path | None = None,
+    config_file: Path | None = None,
 ) -> list[str]:
     """Build the first-party alignment/counting command without a shell."""
 
@@ -850,15 +880,18 @@ def build_hisat2_featurecounts_command(
         }
     if any(value is None for value in reference_arguments.values()):
         raise ExecutionPreflightError("HISAT2 reference is not prepared.")
-    command = [
-        "nextflow", "run", str(HISAT2_WORKFLOW), "-profile", CONTAINER_PROFILE,
+    command = ["nextflow", "run"]
+    if config_file is not None:
+        command.extend(["-c", str(config_file.resolve())])
+    command.extend([
+        str(HISAT2_WORKFLOW), "-profile", CONTAINER_PROFILE,
         "--input", str(samplesheet.resolve()), "--outdir", str(output_dir.resolve()),
         "--fasta", str(reference_arguments["fasta"]), "--gtf", str(reference_arguments["gtf"]),
         "--hisat2_index", str(reference_arguments["hisat2_index"]),
         "--assembly_script", str((Path(__file__).resolve().parent / "hisat2_featurecounts.py")),
         "--layout", report.fastq.layout.value, "--strandedness", report.config.upstream.strandedness,
         "--pretrimmed", str(report.config.input.preprocessing is FastqPreprocessing.PRETRIMMED).lower(),
-    ]
+    ])
     if work_dir is not None:
         command.extend(["-work-dir", str(work_dir.resolve())])
     return command
@@ -1051,11 +1084,20 @@ def execute_prepared_run(prepared: PreparedRun) -> RunResult:
         "fastq_preprocessing": prepared.report.config.input.preprocessing.value,
         "skip_trimming": prepared.report.config.input.preprocessing is FastqPreprocessing.PRETRIMMED,
         "runtime_resources": {
+            "selected_local_ceiling": {
+                "cpus": LOCAL_RESOURCE_CEILING.cpus,
+                "memory_gib": LOCAL_RESOURCE_CEILING.memory_gib,
+                "one_project_at_a_time": True,
+            },
             "host_architecture": runtime.host_architecture,
             "docker_architecture": runtime.docker_architecture,
             "docker_memory_bytes": runtime.docker_memory_bytes,
             "control_plane_image_architecture": runtime.control_plane_image_architecture,
             "resource_profile": "M5_LOCAL_SMALL_MEDIUM_LARGE",
+        },
+        "frozen_local_nextflow_config": {
+            "path": "frozen/local.nextflow.config",
+            "sha256": sha256_file(run_dir / "frozen" / "local.nextflow.config"),
         },
     }
     _write_text(run_dir / "provenance" / "run_provenance.yaml", yaml.safe_dump(provenance, sort_keys=False))

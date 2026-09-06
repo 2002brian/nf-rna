@@ -134,7 +134,7 @@ Python 3.11+ is required. Install Nextflow before using the FASTQ route, and ens
 rnaseq doctor
 ```
 
-`rnaseq doctor` reports non-mutating prerequisite checks for the local runtime; with a project path it also evaluates project and reference readiness.
+`rnaseq doctor` reports non-mutating prerequisite checks for the local runtime; with a project path it also evaluates project and reference readiness. It reports host and Docker CPU/RAM, the selected local ceiling, and free space at the Nextflow work location. A warning means Docker exposes less than the requested 8 CPUs or 12 GiB.
 
 Execution is currently local-only. Workstation/HPC and SLURM profiles are intentionally deferred and are not claimed by version 0.5.1.
 
@@ -212,7 +212,7 @@ See [docs/scientific_contract.md](docs/scientific_contract.md) for the complete 
 
 nf-rna validates inputs before analysis and does not silently add metadata variables, reinterpret preprocessing, change references, or alter statistical settings. Planning records the intended analysis deterministically for unchanged inputs.
 
-Each execution creates a new immutable run directory rather than overwriting an earlier analysis. The run stores its frozen configuration, selected reference strategy, runtime facts, and provenance, making it possible to trace which declared inputs and settings produced a result. The downstream R runtime is containerized, while bounded local resource profiles help avoid uncontrolled Docker oversubscription without changing the scientific calculation.
+Each execution creates a new immutable run directory rather than overwriting an earlier analysis. The run stores its frozen configuration, selected reference strategy, runtime facts, and provenance, making it possible to trace which declared inputs and settings produced a result. FASTQ runs freeze one resolved local Nextflow configuration and its SHA-256, then pass that same configuration to nf-core Salmon, HISAT2/featureCounts, and the downstream workflow. The downstream R runtime is containerized, while bounded local resource profiles help avoid uncontrolled Docker oversubscription without changing the scientific calculation.
 
 ## Architecture
 

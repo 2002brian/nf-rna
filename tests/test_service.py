@@ -456,6 +456,8 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     assert len(observed) == 2
     assert all(cwd == local_root / run.case_id / run.run_id / "launch" for _command, cwd in observed)
     assert all("-work-dir" in command for command, _cwd in observed)
+    local_resource_config = run.run_dir / "frozen" / "nfcore.local.config"
+    assert all(str(local_resource_config.resolve()) in command for command, _cwd in observed)
     assert (local_root / run.case_id / run.run_id / "launch" / ".nextflow" / "cache" / "000003.log").is_file()
     assert not (run.run_dir / ".nextflow").exists()
     assert not (run.run_dir / "work").exists()
@@ -494,6 +496,9 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     assert all(len(value) == 64 for value in provenance["workflow_sha256"].values())
     assert provenance["runtime_resources"]["resource_profile"] == "M5_LOCAL_SMALL_MEDIUM_LARGE"
     assert "host_architecture" in provenance["runtime_resources"]
+    assert provenance["runtime_resources"]["selected_local_ceiling"] == {"cpus": 8, "memory_gib": 12, "one_project_at_a_time": True}
+    assert provenance["frozen_local_nextflow_config"]["path"] == "frozen/nfcore.local.config"
+    assert len(provenance["frozen_local_nextflow_config"]["sha256"]) == 64
     execution_manifest = yaml.safe_load((run.run_dir / "frozen" / "execution_manifest.yaml").read_text(encoding="utf-8"))
     assert execution_manifest["fastq_preprocessing"] == "raw"
     assert execution_manifest["skip_trimming"] is False
@@ -503,6 +508,7 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     assert runtime_params == {"skip_alignment": True}
     assert runtime_params["skip_alignment"] is True
     assert "skip_trimming" not in runtime_params
+    assert execution_manifest["local_nextflow_config"] == provenance["frozen_local_nextflow_config"]
     observer_config = run.run_dir / "frozen" / "downstream.observers.config"
     assert observer_config.is_file()
     assert "overwrite = true" in observer_config.read_text(encoding="utf-8")
