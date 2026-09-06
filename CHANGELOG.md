@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here.
 
+## 0.5.1 — 2026-09-06
+
+- Corrected the nf-core/rnaseq 3.26.0 Salmon handoff to require and checksum the augmented tx2gene mapping used by tximport.
+- Added opt-in production acceptance for checksum-bound managed references, explicit biological pairing, and preflight model-matrix rank validation.
+- Added immutable requested/observed runtime identity, source commit and workflow hashes to run provenance.
+- Connected raw and processed FastQC outputs to HISAT2 MultiQC and corrected downstream source labels.
+
 ## 0.5.0 — 2026-09-05
 
 - Added the explicitly configured HISAT2 + featureCounts FASTQ backend, including a source-aware count-matrix handoff to existing L1/L2 analysis.

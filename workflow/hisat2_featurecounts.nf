@@ -38,11 +38,12 @@ process FASTQC_RAW {
     input:
     tuple val(sample), val(strandedness), path(reads)
     output:
-    path '*_fastqc.html'
-    path '*_fastqc.zip'
+    path 'raw_*_fastqc.html', emit: html
+    path 'raw_*_fastqc.zip', emit: zip
     script:
     """
     fastqc --threads ${task.cpus} ${reads}
+    for f in *_fastqc.html *_fastqc.zip; do mv "$f" "raw_$f"; done
     """
 }
 
@@ -104,11 +105,12 @@ process FASTQC_PROCESSED {
     input:
     tuple val(sample), val(strandedness), path(reads)
     output:
-    path '*_fastqc.html'
-    path '*_fastqc.zip'
+    path 'processed_*_fastqc.html', emit: html
+    path 'processed_*_fastqc.zip', emit: zip
     script:
     """
     fastqc --threads ${task.cpus} ${reads}
+    for f in *_fastqc.html *_fastqc.zip; do mv "$f" "processed_$f"; done
     """
 }
 
@@ -238,5 +240,9 @@ workflow {
         .map { sample, counts, summary -> summary }
         .mix(FASTP_PREPARE.out.fastp_json)
         .mix(HISAT2_ALIGN.out.aligned.map { sample, strandedness, sam, summary -> summary })
+        .mix(FASTQC_RAW.out.html)
+        .mix(FASTQC_RAW.out.zip)
+        .mix(FASTQC_PROCESSED.out.html)
+        .mix(FASTQC_PROCESSED.out.zip)
     MULTIQC(multiqc_reports.collect())
 }

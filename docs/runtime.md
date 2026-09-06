@@ -5,7 +5,7 @@
 - Python 3.11+ and the supplied Conda environment.
 - Docker Desktop or a compatible running Docker daemon.
 - Nextflow for FASTQ execution.
-- The first-party image built locally as `rnaseq-control-plane:latest` from this reviewed checkout. This is the supported runtime-image selection and is intentionally distinct from the public `nf-rna` project name.
+- A first-party control-plane image selected by `runtime.control_plane_image`.
 - Sufficient local disk for Nextflow cache/work and the selected reference.
 
 ```bash
@@ -17,7 +17,9 @@ rnaseq doctor
 
 Run `rnaseq doctor <PROJECT>` before an authorized FASTQ run. It checks the runtime image and its required executables/packages, reports host/Docker facts, and evaluates project/reference readiness. It does not execute a workflow.
 
-`rnaseq-control-plane:latest` is a local mutable tag, not a source-content checksum. Rebuild it from the reviewed checkout after pulling or changing source, then run `rnaseq doctor <PROJECT>`; otherwise L1/L2/report processes can execute old Python/R code despite a current host CLI. Do not publish or retag the image as part of this procedure.
+Only the local execution profile is implemented. Workstation/HPC and SLURM execution remain deferred to the resource-profile milestone.
+
+`rnaseq-control-plane:latest` is allowed for non-production development and is labelled accordingly. Production acceptance requires an image digest or versioned tag plus a Docker-observed image ID/digest. `rnaseq doctor <PROJECT>` reports requested and observed identities. Each run also freezes those identities, the Git commit resolved from the installed source checkout, and SHA-256 values for the executed first-party workflow files.
 
 On Linux and WSL, downstream Nextflow task containers run with the invoking host user's numeric UID:GID. nf-rna freezes a per-run Nextflow override equivalent to Docker `--user $(id -u):$(id -g)`, so host-created task directories remain writable without `sudo`, `chmod 777`, or changing the fixed image user. macOS keeps its existing Docker Desktop behavior and does not receive this override. `rnaseq doctor` reports the selected policy and Linux/WSL mapping before execution.
 

@@ -23,7 +23,7 @@ from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
 from rnaseq.models import FastqPreprocessing, InputType, NFCORE_RNASEQ_VERSION, PIPELINE_VERSION, ReferenceConfig
 from rnaseq.hisat2_featurecounts import COUNTING_POLICY, HISAT2_VERSION, SAMTOOLS_VERSION, SUBREAD_VERSION
 from rnaseq.planner import render_manifest, render_samplesheet
-from rnaseq.references import LocalReferenceError, load_local_reference
+from rnaseq.references import LocalReferenceError, load_local_reference, sha256_file
 from rnaseq.validators import ValidationReport
 
 LOCAL_PROFILE = "local"
@@ -142,7 +142,7 @@ def _utc_now() -> str:
 def hisat2_workflow_identity() -> dict[str, str]:
     """Return the immutable identity of the first-party H2 workflow source."""
 
-    digest = hashlib.sha256(HISAT2_WORKFLOW.read_bytes()).hexdigest()
+    digest = sha256_file(HISAT2_WORKFLOW)
     return {
         "name": "nf-rna/hisat2_featurecounts",
         "nf_rna_version": PIPELINE_VERSION,
@@ -192,7 +192,7 @@ def inspect_container_image(image: str) -> dict[str, object]:
         if result.returncode != 0:
             return observed
         payload = json.loads(result.stdout)
-    except (FileNotFoundError, json.JSONDecodeError, TypeError):
+    except (FileNotFoundError, json.JSONDecodeError, TypeError, ValueError, AttributeError):
         return observed
     if not isinstance(payload, dict):
         return observed
@@ -230,7 +230,7 @@ def _host_memory_bytes() -> int | None:
     return None
 
 
-def runtime_snapshot() -> RuntimeSnapshot:
+def runtime_snapshot(image: str = CONTROL_PLANE_IMAGE) -> RuntimeSnapshot:
     """Collect cheap host/Docker facts without launching workflow containers."""
 
     host_architecture = _normalise_architecture(platform.machine()) or "unknown"
@@ -248,9 +248,9 @@ def runtime_snapshot() -> RuntimeSnapshot:
                 docker_memory_bytes = memory if isinstance(memory, int) and memory > 0 else None
                 version = payload.get("ServerVersion")
                 docker_version = str(version) if version else None
-            image = _run_capture(["docker", "image", "inspect", CONTROL_PLANE_IMAGE, "--format", "{{json .}}"])
-            if image.returncode == 0:
-                image_payload = json.loads(image.stdout)
+            image_result = _run_capture(["docker", "image", "inspect", image, "--format", "{{json .}}"])
+            if image_result.returncode == 0:
+                image_payload = json.loads(image_result.stdout)
                 if isinstance(image_payload, dict):
                     image_architecture = _normalise_architecture(str(image_payload.get("Architecture") or ""))
     except (FileNotFoundError, json.JSONDecodeError, TypeError):
@@ -411,7 +411,7 @@ def check_docker() -> RuntimeCheck:
     return RuntimeCheck("Docker", "FOUND", "Docker daemon is available.")
 
 
-def check_container_runtime() -> RuntimeCheck:
+def check_container_runtime(image: str = CONTROL_PLANE_IMAGE) -> RuntimeCheck:
     """Verify the built control-plane image has Nextflow task prerequisites.
 
     This intentionally runs only a short shell/R package probe; it does not run a
@@ -422,13 +422,13 @@ def check_container_runtime() -> RuntimeCheck:
     if docker.state != "FOUND":
         return RuntimeCheck("Control-plane container", "NOT FOUND", "Docker daemon is unavailable.")
     try:
-        present = _run_capture(["docker", "image", "inspect", CONTROL_PLANE_IMAGE])
+        present = _run_capture(["docker", "image", "inspect", image])
     except FileNotFoundError:
         return RuntimeCheck("Control-plane container", "NOT FOUND", "Docker executable was not found on PATH.")
     if present.returncode != 0:
         return RuntimeCheck(
             "Control-plane container", "NOT FOUND",
-            f"Required image {CONTROL_PLANE_IMAGE} is not available locally; build it before execution.",
+            f"Required image {image} is not available locally; build or resolve it before execution.",
         )
     packages = ", ".join(repr(package) for package in CONTAINER_R_PACKAGES)
     probe = (
@@ -442,7 +442,7 @@ def check_container_runtime() -> RuntimeCheck:
     result = _run_capture([
         # Keep the image entrypoint and use a non-login shell so the probe sees
         # the same activated micromamba PATH as a Nextflow task container.
-        "docker", "run", "--rm", CONTROL_PLANE_IMAGE, "sh", "-c", probe,
+        "docker", "run", "--rm", image, "sh", "-c", probe,
     ])
     if result.returncode != 0:
         diagnostic_parts = [
@@ -459,7 +459,7 @@ def check_container_runtime() -> RuntimeCheck:
         return RuntimeCheck("Control-plane container", "NOT FOUND", detail)
     return RuntimeCheck(
         "Control-plane container", "FOUND",
-        "ps, python, Rscript, required R packages, and the final-report CLI contract are available.",
+        f"requested={image}; ps, python, Rscript, required R packages, and the final-report CLI contract are available.",
     )
 
 
@@ -494,13 +494,28 @@ def doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeCheck, ...]:
     probe = Path.cwd()
     writable = probe.exists() and probe.is_dir() and probe.stat().st_mode != 0
     from rnaseq.downstream import r_runtime_checks
-    snapshot = runtime_snapshot()
+    requested_image = CONTROL_PLANE_IMAGE
+    if project_dir is not None:
+        try:
+            from rnaseq.project import load_project
+            requested_image = load_project(project_dir).config.runtime.control_plane_image
+        except (OSError, ValueError):
+            pass
+    observed_image = inspect_container_image(requested_image)
+    snapshot = runtime_snapshot(requested_image)
 
     return (
         RuntimeCheck("Python", "FOUND", "Python runtime is active."),
         check_nextflow(),
         check_docker(),
-        check_container_runtime(),
+        check_container_runtime(requested_image),
+        RuntimeCheck(
+            "Control-plane image identity",
+            "FOUND" if observed_image.get("image_id") else "NOT FOUND",
+            f"requested={requested_image}; observed_image_id={observed_image.get('image_id') or 'unavailable'}; "
+            f"observed_repo_digests={observed_image.get('repo_digests') or []}",
+            None if observed_image.get("image_id") else "WARN",
+        ),
         downstream_docker_user_mapping_check(),
         *runtime_resource_checks(snapshot),
         _reference_runtime_check(project_dir),
@@ -882,7 +897,7 @@ def generate_handoff_manifest(prepared: PreparedRun, run_dir: Path) -> Path:
         sample: output / "salmon" / sample / "quant.sf"
         for sample in report.fastq.sample_ids
     }
-    tx2gene = output / "salmon" / "salmon.merged.tx2gene.tsv"
+    tx2gene = output / "salmon" / "salmon.merged.tx2gene_augmented.tsv"
     missing_salmon = [str(path) for path in (*quant_files.values(), tx2gene) if not path.is_file()]
     if missing_salmon:
         raise UpstreamExecutionError(
@@ -918,12 +933,20 @@ def generate_handoff_manifest(prepared: PreparedRun, run_dir: Path) -> Path:
         },
         "salmon": {
             "quant_sf": {sample: _relative_to_run(run_dir, path) for sample, path in quant_files.items()},
-            "tx2gene": _relative_to_run(run_dir, tx2gene),
+            "tx2gene": {
+                "path": _relative_to_run(run_dir, tx2gene),
+                "sha256": sha256_file(tx2gene),
+                "mapping_type": "nfcore_tx2gene_augmented",
+                "role": (
+                    "Mapping used by nf-core/rnaseq 3.26.0 tximport; includes self-mappings "
+                    "for quantified transcripts absent from the GTF-derived mapping."
+                ),
+            },
             "transcript_counts": _relative_to_run(
                 run_dir, output / "salmon" / "salmon.merged.transcript_counts.tsv"
             ),
             "contract_note": (
-                "L1 imports per-sample quant.sf with salmon.merged.tx2gene.tsv via tximport; "
+                "L1 imports per-sample quant.sf with salmon.merged.tx2gene_augmented.tsv via tximport; "
                 "estimated counts are not silently rounded by Python."
             ),
         },
@@ -997,12 +1020,29 @@ def execute_prepared_run(prepared: PreparedRun) -> RunResult:
         config_file=runtime_config,
         work_dir=workspace.work_dir / "upstream",
     )
-    runtime = runtime_snapshot()
+    requested_image = prepared.report.config.runtime.control_plane_image
+    runtime = runtime_snapshot(requested_image)
+    source_root = Path(__file__).resolve().parents[2]
+    git_commit: str | None = None
+    try:
+        git_result = _run_capture(["git", "-C", str(source_root), "rev-parse", "HEAD"])
+        if git_result.returncode == 0 and isinstance(getattr(git_result, "stdout", None), str):
+            git_commit = git_result.stdout.strip() or None
+    except (OSError, ValueError, AttributeError):
+        pass
     provenance = {
         "nextflow_version": prepared.nextflow_version,
         "nfcore_rnaseq_version": NFCORE_RNASEQ_VERSION,
         "execution_profile": LOCAL_PROFILE,
         "container_runtime": prepared.container_runtime,
+        "container_image": inspect_container_image(requested_image),
+        "production_intended": prepared.report.config.reference.acceptance == "production",
+        "git_commit": git_commit,
+        "source_checkout": str(source_root),
+        "workflow_sha256": {
+            "workflow/main.nf": sha256_file(source_root / "workflow" / "main.nf"),
+            "workflow/hisat2_featurecounts.nf": sha256_file(HISAT2_WORKFLOW),
+        },
         "execution_root": str(workspace.root),
         "execution_launch_dir": str(workspace.launch_dir),
         "execution_work_dir": str(workspace.work_dir),
@@ -1040,6 +1080,15 @@ def execute_prepared_run(prepared: PreparedRun) -> RunResult:
     except UpstreamExecutionError as exc:
         _write_state(state_path, run_id=run_id, status="FAILED", started_at=started, completed_at=_utc_now(), return_code=0, error=str(exc))
         raise
+    handoff_payload = yaml.safe_load(handoff.read_text(encoding="utf-8"))
+    mapping = handoff_payload["salmon"]["tx2gene"]
+    provenance["salmon_tx2gene"] = {
+        "path": str((run_dir / mapping["path"]).resolve()),
+        "sha256": mapping["sha256"],
+        "mapping_type": mapping["mapping_type"],
+        "role": mapping["role"],
+    }
+    _write_text(run_dir / "provenance" / "run_provenance.yaml", yaml.safe_dump(provenance, sort_keys=False))
     _write_state(state_path, run_id=run_id, status="SUCCESS", started_at=started, completed_at=_utc_now(), return_code=0)
     return RunResult(run_id, run_dir, state_path, handoff)
 

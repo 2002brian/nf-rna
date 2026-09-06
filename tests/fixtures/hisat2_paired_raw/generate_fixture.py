@@ -82,7 +82,8 @@ def _write_reference(root: Path, genome_a: str, genome_b: str, *, assembly_patch
     transcript.write_text(f">TxA\n{genome_a[50:470]}\n>TxB\n{_reverse_complement(genome_b[50:470])}\n", encoding="ascii")
     manifest = reference / "reference_manifest.yaml"
     manifest.write_text(
-        "schema_version: '1.0'\n"
+        "schema_version: '1.1'\n"
+        "purpose: synthetic_test\n"
         "reference:\n"
         "  species: Mus musculus\n"
         "  provider: synthetic-paired-uat\n"

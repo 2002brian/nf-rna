@@ -16,6 +16,11 @@ from rnaseq.models import normalize_enrichment_selection
 
 
 FILTER = {"rule": "remove genes with total count < 10 after all-zero removal", "minimum_total_count": 10}
+SOURCE_IMPORT_LABELS = {
+    "salmon_tximport": "Salmon/tximport import",
+    "featurecounts_raw_counts": "featureCounts raw-count matrix via DESeqDataSetFromMatrix",
+    "raw_counts": "Imported raw-count matrix via DESeqDataSetFromMatrix",
+}
 
 
 REPORT_STYLES = """<style>
@@ -127,7 +132,15 @@ def _source_config(contract: dict[str, Any], inputs: Path) -> dict[str, Any]:
         "source_type": "salmon_tximport",
         "quant_sf": {sample: str(_staged_file(root, quant[sample], f"salmon.quant_sf.{sample}")) for sample in samples},
         "tx2gene": str(_staged_file(root, source.get("tx2gene"), "salmon.tx2gene")),
+        "tx2gene_mapping": source.get("tx2gene_mapping"),
     }
+
+
+def _source_import_label(source_type: object) -> str:
+    try:
+        return SOURCE_IMPORT_LABELS[str(source_type)]
+    except KeyError as exc:
+        raise ValueError(f"unsupported report source type: {source_type!r}") from exc
 
 
 def _contrasts(path: Path) -> list[dict[str, str]]:
@@ -160,6 +173,7 @@ def l1_config(contract_path: Path, inputs: Path, output: Path) -> dict[str, Any]
         **_source_config(contract, inputs),
         "metadata": str(_staged_file(root, manifest.get("metadata"), "metadata")),
         "formula": project["design"]["formula"],
+        "pairing_column": project["design"].get("pairing_column"),
         "samples": _samples(inputs),
         "output_dir": str(output),
         "filter": FILTER,
@@ -174,6 +188,7 @@ def l2_config(contract_path: Path, inputs: Path, l1: Path, output: Path) -> dict
         **_source_config(contract, inputs),
         "metadata": str(_staged_file(root, manifest.get("metadata"), "metadata")),
         "formula": project["design"]["formula"],
+        "pairing_column": project["design"].get("pairing_column"),
         "samples": _samples(inputs),
         "output_dir": str(output),
         "filter": FILTER,
@@ -323,7 +338,7 @@ def _report_l1_only(
         "<h2>L2 — GSEA</h2><p>Not requested for this L1 project.</p>",
         "<h2>Methods and reproducibility</h2>",
         "<ul>"
-        f"<li>Import: {escape('Salmon/tximport import' if contract['source']['type'] == 'salmon_tximport' else 'DESeqDataSetFromMatrix raw-count import')}</li>"
+        f"<li>Import: {escape(_source_import_label(contract['source']['type']))}</li>"
         f"<li>Filtering: {escape(str(l1_summary.get('filter', {}).get('rule', 'not available')))}</li>"
         f"<li>Normalization: {escape(str(l1_summary.get('normalization', {}).get('method', 'not available')))}</li>"
         f"<li>VST: {escape(str(l1_summary.get('vst', {}).get('method', 'not available')))}</li>"
@@ -505,7 +520,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
     sections.extend([
         "<h2>Methods and reproducibility</h2>",
         "<ul>"
-        f"<li>Import: {escape('DESeqDataSetFromMatrix raw-count import' if contract['source']['type'] == 'raw_counts' else 'Salmon/tximport import')}</li>"
+        f"<li>Import: {escape(_source_import_label(contract['source']['type']))}</li>"
         f"<li>Filtering: {escape(str(l1_summary.get('filter', {}).get('rule', 'not available')))}</li>"
         f"<li>Normalization: {escape(str(l1_summary.get('normalization', {}).get('method', 'not available')))}</li>"
         f"<li>VST: {escape(str(l1_summary.get('vst', {}).get('method', 'not available')))}</li>"

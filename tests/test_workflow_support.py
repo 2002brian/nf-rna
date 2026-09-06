@@ -16,7 +16,19 @@ from conftest import base_config
 from rnaseq.planner import generate_plan
 from rnaseq.service import create_case_run, freeze_case_inputs, resolve_downstream_inputs
 from rnaseq.validators import validate_project
-from rnaseq.workflow_support import enrichment_config, l1_config, report
+from rnaseq.workflow_support import _source_import_label, enrichment_config, l1_config, report
+
+
+@pytest.mark.parametrize(
+    ("source", "label"),
+    (
+        ("salmon_tximport", "Salmon/tximport import"),
+        ("featurecounts_raw_counts", "featureCounts raw-count matrix via DESeqDataSetFromMatrix"),
+        ("raw_counts", "Imported raw-count matrix via DESeqDataSetFromMatrix"),
+    ),
+)
+def test_report_source_labels_match_actual_import(source, label):
+    assert _source_import_label(source) == label
 
 
 ROOT = Path(__file__).parents[1]

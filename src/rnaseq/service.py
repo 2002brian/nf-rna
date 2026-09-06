@@ -25,6 +25,8 @@ import yaml
 
 from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
 from rnaseq.execution import (
+    CONTROL_PLANE_IMAGE,
+    HISAT2_WORKFLOW,
     CONTAINER_PROFILE,
     LOCAL_PROFILE,
     PreparedRun,
@@ -140,6 +142,38 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _salmon_mapping_contract(run_dir: Path, value: object) -> tuple[Path, dict[str, str]]:
+    """Resolve both current structured and historical string tx2gene contracts."""
+
+    if isinstance(value, str):
+        path = _safe_existing_under(
+            run_dir, value, "salmon.tx2gene", allowed_root=run_dir / "upstream" / "nfcore_rnaseq"
+        )
+        return path, {
+            "mapping_type": "historical_ordinary",
+            "role": "Historical ordinary GTF-derived tx2gene mapping; no augmented self-mapping claim.",
+            "sha256": _sha256(path),
+        }
+    if not isinstance(value, dict):
+        raise UpstreamExecutionError("Frozen Salmon handoff has no valid tx2gene mapping contract.")
+    path = _safe_existing_under(
+        run_dir, value.get("path"), "salmon.tx2gene.path", allowed_root=run_dir / "upstream" / "nfcore_rnaseq"
+    )
+    mapping_type = value.get("mapping_type")
+    role = value.get("role")
+    expected = value.get("sha256")
+    if mapping_type not in {"nfcore_tx2gene_augmented", "historical_ordinary"}:
+        raise UpstreamExecutionError(f"Unsupported Salmon tx2gene mapping type: {mapping_type!r}.")
+    if not isinstance(role, str) or not role.strip():
+        raise UpstreamExecutionError("Salmon tx2gene mapping contract must record its role.")
+    observed = _sha256(path)
+    if expected != observed:
+        raise UpstreamExecutionError(
+            f"Salmon tx2gene checksum mismatch: expected {expected!r}, observed {observed}."
+        )
+    return path, {"mapping_type": mapping_type, "role": role, "sha256": observed}
 
 
 def _is_appledouble(path: Path) -> bool:
@@ -289,10 +323,13 @@ def resolve_downstream_inputs(run: CaseRun) -> ResolvedDownstreamInputs:
                     "Frozen upstream handoff Salmon quant.sf sample set disagrees with metadata samples."
                 )
             upstream_root = run.run_dir / "upstream" / "nfcore_rnaseq"
-            tx2gene = _safe_existing_under(
-                run.run_dir, salmon.get("tx2gene"), "salmon.tx2gene", allowed_root=upstream_root
+            tx2gene, mapping = _salmon_mapping_contract(run.run_dir, salmon.get("tx2gene"))
+            staged_name = (
+                "salmon.merged.tx2gene_augmented.tsv"
+                if mapping["mapping_type"] == "nfcore_tx2gene_augmented"
+                else "salmon.merged.tx2gene.tsv"
             )
-            _copy_snapshot(tx2gene, temporary / "source" / "salmon.merged.tx2gene.tsv")
+            _copy_snapshot(tx2gene, temporary / "source" / staged_name)
             staged_quant: dict[str, str] = {}
             for index, sample in enumerate(samples, start=1):
                 original = _safe_existing_under(
@@ -303,7 +340,8 @@ def resolve_downstream_inputs(run: CaseRun) -> ResolvedDownstreamInputs:
                 staged_quant[sample] = relative
             execution_source = {
                 "type": "salmon_tximport",
-                "tx2gene": "source/salmon.merged.tx2gene.tsv",
+                "tx2gene": f"source/{staged_name}",
+                "tx2gene_mapping": mapping,
                 "quant_sf": staged_quant,
             }
         execution_manifest = {
@@ -628,18 +666,25 @@ def _provenance(
 ) -> dict[str, Any]:
     git_commit: str | None = None
     try:
-        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=report.project_dir, capture_output=True, text=True, check=False)
+        source_root = Path(__file__).resolve().parents[2]
+        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=source_root, capture_output=True, text=True, check=False)
         if result.returncode == 0:
             git_commit = result.stdout.strip() or None
     except OSError:
         pass
     nextflow = check_nextflow()
-    runtime = runtime_snapshot()
+    requested_image = report.config.runtime.control_plane_image if report.config else CONTROL_PLANE_IMAGE
+    runtime = runtime_snapshot(requested_image)
     method = report.config.upstream.quantification.method if report.config and report.config.upstream.quantification else None
     def tool_identity(version: str, image: str) -> dict[str, object]:
         return {"version": version, **inspect_container_image(image)}
 
-    control_plane = inspect_container_image("rnaseq-control-plane:latest")
+    control_plane = inspect_container_image(requested_image)
+    source_root = Path(__file__).resolve().parents[2]
+    workflow_hashes = {
+        "workflow/main.nf": _sha256(source_root / "workflow" / "main.nf"),
+        "workflow/hisat2_featurecounts.nf": _sha256(HISAT2_WORKFLOW),
+    }
     return {
         "case_id": run.case_id,
         "run_id": run.run_id,
@@ -647,6 +692,8 @@ def _provenance(
         "started_at": run.started_at,
         "pipeline_version": PIPELINE_VERSION,
         "git_commit": git_commit,
+        "source_checkout": str(source_root),
+        "workflow_sha256": workflow_hashes,
         "python_version": sys.version.split()[0],
         "nextflow_version": nextflow.detail if nextflow.state == "FOUND" else None,
         "upstream_implementation": (resolved_upstream_implementation(report) if report.config and report.config.input.type is InputType.FASTQ else None),
@@ -664,6 +711,7 @@ def _provenance(
         ),
         "container_runtime": "docker",
         "container_image": control_plane,
+        "production_intended": bool(report.config and report.config.reference.acceptance == "production"),
         "runtime_resources": {
             "host_os": runtime.host_os,
             "host_architecture": runtime.host_architecture,
@@ -759,6 +807,14 @@ def write_downstream_docker_user_config(
     return path
 
 
+def write_downstream_runtime_config(run: CaseRun, image: str) -> Path:
+    """Freeze the requested per-run downstream image instead of inheriting latest."""
+
+    path = run.run_dir / "frozen" / "downstream.runtime.config"
+    _write_text(path, f"process.container = {json.dumps(image)}\n")
+    return path
+
+
 def finalize_fastq_handoff(report: ValidationReport, run: CaseRun, contract: Path, *, reused_from: str | None = None) -> Path:
     """Validate and freeze the stable nf-core handoff boundary for downstream."""
 
@@ -771,13 +827,26 @@ def finalize_fastq_handoff(report: ValidationReport, run: CaseRun, contract: Pat
         contract,
         {"source": {"type": "salmon_tximport" if method == "salmon" else "featurecounts_raw_counts", "construction_method": "DESeqDataSetFromTximport" if method == "salmon" else "DESeqDataSetFromMatrix", "upstream_handoff": str(frozen_handoff.resolve()), "reused_from": reused_from}},
     )
+    if method == "salmon":
+        payload = _read_yaml_mapping(frozen_handoff, "frozen upstream handoff manifest")
+        salmon = payload.get("salmon")
+        if isinstance(salmon, dict):
+            mapping_path, mapping = _salmon_mapping_contract(run.run_dir, salmon.get("tx2gene"))
+            provenance_path = run.run_dir / "provenance" / "run_provenance.yaml"
+            if provenance_path.is_file():
+                provenance = _read_yaml_mapping(provenance_path, "run provenance")
+                provenance["salmon_tx2gene"] = {
+                    "path": str(mapping_path),
+                    **mapping,
+                }
+                _write_yaml(provenance_path, provenance)
     return frozen_handoff
 
 
 def build_downstream_nextflow_command(
     run: CaseRun, *, profile: str = LOCAL_PROFILE, work_dir: Path | None = None,
     observer_config: Path | None = None, docker_user_config: Path | None = None,
-    execution_inputs: ResolvedDownstreamInputs | None = None,
+    execution_inputs: ResolvedDownstreamInputs | None = None, runtime_config: Path | None = None,
 ) -> list[str]:
     root = Path(__file__).resolve().parents[2]
     contract = json.loads((run.run_dir / "frozen" / "downstream_contract.json").read_text(encoding="utf-8"))
@@ -793,6 +862,8 @@ def build_downstream_nextflow_command(
     ]
     if observer_config is not None:
         command.extend(["-c", str(observer_config.resolve())])
+    if runtime_config is not None:
+        command.extend(["-c", str(runtime_config.resolve())])
     if docker_user_config is not None:
         command.extend(["-c", str(docker_user_config.resolve())])
     command.extend([
@@ -900,9 +971,17 @@ def prepare_service_run(report: ValidationReport, *, profile: str) -> None:
         raise ExecutionPreflightError("Nextflow is required: " + nextflow.detail)
     if docker.state != "FOUND":
         raise ExecutionPreflightError("Docker is required: " + docker.detail)
-    container = check_container_runtime()
+    requested_image = report.config.runtime.control_plane_image
+    container = check_container_runtime(requested_image)
     if container.state != "FOUND":
         raise ExecutionPreflightError("Control-plane container is required: " + container.detail)
+    if report.config.reference.acceptance == "production":
+        observed = inspect_container_image(requested_image)
+        if not observed.get("image_id"):
+            raise ExecutionPreflightError(
+                "Production-intended execution requires an observed immutable control-plane image ID/digest; "
+                f"Docker could not establish one for {requested_image}."
+            )
 
 
 def reuse_upstream_if_compatible(run: CaseRun, frozen: FrozenInputs, reference: str) -> str:
@@ -987,10 +1066,11 @@ def execute_service_run(
             return run
         execution_inputs = resolve_downstream_inputs(run)
         observer_config = write_downstream_observer_config(run)
+        runtime_config = write_downstream_runtime_config(run, report.config.runtime.control_plane_image)
         docker_user_config = write_downstream_docker_user_config(run)
         downstream = build_downstream_nextflow_command(
             run, profile=profile, work_dir=workspace.work_dir / "downstream", observer_config=observer_config,
-            docker_user_config=docker_user_config, execution_inputs=execution_inputs,
+            docker_user_config=docker_user_config, execution_inputs=execution_inputs, runtime_config=runtime_config,
         )
         _write_state(run, "RUNNING", phase="downstream", downstream_command=downstream)
         result = _run_command(downstream, cwd=workspace.launch_dir, stdout_path=run.run_dir / "logs" / "downstream.stdout.log", stderr_path=run.run_dir / "logs" / "downstream.stderr.log")

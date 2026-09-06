@@ -8,7 +8,7 @@
 
 對於 FASTQ 專案，nf-rna 將固定版本的 nf-core/rnaseq 3.26.0、Salmon 與 tximport，結合 first-party 的 DESeq2 和 clusterProfiler 分析。科學與執行設定都必須明確宣告，而非由系統猜測；因此，同一個已宣告的專案可以被審查與重跑，並保有清楚的輸入與設定紀錄。
 
-公開專案名稱為 `nf-rna`（`v0.5.0`）。穩定的 CLI 與 Python namespace 都是 `rnaseq`；為了相容既有 immutable run 的 provenance，已驗證的 production Docker image 維持為 `rnaseq-control-plane:latest`。
+目前 patch 版本為 `0.5.1`，穩定的 CLI 與 Python namespace 都是 `rnaseq`。開發模式可使用 `rnaseq-control-plane:latest`；production-intended run 必須指定 digest 或 versioned tag，並將 Docker 實際觀察到的 image ID/digest 凍結於 provenance。
 
 ## 概覽
 
@@ -72,7 +72,7 @@ L1 是品質控制與探索性表現分析層；L2 必須明確選擇，才會�
 FASTQ → nf-core/rnaseq → Salmon → tximport → nf-rna downstream analysis
 ```
 
-FASTQ 專案支援 paired-end 與 single-end reads。使用者必須明確指定 reads 是 `raw` 或 `pretrimmed`；nf-rna 不會根據檔名、directory 名稱或 read 內容推斷此設定。reference strategy 同樣必須明確宣告，包括選用的 local reference 或支援的 iGenomes route。
+FASTQ 專案支援 paired-end 與 single-end reads。使用者必須明確指定 reads 是 `raw` 或 `pretrimmed`；nf-rna 不會根據檔名、directory 名稱或 read 內容推斷此設定。Salmon handoff 使用 nf-core/rnaseq 3.26.0 實際交給 tximport 的 `salmon.merged.tx2gene_augmented.tsv`，並凍結 path、role、mapping type 與 SHA-256。歷史 ordinary mapping 仍可讀取，但會如實標示為 historical，而不宣稱是 augmented。
 
 若希望 nf-rna 同時負責 read processing 與 downstream analysis，請使用此路徑。
 
@@ -86,7 +86,7 @@ FASTQ → fastp/FastQC → HISAT2 → sorted BAM → featureCounts → DESeqData
 
 為了相容既有 FASTQ project，`upstream.engine: nfcore_rnaseq` 與 `pipeline_version: "3.26.0"` 仍是必要的 legacy configuration fields；它們只描述並選擇 Salmon implementation。HISAT2 run 會將實際執行 implementation 記錄為 `nf-rna/hisat2_featurecounts`、nf-rna version 與 `workflow/hisat2_featurecounts.nf` 的 SHA-256，絕不會歸因為 nf-core/rnaseq。
 
-Local reference 請先執行 `rnaseq reference prepare-hisat2 /absolute/reference-root`，再執行 `rnaseq plan PROJECT` 與 `rnaseq run PROJECT --case-id CASE --profile local --yes`。paired-end raw FASTQ 會以 fastp 的 `--detect_adapter_for_pe` 偵測 adapter；每條 lane 的 fastp HTML/JSON 會輸出於 `upstream/hisat2_featurecounts/qc/fastp`，JSON 也會納入 MultiQC。此 route 以 Biocontainers build tag 固定 HISAT2 2.2.1、SAMtools 1.21、Subread/featureCounts 2.0.6、FastQC 0.12.1、fastp 0.24.0，並以 Seqera Wave library 固定 MultiQC 1.33。Docker image digest 只在實際 resolve 後記錄；原始碼不會虛構尚未觀察到的 digest。
+Local reference 請先執行 `rnaseq reference prepare-hisat2 /absolute/reference-root`，再執行 `rnaseq plan PROJECT` 與 `rnaseq run PROJECT --case-id CASE --profile local --yes`。raw 與 processed 的 per-lane FastQC report/archive 會加上不同 prefix 防止碰撞，並與 fastp JSON、HISAT2 summary、featureCounts summary 一起送入 MultiQC。此 route 固定 HISAT2 2.2.1、SAMtools 1.21、Subread/featureCounts 2.0.6、FastQC 0.12.1、fastp 0.24.0 與 MultiQC 1.33。
 
 ### Milestone A 驗證（2026-09-05）
 
@@ -106,6 +106,10 @@ gene-count matrix + metadata + contrasts → nf-rna → L1/L2
 
 raw-count route 接受第一欄為 `gene_id` 的非負整數 count matrix、可擴充的 metadata，以及明確具有方向性的 contrast。若 quantification 已由其他 workflow 完成，但仍需要經驗證的 QC、DESeq2、選用的 GSEA、report 與 provenance，而不想重新處理 reads，此路徑最合適。
 
+生物學 pairing 必須明確設定：paired design 會保存 `design.pairing_column`，驗證每個 block 對 requested condition 各有一個 observation，並在 execution 前拒絕 rank-deficient additive model matrix。這與 FASTQ 的 paired-end／single-end layout 無關。Report 會依實際來源標示 Salmon/tximport、featureCounts raw counts 或 imported raw counts。
+
+Production reference acceptance 以 `reference.acceptance: production` 明確啟用，只接受 schema 1.1、經人工指定 `purpose: production` 的 managed local manifest；所有 asset hash 必須通過驗證，所選 backend index 也必須完整並綁定相同 FASTA/GTF identity。Legacy 與 synthetic manifest 在 standard mode 仍可使用，但不會被靜默升級為 production。第一個文件化的人類 identity 為 Ensembl release 116、GRCh38.p14；本 repository 不下載 reference。
+
 完整的設定規則請參閱 [quick start](docs/quickstart.md) 與 [scientific contract](docs/scientific_contract.md)。
 
 ## 快速開始
@@ -120,7 +124,7 @@ conda activate nf-rna
 docker build -t rnaseq-control-plane:latest .
 ```
 
-需要 Python 3.11 以上版本。使用 FASTQ route 前，請安裝 Nextflow，並確認 Docker Desktop 或其他相容的 Docker daemon 已啟動。`rnaseq-control-plane:latest` 是 current code 支援的 runtime selection；pull 或變更 source 後，必須從已審查的 checkout 重新建立這個 tag，否則既有的 `latest` image 可能執行較舊的 downstream Python/R code。
+需要 Python 3.11 以上版本。使用 FASTQ route 前，請安裝 Nextflow，並確認 Docker Desktop 或其他相容的 Docker daemon 已啟動。`latest` 僅可用於明確的 non-production 開發模式；production acceptance 必須將 `runtime.control_plane_image` 設為 digest 或 versioned tag，`rnaseq doctor PROJECT` 會同時報告 requested 與 observed identity。
 
 ### 2. 檢查 runtime
 
@@ -129,6 +133,8 @@ rnaseq doctor
 ```
 
 `rnaseq doctor` 會以不變更系統狀態的方式檢查 local runtime prerequisite；提供專案路徑時，也會評估 project 與 reference readiness。
+
+目前僅支援 local execution；workstation/HPC 與 SLURM profile 明確延後，0.5.1 不宣稱支援。
 
 ### 3. 嘗試隨附的 smoke test
 
@@ -245,4 +251,4 @@ Milestone A 新增 hand-constructed 的 real-tool featureCounts fixture，驗證
 
 ## Citation 與 license
 
-nf-rna `v0.5.0` 依 [MIT License](LICENSE) 發布。請引用實際使用的 release；機器可讀紀錄位於 [CITATION.cff](CITATION.cff)。
+nf-rna 的版本 metadata 已準備為 `v0.5.1`，採用 [MIT License](LICENSE)。請引用實際使用的 tagged release；機器可讀紀錄位於 [CITATION.cff](CITATION.cff)。

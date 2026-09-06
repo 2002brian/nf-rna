@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import math
 import re
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
@@ -14,7 +15,12 @@ from typing import Iterable
 from rnaseq.errors import ProjectConfigError
 from rnaseq.models import DesignType, InputType, Preset, ProjectConfig, SequencingLayout
 from rnaseq.project import LoadedProject, load_project
-from rnaseq.references import LocalReference, LocalReferenceError, load_local_reference
+from rnaseq.references import (
+    LOCAL_REFERENCE_MANIFEST_VERSION,
+    LocalReference,
+    LocalReferenceError,
+    load_local_reference,
+)
 
 CONTRAST_HEADER = ["contrast_id", "factor", "numerator", "denominator"]
 FORMULA_PATTERN = re.compile(
@@ -640,13 +646,11 @@ def _build_groups_and_validate_design(report: ValidationReport) -> None:
 
     if design_type is not DesignType.PAIRED:
         return
-    pairing_variable = next(
-        (variable for variable in report.formula_variables if variable not in factors), None
-    )
+    pairing_variable = report.config.design.pairing_column
     if pairing_variable is None:
-        report.error(
-            "missing_pairing_variable", "Paired design formula must include a pairing variable in addition to the contrast factor."
-        )
+        # ProjectConfig normally catches this first; retain a validator-level
+        # diagnostic for callers constructing reports manually.
+        report.error("missing_pairing_variable", "Paired design requires explicit design.pairing_column.")
         return
     if pairing_variable not in metadata.columns:
         return
@@ -654,18 +658,139 @@ def _build_groups_and_validate_design(report: ValidationReport) -> None:
     for factor in factors:
         if factor not in metadata.columns:
             continue
-        expected_levels = set(record[factor] for record in metadata.rows)
+        contrast_levels = {
+            level
+            for contrast in report.contrasts.contrasts
+            if contrast.factor == factor
+            for level in (contrast.numerator, contrast.denominator)
+        }
         by_subject: dict[str, list[str]] = {}
         for record in metadata.rows:
             by_subject.setdefault(record[pairing_variable], []).append(record[factor])
         for subject in sorted(by_subject):
             observed = by_subject[subject]
-            if len(observed) != 2 or set(observed) != expected_levels or len(set(observed)) != 2:
+            if len(observed) != 2 or set(observed) != contrast_levels or len(set(observed)) != 2:
                 report.error(
                     "incomplete_pair",
                     f"Subject {subject!r} must have exactly one sample from each {factor} level; "
                     f"observed: {', '.join(observed)}",
                 )
+
+
+def _numeric_column(values: list[str]) -> list[float] | None:
+    parsed: list[float] = []
+    try:
+        for value in values:
+            number = float(value)
+            if not math.isfinite(number):
+                return None
+            parsed.append(number)
+    except ValueError:
+        return None
+    return parsed
+
+
+def _matrix_rank(matrix: list[list[float]], *, tolerance: float = 1e-10) -> int:
+    """Return numeric rank using deterministic Gaussian elimination."""
+
+    if not matrix:
+        return 0
+    work = [row[:] for row in matrix]
+    rows, columns = len(work), len(work[0])
+    rank = 0
+    for column in range(columns):
+        pivot = max(range(rank, rows), key=lambda row: abs(work[row][column]), default=rank)
+        if rank >= rows or abs(work[pivot][column]) <= tolerance:
+            continue
+        work[rank], work[pivot] = work[pivot], work[rank]
+        scale = work[rank][column]
+        work[rank] = [value / scale for value in work[rank]]
+        for row in range(rows):
+            if row == rank:
+                continue
+            factor = work[row][column]
+            if abs(factor) > tolerance:
+                work[row] = [left - factor * right for left, right in zip(work[row], work[rank], strict=True)]
+        rank += 1
+        if rank == rows:
+            break
+    return rank
+
+
+def _validate_model_matrix(report: ValidationReport) -> None:
+    """Mirror the supported additive R model matrix closely enough to fail safely."""
+
+    if report.metadata is None or report.contrasts is None or report.config is None:
+        return
+    if any(variable not in report.metadata.columns for variable in report.formula_variables):
+        return
+    categorical = {contrast.factor for contrast in report.contrasts.contrasts}
+    if report.config.design.pairing_column:
+        categorical.add(report.config.design.pairing_column)
+    columns: list[tuple[str, list[float]]] = [("(Intercept)", [1.0] * len(report.metadata.rows))]
+    for variable in report.formula_variables:
+        values = [record[variable] for record in report.metadata.rows]
+        numeric = None if variable in categorical else _numeric_column(values)
+        if numeric is not None:
+            columns.append((variable, numeric))
+            continue
+        levels = sorted(set(values))
+        if len(levels) < 2:
+            report.error(
+                "single_level_design_variable",
+                f"Design variable {variable!r} has only one observed level and cannot be estimated.",
+            )
+            return
+        baseline = levels[0]
+        for level in levels[1:]:
+            columns.append((f"{variable}[{level}]", [1.0 if value == level else 0.0 for value in values]))
+        if variable == report.config.design.pairing_column and not baseline:
+            report.error("invalid_pairing_value", "design.pairing_column contains a blank block identifier.")
+            return
+    matrix = [[column[row] for _name, column in columns] for row in range(len(report.metadata.rows))]
+    rank = _matrix_rank(matrix)
+    if rank < len(columns):
+        report.error(
+            "rank_deficient_design",
+            "The additive DESeq2 design matrix is rank deficient "
+            f"(rank {rank} for {len(columns)} columns). Remove a confounded or redundant "
+            "covariate, or correct the biological pairing/condition assignments.",
+        )
+
+
+def _validate_production_reference(report: ValidationReport) -> None:
+    """Apply the opt-in final-acceptance guard without changing normal test mode."""
+
+    if report.config is None or report.config.reference.acceptance != "production":
+        return
+    reference = report.local_reference
+    if reference is None:
+        # Source=local is enforced by ProjectConfig; retain one clear validation
+        # issue if loading/integrity validation already failed.
+        if not any(issue.code == "invalid_local_reference" for issue in report.errors):
+            report.error("production_reference_unavailable", "Production acceptance requires a valid managed local reference.")
+        return
+    if reference.manifest_schema_version != LOCAL_REFERENCE_MANIFEST_VERSION:
+        report.error(
+            "legacy_reference_not_production",
+            "Production acceptance requires local reference manifest schema 1.1. "
+            "Migrate explicitly and declare purpose; legacy 1.0 manifests are never assumed to be production.",
+        )
+    provider_marker = reference.provider.lower()
+    known_synthetic = reference.purpose == "synthetic_test" or any(
+        marker in provider_marker for marker in ("synthetic", "fixture", "test")
+    )
+    if reference.purpose != "production" or known_synthetic:
+        report.error(
+            "synthetic_reference_not_production",
+            "Production acceptance rejects synthetic or unclassified references; "
+            "manifest purpose must be production and the provider identity must not be a known fixture.",
+        )
+    method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
+    if method == "salmon" and reference.salmon_index is None:
+        report.error("production_salmon_index_missing", "Production acceptance requires a complete checksum-bound Salmon index.")
+    if method == "hisat2_featurecounts" and reference.hisat2_index is None:
+        report.error("production_hisat2_index_missing", "Production acceptance requires a complete checksum-bound HISAT2 index.")
 
 
 def validate_project(project_dir: Path | str) -> ValidationReport:
@@ -693,6 +818,7 @@ def validate_project(project_dir: Path | str) -> ValidationReport:
                 )
             except LocalReferenceError as exc:
                 report.error("invalid_local_reference", str(exc))
+        _validate_production_reference(report)
     # Technical FASTQ QC does not make a statistical design claim.  The
     # template metadata/contrast files are intentionally allowed to remain
     # incomplete until a project is promoted to L1/L2.
@@ -711,5 +837,6 @@ def validate_project(project_dir: Path | str) -> ValidationReport:
         _validate_sample_agreement(report.counts, report.metadata, report)
     if report.fastq is not None and report.metadata is not None:
         _validate_fastq_sample_agreement(report.fastq, report.metadata, report)
+    _validate_model_matrix(report)
     _build_groups_and_validate_design(report)
     return report

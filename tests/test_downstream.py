@@ -75,6 +75,8 @@ def test_fastq_l1_requires_explicit_successful_handoff_and_upgrades_legacy(proje
     assert prepared.metadata_path == run / "frozen" / "metadata.csv"
     handoff = yaml.safe_load((run / "handoff" / "upstream_manifest.yaml").read_text())
     assert sorted(handoff["salmon"]["quant_sf"]) == ["C1", "C2", "C3", "T1", "T2", "T3"]
+    assert handoff["salmon"]["tx2gene"]["mapping_type"] == "historical_ordinary"
+    assert prepared.config["tx2gene_mapping"]["mapping_type"] == "historical_ordinary"
 
 
 def test_raw_counts_rejects_upstream_run_id(project_factory):

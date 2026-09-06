@@ -206,7 +206,7 @@ def test_invalid_import_is_rejected_before_project_becomes_visible(tmp_path):
 def test_new_uses_imported_metadata_fields_for_noninteractive_formula(tmp_path):
     counts, metadata, contrasts = (tmp_path / "counts.csv", tmp_path / "metadata.csv", tmp_path / "contrasts.csv")
     counts.write_text("gene_id,S1,S2,S3,S4\nGeneA,1,2,3,4\n", encoding="utf-8")
-    metadata.write_text("sample_id,subject,condition,batch\nS1,A,Control,B1\nS2,A,Treatment,B1\nS3,B,Control,B2\nS4,B,Treatment,B2\n", encoding="utf-8")
+    metadata.write_text("sample_id,subject,condition,batch\nS1,A,Control,B1\nS2,A,Treatment,B2\nS3,B,Control,B2\nS4,B,Treatment,B1\n", encoding="utf-8")
     contrasts.write_text("contrast_id,factor,numerator,denominator\nT_vs_C,condition,Treatment,Control\n", encoding="utf-8")
     result = runner.invoke(app, [
         "new", "--name", "paired", "--destination", str(tmp_path), "--species", "mouse", "--input-type", "raw_counts",
@@ -215,7 +215,8 @@ def test_new_uses_imported_metadata_fields_for_noninteractive_formula(tmp_path):
     ])
     assert result.exit_code == 0, result.output
     config = yaml.safe_load((tmp_path / "paired" / "project.yaml").read_text(encoding="utf-8"))
-    assert config["design"]["formula"] == "~ subject + condition + batch"
+    assert config["design"]["formula"] == "~ subject + batch + condition"
+    assert config["design"]["pairing_column"] == "subject"
 
 
 def test_validate_example_passes():
@@ -257,7 +258,7 @@ def test_plan_is_deterministic_and_records_schema_version():
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     assert manifest["schema"]["project_schema_version"] == "1.0"
     assert isinstance(manifest["schema"]["project_schema_version"], str)
-    assert manifest["pipeline"]["version"] == "0.5.0"
+    assert manifest["pipeline"]["version"] == "0.5.1"
 
     second = runner.invoke(app, ["plan", str(example)])
     assert second.exit_code == 0, second.output

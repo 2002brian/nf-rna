@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, m
 
 SUPPORTED_SCHEMA_VERSION = "1.2"
 LEGACY_SCHEMA_VERSION = "1.0"
-PIPELINE_VERSION = "0.5.0"
+PIPELINE_VERSION = "0.5.1"
 NFCORE_RNASEQ_VERSION = "3.26.0"
 PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -99,6 +99,19 @@ class InputConfig(StrictModel):
 class DesignConfig(StrictModel):
     type: DesignType
     formula: StrictStr
+    pairing_column: StrictStr | None = None
+
+    @model_validator(mode="after")
+    def validate_pairing_contract(self) -> "DesignConfig":
+        if self.type is DesignType.PAIRED:
+            if self.pairing_column is None or not self.pairing_column.strip():
+                raise ValueError(
+                    "design.pairing_column is required for a paired biological design; "
+                    "it is independent of paired-end sequencing layout."
+                )
+        elif self.pairing_column is not None:
+            raise ValueError("design.pairing_column is supported only when design.type is paired.")
+        return self
 
 
 class ThresholdsConfig(StrictModel):
@@ -277,9 +290,15 @@ class ReferenceConfig(StrictModel):
     hisat2_splice_sites: StrictStr | None = None
     root: StrictStr | None = None
     manifest: StrictStr | None = None
+    acceptance: Literal["standard", "production"] = "standard"
 
     @model_validator(mode="after")
     def validate_source_contract(self) -> "ReferenceConfig":
+        if self.acceptance == "production" and self.source != "local":
+            raise ValueError(
+                "reference.acceptance: production requires reference.source: local "
+                "with a checksum-bound managed manifest."
+            )
         if self.source == "local":
             if self.root is None or not self.root.strip():
                 raise ValueError("reference.root is required when reference.source is local.")
@@ -288,6 +307,19 @@ class ReferenceConfig(StrictModel):
             if any(value is not None for value in (self.genome, self.fasta, self.gtf, self.transcript_fasta, self.salmon_index, self.hisat2_index, self.hisat2_splice_sites)):
                 raise ValueError("reference.source local resolves assets only from reference.manifest; do not set genome/fasta/gtf/transcript_fasta/salmon_index/hisat2_index/hisat2_splice_sites in project.yaml.")
         return self
+
+
+class RuntimeConfig(StrictModel):
+    """Requested control-plane runtime identity for downstream tasks."""
+
+    control_plane_image: StrictStr = "rnaseq-control-plane:latest"
+
+    @field_validator("control_plane_image")
+    @classmethod
+    def validate_image_reference(cls, value: str) -> str:
+        if not value.strip() or any(char.isspace() for char in value):
+            raise ValueError("runtime.control_plane_image must be a non-blank container reference without whitespace.")
+        return value
 
 
 class ProjectConfig(StrictModel):
@@ -302,6 +334,7 @@ class ProjectConfig(StrictModel):
     reference: ReferenceConfig = Field(
         default_factory=lambda: ReferenceConfig(source="igenomes", genome=None)
     )
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     thresholds: ThresholdsConfig
     annotation: AnnotationConfig | None = None
     analysis: AnalysisConfig | None = None
@@ -340,6 +373,20 @@ class ProjectConfig(StrictModel):
             raise ValueError("raw_counts projects require upstream.engine: external.")
         if self.annotation is not None and self.annotation.organism != self.organism.species.value:
             raise ValueError("annotation.organism must match organism.species.")
+        if self.design.type is DesignType.PAIRED:
+            assert self.design.pairing_column is not None
+            variables = tuple(re.findall(r"[A-Za-z_][A-Za-z0-9_.]*", self.design.formula.removeprefix("~")))
+            if self.design.pairing_column not in variables:
+                raise ValueError("design.pairing_column must be present in design.formula.")
+        if self.reference.acceptance == "production":
+            if self.input.type is not InputType.FASTQ:
+                raise ValueError("reference.acceptance: production is supported only for FASTQ projects.")
+            image = self.runtime.control_plane_image
+            if image.endswith(":latest") or (":" not in image.rsplit("/", 1)[-1] and "@sha256:" not in image):
+                raise ValueError(
+                    "Production acceptance requires an immutable runtime.control_plane_image: "
+                    "use an image digest or a versioned tag, never latest or an untagged reference."
+                )
         if self.schema_version == SUPPORTED_SCHEMA_VERSION and self.analysis is None:
             raise ValueError(f"schema_version {SUPPORTED_SCHEMA_VERSION} requires an explicit analysis.enrichment list (it may be empty).")
         selected = self.analysis.enrichment if self.analysis is not None else ()

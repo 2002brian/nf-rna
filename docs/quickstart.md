@@ -60,6 +60,22 @@ input:
 
 `pretrimmed` is appropriate only when the reads were already adapter/quality trimmed; it causes nf-core trimming to be skipped. Use `raw` otherwise. Configure an execution-ready iGenomes or managed local reference; do not commit a real reference root, index, or FASTQs.
 
+For a biological paired/repeated design, declare the block explicitly, for example `design: {type: paired, formula: "~ subject_id + condition", pairing_column: subject_id}`. This is unrelated to `input.layout: paired_end`.
+
+For a final production-intended run, use a reviewed managed reference and immutable runtime selection:
+
+```yaml
+reference:
+  source: local
+  root: /absolute/reference-root
+  manifest: reference_manifest.yaml
+  acceptance: production
+runtime:
+  control_plane_image: rnaseq-control-plane:0.5.1
+```
+
+The managed manifest must use schema 1.1 with deliberate `purpose: production`. The initial human identity contract is Ensembl 116, GRCh38.p14; assets are not downloaded by this project.
+
 ## 4. Validate and plan
 
 ```bash

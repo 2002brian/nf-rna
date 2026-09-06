@@ -6,7 +6,7 @@ English | [繁體中文](README_zh-TW.md)
 
 For FASTQ projects, nf-rna supports pinned nf-core/rnaseq 3.26.0 + Salmon/tximport and an explicitly configured first-party HISAT2 + featureCounts route, both feeding first-party DESeq2 and clusterProfiler analysis. Scientific and execution settings are explicit rather than inferred, so the same declared project can be reviewed and rerun with a clear record of its inputs and choices.
 
-The public project is `nf-rna` (`v0.5.0`). Its stable CLI and Python namespace are both `rnaseq`; the validated production Docker image remains `rnaseq-control-plane:latest` for compatibility with existing immutable run provenance.
+The current patch version is `0.5.1`. Its stable CLI and Python namespace are both `rnaseq`. Development runs may use `rnaseq-control-plane:latest`; production-intended runs must request a digest or a versioned tag whose observed Docker image ID/digest is frozen in provenance.
 
 ## Overview
 
@@ -70,7 +70,7 @@ L1 is the quality-control and exploratory-expression layer. L2 is selected expli
 FASTQ → nf-core/rnaseq → Salmon → tximport → nf-rna downstream analysis
 ```
 
-FASTQ projects support paired-end and single-end reads. They explicitly declare whether reads are `raw` or `pretrimmed`; nf-rna never infers that decision from a file name, directory name, or read content. A reference strategy must also be declared explicitly, including the selected local reference or supported iGenomes route.
+FASTQ projects support paired-end and single-end reads. They explicitly declare whether reads are `raw` or `pretrimmed`; nf-rna never infers that decision from a file name, directory name, or read content. Salmon handoff uses `salmon.merged.tx2gene_augmented.tsv`, the nf-core/rnaseq 3.26.0 mapping used by tximport, and freezes its path, role, mapping type and SHA-256. Historical ordinary mappings remain readable and are labelled as historical rather than augmented.
 
 Use this route when nf-rna should own read processing as well as downstream analysis.
 
@@ -98,7 +98,7 @@ reference:
   hisat2_index: reference/hisat2/index
 ```
 
-For a managed local reference, run `rnaseq reference prepare-hisat2 /absolute/reference-root`, then `rnaseq plan PROJECT` and `rnaseq run PROJECT --case-id CASE --profile local --yes`. Raw HISAT2 runs publish per-lane fastp HTML/JSON reports under `upstream/hisat2_featurecounts/qc/fastp`; the JSON reports are also included in MultiQC. The route pins HISAT2 2.2.1, SAMtools 1.21, Subread/featureCounts 2.0.6, FastQC 0.12.1 and fastp 0.24.0 through Biocontainers build tags, plus MultiQC 1.33 through the Seqera Wave library. Docker records a resolved digest only at execution time; a source checkout does not claim an unobserved digest.
+For a managed local reference, run `rnaseq reference prepare-hisat2 /absolute/reference-root`, then `rnaseq plan PROJECT` and `rnaseq run PROJECT --case-id CASE --profile local --yes`. Raw and processed per-lane FastQC reports/archives are uniquely prefixed and included in MultiQC together with fastp JSON, HISAT2 summaries and featureCounts summaries. The route pins HISAT2 2.2.1, SAMtools 1.21, Subread/featureCounts 2.0.6, FastQC 0.12.1 and fastp 0.24.0 through Biocontainers build tags, plus MultiQC 1.33 through the Seqera Wave library.
 
 ### Raw counts
 
@@ -107,6 +107,10 @@ gene-count matrix + metadata + contrasts → nf-rna → L1/L2
 ```
 
 The raw-count route accepts a non-negative integral count matrix with `gene_id`, extensible metadata, and explicit directional contrasts. It is useful when quantification was performed elsewhere and you need validated QC, DESeq2, optional GSEA, reporting, and provenance without rerunning read processing.
+
+Biological pairing is explicit: paired designs store `design.pairing_column`, validate one observation per requested condition in every block, and reject a rank-deficient additive model matrix before execution. This setting is independent of paired-end versus single-end FASTQ layout. Reports identify the actual import route as Salmon/tximport, featureCounts raw counts, or imported raw counts.
+
+Production reference acceptance is opt-in with `reference.acceptance: production`. It accepts only a schema-1.1 managed local manifest deliberately marked `purpose: production`, with verified asset hashes and a complete selected-backend index bound to the same FASTA/GTF identities. Legacy and synthetic manifests still work in standard mode but are never silently promoted. The first documented human identity is Ensembl release 116, GRCh38.p14; no reference is downloaded in this repository.
 
 See the [quick start](docs/quickstart.md) and [scientific contract](docs/scientific_contract.md) for the complete configuration rules.
 
@@ -122,7 +126,7 @@ conda activate nf-rna
 docker build -t rnaseq-control-plane:latest .
 ```
 
-Python 3.11+ is required. Install Nextflow before using the FASTQ route, and ensure Docker Desktop or another compatible Docker daemon is running. `rnaseq-control-plane:latest` is the supported runtime selection for current code, so rebuild that tag from the reviewed checkout after pulling or changing source; a pre-existing `latest` image can otherwise execute older downstream Python/R code.
+Python 3.11+ is required. Install Nextflow before using the FASTQ route, and ensure Docker Desktop or another compatible Docker daemon is running. `latest` is permitted only for explicitly non-production development. Set `runtime.control_plane_image` to a digest or versioned tag for production acceptance; `rnaseq doctor PROJECT` reports both requested and observed identity.
 
 ### 2. Check the runtime
 
@@ -131,6 +135,8 @@ rnaseq doctor
 ```
 
 `rnaseq doctor` reports non-mutating prerequisite checks for the local runtime; with a project path it also evaluates project and reference readiness.
+
+Execution is currently local-only. Workstation/HPC and SLURM profiles are intentionally deferred and are not claimed by version 0.5.1.
 
 ### 3. Try the included smoke test
 
@@ -247,4 +253,4 @@ Milestone A adds a hand-constructed real-tool featureCounts fixture. It verifies
 
 ## Citation and license
 
-nf-rna `v0.5.0` is released under the [MIT License](LICENSE). Cite the specific release you use; the machine-readable record is [CITATION.cff](CITATION.cff).
+nf-rna version metadata is prepared for `v0.5.1` under the [MIT License](LICENSE). Cite the specific tagged release you use; the machine-readable record is [CITATION.cff](CITATION.cff).

@@ -144,6 +144,7 @@ def _project_yaml(
     quantification_method: str = "salmon",
     reference: dict[str, object] | None = None,
     formula: str | None = None,
+    pairing_column: str | None = None,
 ) -> str:
     formula = formula or ("~ subject_id + condition" if design_type is DesignType.PAIRED else "~ condition")
     content = {
@@ -158,7 +159,11 @@ def _project_yaml(
             "type": input_type.value,
             "path": "input/fastq" if input_type is InputType.FASTQ else "input/counts.csv",
         },
-        "design": {"type": design_type.value, "formula": formula},
+        "design": {
+            "type": design_type.value,
+            "formula": formula,
+            **({"pairing_column": pairing_column or "subject_id"} if design_type is DesignType.PAIRED else {}),
+        },
         "metadata_file": "metadata.csv",
         "contrasts_file": "contrasts.csv",
         "upstream": (
@@ -177,6 +182,7 @@ def _project_yaml(
             }
         ),
         "reference": reference or {"source": "igenomes", "genome": None},
+        "runtime": {"control_plane_image": "rnaseq-control-plane:latest"},
         "thresholds": {"padj": 0.05, "abs_log2fc": 1.0},
         "analysis": {"enrichment": []},
     }
@@ -282,6 +288,7 @@ def create_project(
     contrasts_file: Path | str | None = None,
     scaffold: bool = False,
     formula: str | None = None,
+    pairing_column: str | None = None,
 ) -> Path:
     """Create a new project atomically and return its final path."""
 
@@ -363,7 +370,11 @@ def create_project(
             else:
                 _copy_file(source, target_reference)
         (staging / "project.yaml").write_text(
-            _project_yaml(project_name, species, preset, design_type, input_type, layout, preprocessing, strandedness, quantification_method, resolved_reference, formula),
+            _project_yaml(
+                project_name, species, preset, design_type, input_type, layout,
+                preprocessing, strandedness, quantification_method,
+                resolved_reference, formula, pairing_column,
+            ),
             encoding="utf-8",
             newline="\n",
         )

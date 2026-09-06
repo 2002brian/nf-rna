@@ -79,7 +79,7 @@ def _fastq_handoff_run(tmp_path: Path):
     (salmon / "salmon.merged.gene_counts.tsv").write_text(
         "gene_id\tC1\tC2\tT1\tT2\nGeneA\t1\t2\t3\t4\n", encoding="utf-8"
     )
-    (salmon / "salmon.merged.tx2gene.tsv").write_text("transcript_id\tgene_id\nTx1\tGeneA\n", encoding="utf-8")
+    (salmon / "salmon.merged.tx2gene_augmented.tsv").write_text("transcript_id\tgene_id\nTx1\tGeneA\n", encoding="utf-8")
     for sample in ("C1", "C2", "T1", "T2"):
         quant = salmon / sample / "quant.sf"
         quant.parent.mkdir()
@@ -125,7 +125,7 @@ def test_case_runs_are_immutable_and_freeze_raw_count_inputs(project_factory):
 @pytest.mark.parametrize(
     ("mutation", "message"),
     (
-        ("missing_tx2gene", "salmon.tx2gene is unavailable"),
+        ("missing_tx2gene", "salmon.tx2gene.path is unavailable"),
         ("missing_quant", "salmon.quant_sf.C1 is unavailable"),
         ("appledouble_tx2gene", "selected an AppleDouble artifact"),
         ("outside_upstream_tx2gene", "outside the immutable upstream output"),
@@ -134,22 +134,22 @@ def test_case_runs_are_immutable_and_freeze_raw_count_inputs(project_factory):
 def test_fastq_execution_staging_fails_before_downstream_for_missing_or_appledouble_handoff_artifacts(tmp_path, mutation, message):
     run, salmon = _fastq_handoff_run(tmp_path)
     if mutation == "missing_tx2gene":
-        (salmon / "salmon.merged.tx2gene.tsv").unlink()
+        (salmon / "salmon.merged.tx2gene_augmented.tsv").unlink()
     elif mutation == "missing_quant":
         (salmon / "C1" / "quant.sf").unlink()
     else:
         handoff_path = run.run_dir / "frozen" / "upstream_handoff_manifest.yaml"
         handoff = yaml.safe_load(handoff_path.read_text(encoding="utf-8"))
         if mutation == "outside_upstream_tx2gene":
-            handoff["salmon"]["tx2gene"] = "frozen/metadata.csv"
+            handoff["salmon"]["tx2gene"]["path"] = "frozen/metadata.csv"
             handoff_path.write_text(yaml.safe_dump(handoff, sort_keys=False), encoding="utf-8")
             with pytest.raises(UpstreamExecutionError, match=message):
                 resolve_downstream_inputs(run)
             assert not (run.run_dir / "downstream_inputs").exists()
             return
-        sidecar = salmon / "._salmon.merged.tx2gene.tsv"
+        sidecar = salmon / "._salmon.merged.tx2gene_augmented.tsv"
         sidecar.write_text("not a biological input\n", encoding="utf-8")
-        handoff["salmon"]["tx2gene"] = str(sidecar.relative_to(run.run_dir))
+        handoff["salmon"]["tx2gene"]["path"] = str(sidecar.relative_to(run.run_dir))
         handoff_path.write_text(yaml.safe_dump(handoff, sort_keys=False), encoding="utf-8")
 
     with pytest.raises(UpstreamExecutionError, match=message):
@@ -304,7 +304,7 @@ def test_delivery_sidecar_after_sanitization_prevents_success_state(monkeypatch,
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(tmp_path / "local-nextflow-cache"))
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "available"))
     monkeypatch.setattr("rnaseq.service.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "available"))
-    monkeypatch.setattr("rnaseq.service.check_container_runtime", lambda: RuntimeCheck("Control-plane container", "FOUND", "available"))
+    monkeypatch.setattr("rnaseq.service.check_container_runtime", lambda *_args: RuntimeCheck("Control-plane container", "FOUND", "available"))
 
     def fake_nextflow(command, *, cwd, stdout_path, stderr_path):
         outdir = Path(command[command.index("--outdir") + 1])
@@ -424,7 +424,7 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(local_root))
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "25.10.4"))
     monkeypatch.setattr("rnaseq.service.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "Docker daemon is available."))
-    monkeypatch.setattr("rnaseq.service.check_container_runtime", lambda: RuntimeCheck("Control-plane container", "FOUND", "available"))
+    monkeypatch.setattr("rnaseq.service.check_container_runtime", lambda *_args: RuntimeCheck("Control-plane container", "FOUND", "available"))
     observed: list[tuple[list[str], Path]] = []
 
     def fake_nextflow(command, *, cwd, stdout_path, stderr_path):
@@ -438,7 +438,7 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
             outdir = Path(command[command.index("--outdir") + 1])
             (outdir / "salmon").mkdir(parents=True)
             (outdir / "salmon" / "salmon.merged.gene_counts.tsv").write_text("gene_id\tC1\tC2\tT1\tT2\nGeneA\t1.0\t2.0\t3.0\t4.0\n", encoding="utf-8")
-            (outdir / "salmon" / "salmon.merged.tx2gene.tsv").write_text("transcript_id\tgene_id\nTx1\tGeneA\n", encoding="utf-8")
+            (outdir / "salmon" / "salmon.merged.tx2gene_augmented.tsv").write_text("transcript_id\tgene_id\nTx1\tGeneA\n", encoding="utf-8")
             for sample in ("C1", "C2", "T1", "T2"):
                 sample_dir = outdir / "salmon" / sample
                 sample_dir.mkdir()
@@ -466,7 +466,7 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     assert staged["source"]["type"] == "salmon_tximport"
     assert staged["samples"] == ["C1", "C2", "T1", "T2"]
     assert set(staged["source"]["quant_sf"]) == set(staged["samples"])
-    assert staged["source"]["tx2gene"] == "source/salmon.merged.tx2gene.tsv"
+    assert staged["source"]["tx2gene"] == "source/salmon.merged.tx2gene_augmented.tsv"
     assert all(path.endswith("/quant.sf") for path in staged["source"]["quant_sf"].values())
     assert all((execution_inputs / path).is_file() for path in staged["source"]["quant_sf"].values())
     assert (execution_inputs / staged["source"]["tx2gene"]).is_file()
@@ -475,6 +475,9 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     assert frozen_contract["source"]["upstream_handoff"] == str((run.run_dir / "frozen" / "upstream_handoff_manifest.yaml").resolve())
     downstream_command = observed[1][0]
     assert downstream_command[downstream_command.index("--inputs") + 1] == str(execution_inputs.resolve())
+    runtime_config = run.run_dir / "frozen" / "downstream.runtime.config"
+    assert runtime_config.read_text(encoding="utf-8") == 'process.container = "rnaseq-control-plane:latest"\n'
+    assert str(runtime_config.resolve()) in downstream_command
     assert "/Volumes/KOXIA" not in downstream_command
     provenance = yaml.safe_load((run.run_dir / "provenance" / "run_provenance.yaml").read_text(encoding="utf-8"))
     assert provenance["execution_root"] == str(local_root / run.case_id / run.run_id)
@@ -482,6 +485,13 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     assert provenance["skip_trimming"] is False
     assert provenance["nfcore_preprocessing_arguments"] == []
     assert provenance["nfcore_runtime_params"] == {"skip_alignment": True}
+    assert provenance["salmon_tx2gene"]["mapping_type"] == "nfcore_tx2gene_augmented"
+    assert provenance["salmon_tx2gene"]["path"].endswith("salmon.merged.tx2gene_augmented.tsv")
+    assert len(provenance["salmon_tx2gene"]["sha256"]) == 64
+    assert provenance["container_image"]["reference"] == "rnaseq-control-plane:latest"
+    assert provenance["production_intended"] is False
+    assert set(provenance["workflow_sha256"]) == {"workflow/main.nf", "workflow/hisat2_featurecounts.nf"}
+    assert all(len(value) == 64 for value in provenance["workflow_sha256"].values())
     assert provenance["runtime_resources"]["resource_profile"] == "M5_LOCAL_SMALL_MEDIUM_LARGE"
     assert "host_architecture" in provenance["runtime_resources"]
     execution_manifest = yaml.safe_load((run.run_dir / "frozen" / "execution_manifest.yaml").read_text(encoding="utf-8"))
@@ -546,7 +556,7 @@ def test_failed_service_run_keeps_frozen_logs_and_provenance(monkeypatch, projec
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(local_root))
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "25.10.4"))
     monkeypatch.setattr("rnaseq.service.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "Docker daemon is available."))
-    monkeypatch.setattr("rnaseq.service.check_container_runtime", lambda: RuntimeCheck("Control-plane container", "FOUND", "available"))
+    monkeypatch.setattr("rnaseq.service.check_container_runtime", lambda *_args: RuntimeCheck("Control-plane container", "FOUND", "available"))
 
     def fail_nextflow(_command, *, cwd, stdout_path, stderr_path):
         (cwd / ".nextflow" / "cache").mkdir(parents=True, exist_ok=True)
@@ -572,7 +582,7 @@ def test_service_preflight_accepts_a_successful_container_probe(monkeypatch, pro
     generate_plan(report)
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "available"))
     monkeypatch.setattr("rnaseq.service.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "available"))
-    monkeypatch.setattr("rnaseq.service.check_container_runtime", lambda: RuntimeCheck("Control-plane container", "FOUND", "available"))
+    monkeypatch.setattr("rnaseq.service.check_container_runtime", lambda *_args: RuntimeCheck("Control-plane container", "FOUND", "available"))
     prepare_service_run(report, profile="local")
 
 

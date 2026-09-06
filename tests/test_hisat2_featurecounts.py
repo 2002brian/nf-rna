@@ -40,6 +40,14 @@ def test_hisat2_workflow_publishes_fastp_reports_and_feeds_upstream_reports_to_m
     assert "-I ${reads[1]} --detect_adapter_for_pe -o prepared/${r1}.fastq.gz" in text
     assert ".mix(FASTP_PREPARE.out.fastp_json)" in text
     assert ".mix(HISAT2_ALIGN.out.aligned.map { sample, strandedness, sam, summary -> summary })" in text
+    assert "path 'raw_*_fastqc.zip', emit: zip" in text
+    assert "path 'processed_*_fastqc.zip', emit: zip" in text
+    assert 'mv "$f" "raw_$f"' in text and 'mv "$f" "processed_$f"' in text
+    for channel in (
+        "FASTQC_RAW.out.html", "FASTQC_RAW.out.zip",
+        "FASTQC_PROCESSED.out.html", "FASTQC_PROCESSED.out.zip",
+    ):
+        assert f".mix({channel})" in text
 
 
 def test_featurecounts_assembly_uses_declared_sample_ids_and_rejects_mismatched_genes(tmp_path: Path):

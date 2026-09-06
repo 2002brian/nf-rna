@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -141,7 +142,7 @@ def test_successful_mocked_execution_freezes_state_and_handoff(monkeypatch, tmp_
         outdir = Path(arguments[arguments.index("--outdir") + 1])
         (outdir / "salmon").mkdir(parents=True)
         (outdir / "salmon" / "salmon.merged.gene_counts.tsv").write_text("gene_id\tC1\nGeneA\t1.0\n")
-        (outdir / "salmon" / "salmon.merged.tx2gene.tsv").write_text("transcript_id\tgene_id\nTx1\tGeneA\n")
+        (outdir / "salmon" / "salmon.merged.tx2gene_augmented.tsv").write_text("transcript_id\tgene_id\nTx1\tGeneA\n")
         for sample in ("C1", "C2", "T1", "T2"):
             sample_dir = outdir / "salmon" / sample
             sample_dir.mkdir()
@@ -153,7 +154,7 @@ def test_successful_mocked_execution_freezes_state_and_handoff(monkeypatch, tmp_
     monkeypatch.setattr("rnaseq.execution.subprocess.run", successful)
     monkeypatch.setattr(
         "rnaseq.execution.runtime_snapshot",
-        lambda: RuntimeSnapshot("Darwin", "arm64", 12, 24 * 1024**3, "arm64", 15 * 1024**3, "test", "arm64"),
+        lambda *_args: RuntimeSnapshot("Darwin", "arm64", 12, 24 * 1024**3, "arm64", 15 * 1024**3, "test", "arm64"),
     )
     result = execute_prepared_run(prepared)
     state = json.loads(result.state_path.read_text())
@@ -172,6 +173,9 @@ def test_successful_mocked_execution_freezes_state_and_handoff(monkeypatch, tmp_
     assert handoff["gene_level_counts"]["format"] == "TSV"
     assert handoff["gene_level_counts"]["identifier_column"] == "gene_id"
     assert sorted(handoff["salmon"]["quant_sf"]) == ["C1", "C2", "T1", "T2"]
+    assert handoff["salmon"]["tx2gene"]["mapping_type"] == "nfcore_tx2gene_augmented"
+    assert handoff["salmon"]["tx2gene"]["path"].endswith("salmon.merged.tx2gene_augmented.tsv")
+    assert len(handoff["salmon"]["tx2gene"]["sha256"]) == 64
     assert handoff["multiqc"]["html"].endswith("multiqc_report.html")
     assert load_run_states(root)[0]["handoff_available"] is True
 
@@ -184,7 +188,7 @@ def test_handoff_accepts_modern_multiqc_report_data(monkeypatch, tmp_path):
         outdir = Path(arguments[arguments.index("--outdir") + 1])
         (outdir / "salmon").mkdir(parents=True)
         (outdir / "salmon" / "salmon.merged.gene_counts.tsv").write_text("gene_id\tC1\nGeneA\t1.0\n")
-        (outdir / "salmon" / "salmon.merged.tx2gene.tsv").write_text("transcript_id\tgene_id\nTx1\tGeneA\n")
+        (outdir / "salmon" / "salmon.merged.tx2gene_augmented.tsv").write_text("transcript_id\tgene_id\nTx1\tGeneA\n")
         for sample in ("C1", "C2", "T1", "T2"):
             sample_dir = outdir / "salmon" / sample
             sample_dir.mkdir()
@@ -196,11 +200,24 @@ def test_handoff_accepts_modern_multiqc_report_data(monkeypatch, tmp_path):
     monkeypatch.setattr("rnaseq.execution.subprocess.run", successful)
     monkeypatch.setattr(
         "rnaseq.execution.runtime_snapshot",
-        lambda: RuntimeSnapshot("Darwin", "arm64", 12, 24 * 1024**3, "arm64", 15 * 1024**3, "test", "arm64"),
+        lambda *_args: RuntimeSnapshot("Darwin", "arm64", 12, 24 * 1024**3, "arm64", 15 * 1024**3, "test", "arm64"),
     )
     result = execute_prepared_run(prepared)
     handoff = yaml.safe_load(result.handoff_path.read_text())
     assert handoff["multiqc"]["data_directory"].endswith("multiqc_report_data")
+
+
+def test_augmented_tx2gene_fixture_retains_nfcore_self_mapping():
+    fixture = Path(__file__).parent / "fixtures" / "salmon_augmented_tx2gene"
+    with (fixture / "S1" / "quant.sf").open() as handle:
+        quant = {row["Name"]: float(row["NumReads"]) for row in csv.DictReader(handle, delimiter="\t")}
+    with (fixture / "ordinary.tsv").open() as handle:
+        ordinary = {row["transcript_id"] for row in csv.DictReader(handle, delimiter="\t")}
+    with (fixture / "augmented.tsv").open() as handle:
+        augmented = {row["transcript_id"]: row["gene_id"] for row in csv.DictReader(handle, delimiter="\t")}
+    assert sum(quant[name] for name in ordinary) == 10
+    assert augmented["TxOrphan"] == "TxOrphan"
+    assert sum(quant[name] for name in augmented) == 15
 
 
 def test_failed_subprocess_preserves_run_and_marks_failed(monkeypatch, tmp_path):
@@ -275,19 +292,43 @@ def test_container_runtime_probe_reports_the_failed_prerequisite(monkeypatch):
 def test_doctor_reports_a_successful_container_probe(monkeypatch):
     monkeypatch.setattr("rnaseq.execution.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "available"))
     monkeypatch.setattr("rnaseq.execution.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "available"))
-    monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda: RuntimeCheck("Control-plane container", "FOUND", "available"))
+    monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda *_args: RuntimeCheck("Control-plane container", "FOUND", "available"))
     monkeypatch.setattr("rnaseq.downstream.r_runtime_checks", lambda: ())
     checks = doctor_checks()
     assert RuntimeCheck("Control-plane container", "FOUND", "available") in checks
 
 
+def test_doctor_reports_requested_and_observed_image_identity(monkeypatch, project_factory):
+    root = project_factory()
+    config_path = root / "project.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["runtime"] = {"control_plane_image": "rnaseq-control-plane:0.5.1"}
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr("rnaseq.execution.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "available"))
+    monkeypatch.setattr("rnaseq.execution.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "available"))
+    monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda *_args: RuntimeCheck("Control-plane container", "FOUND", "available"))
+    monkeypatch.setattr(
+        "rnaseq.execution.inspect_container_image",
+        lambda image: {"reference": image, "image_id": "sha256:" + "a" * 64, "repo_digests": ["repo@sha256:" + "b" * 64]},
+    )
+    monkeypatch.setattr(
+        "rnaseq.execution.runtime_snapshot",
+        lambda *_args: RuntimeSnapshot("Darwin", "arm64", 12, 24 * 1024**3, "arm64", 15 * 1024**3, "test", "arm64"),
+    )
+    monkeypatch.setattr("rnaseq.downstream.r_runtime_checks", lambda: ())
+    identity = {check.name: check for check in doctor_checks(root)}["Control-plane image identity"]
+    assert identity.verdict == "PASS"
+    assert "requested=rnaseq-control-plane:0.5.1" in identity.detail
+    assert "observed_image_id=sha256:" in identity.detail
+
+
 def test_doctor_distinguishes_missing_nextflow_and_docker_from_architecture_warnings(monkeypatch):
     monkeypatch.setattr("rnaseq.execution.check_nextflow", lambda: RuntimeCheck("Nextflow", "NOT FOUND", "not installed"))
     monkeypatch.setattr("rnaseq.execution.check_docker", lambda: RuntimeCheck("Docker", "NOT FOUND", "daemon unavailable"))
-    monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda: RuntimeCheck("Control-plane container", "NOT FOUND", "daemon unavailable"))
+    monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda *_args: RuntimeCheck("Control-plane container", "NOT FOUND", "daemon unavailable"))
     monkeypatch.setattr(
         "rnaseq.execution.runtime_snapshot",
-        lambda: RuntimeSnapshot("Darwin", "arm64", 12, 24 * 1024**3, None, None, None, "amd64"),
+        lambda *_args: RuntimeSnapshot("Darwin", "arm64", 12, 24 * 1024**3, None, None, None, "amd64"),
     )
     monkeypatch.setattr("rnaseq.downstream.r_runtime_checks", lambda: ())
 

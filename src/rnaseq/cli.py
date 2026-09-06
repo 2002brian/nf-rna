@@ -361,7 +361,7 @@ def new_project(
         if normalized_preset is not Preset.QC and metadata is not None and condition_column is not None:
             fields_by_level, available_fields = _metadata_fields(metadata)
             selected_covariates = covariate or []
-            required_fields = [condition_column, *selected_covariates]
+            required_fields = [*selected_covariates, condition_column]
             if normalized_design is DesignType.PAIRED:
                 if pairing_column is None:
                     raise ProjectCreationError("Paired imported design requires --pairing-column.")
@@ -370,7 +370,8 @@ def new_project(
             if missing_fields:
                 raise ProjectCreationError("Selected design field(s) are not in imported metadata: " + ", ".join(missing_fields))
             # Formula order is deterministic: pairing first, then covariates,
-            # with the contrast factor last.
+            # with the contrast factor last. Pairing identity itself is stored
+            # explicitly and never inferred from this ordering.
             formula = "~ " + " + ".join(dict.fromkeys(required_fields))
         normalized_layout = SequencingLayout(layout) if layout else (None if fastq_samplesheet else SequencingLayout.PAIRED_END)
         normalized_preprocessing = FastqPreprocessing(preprocessing or "raw")
@@ -415,7 +416,7 @@ def new_project(
                 )
             typer.echo("Project creation cancelled; no project was written.")
             return
-        target = create_project(project_name=name, destination=destination, species=normalized_species, preset=normalized_preset, design_type=normalized_design, input_type=normalized_input, layout=normalized_layout, preprocessing=normalized_preprocessing, strandedness=normalized_strand, quantification_method=normalized_method, reference=reference, fastq_samplesheet=fastq_samplesheet, counts_file=counts, metadata_file=metadata, contrasts_file=contrasts, scaffold=scaffold, formula=formula)
+        target = create_project(project_name=name, destination=destination, species=normalized_species, preset=normalized_preset, design_type=normalized_design, input_type=normalized_input, layout=normalized_layout, preprocessing=normalized_preprocessing, strandedness=normalized_strand, quantification_method=normalized_method, reference=reference, fastq_samplesheet=fastq_samplesheet, counts_file=counts, metadata_file=metadata, contrasts_file=contrasts, scaffold=scaffold, formula=formula, pairing_column=pairing_column)
     except (ValueError, ProjectCreationError) as exc:
         typer.echo(f"ERROR: {exc}", err=True)
         raise typer.Exit(code=1) from exc

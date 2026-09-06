@@ -56,6 +56,9 @@ def test_valid_paired_fastq_with_extensible_metadata(tmp_path):
     assert report.config is not None and report.config.input.preprocessing.value == "raw"
     assert not any("unused" in issue.message.lower() for issue in report.issues)
     assert not report.execution_ready
+    assert report.config.input.layout.value == "paired_end"
+    assert report.config.design.type.value == "two_group"
+    assert report.config.design.pairing_column is None
 
 
 def test_valid_single_end_fastq(tmp_path):

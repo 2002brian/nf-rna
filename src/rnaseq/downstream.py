@@ -22,6 +22,7 @@ import yaml
 from rnaseq.errors import DownstreamExecutionError
 from rnaseq.execution import RuntimeCheck
 from rnaseq.models import InputType
+from rnaseq.references import sha256_file
 from rnaseq.validators import ValidationReport
 
 L1_FILTER = {"rule": "remove genes with total count < 10 after all-zero removal", "minimum_total_count": 10}
@@ -117,9 +118,14 @@ def _upgrade_salmon_handoff(run_dir: Path, manifest: dict[str, Any]) -> dict[str
         raise DownstreamExecutionError("Legacy handoff cannot be upgraded: required real Salmon quant.sf/tx2gene artifacts are absent.")
     manifest["salmon"] = {
         "quant_sf": {sample: path.relative_to(run_dir).as_posix() for sample, path in quant.items()},
-        "tx2gene": tx2gene.relative_to(run_dir).as_posix(),
+        "tx2gene": {
+            "path": tx2gene.relative_to(run_dir).as_posix(),
+            "sha256": sha256_file(tx2gene),
+            "mapping_type": "historical_ordinary",
+            "role": "Historical ordinary GTF-derived tx2gene mapping; no augmented self-mapping claim.",
+        },
         "transcript_counts": (output / "salmon.merged.transcript_counts.tsv").relative_to(run_dir).as_posix(),
-        "contract_note": "L1 imports per-sample quant.sf with salmon.merged.tx2gene.tsv via tximport; estimated counts are not silently rounded by Python.",
+        "contract_note": "Historical L1 imports ordinary salmon.merged.tx2gene.tsv via tximport; this is not an augmented-mapping claim.",
     }
     manifest_path = run_dir / "handoff" / "upstream_manifest.yaml"
     manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True), encoding="utf-8", newline="\n")
@@ -158,7 +164,33 @@ def prepare_l1(report: ValidationReport, *, run_id: str | None) -> PreparedL1:
     if set(quant) != set(samples):
         raise DownstreamExecutionError("Handoff Salmon quant.sf sample set disagrees with its recorded sample list.")
     quant_paths = {sample: str(_relative_existing(run_dir, value, f"salmon.quant_sf.{sample}")) for sample, value in sorted(quant.items())}
-    tx2gene = _relative_existing(run_dir, salmon.get("tx2gene"), "salmon.tx2gene")
+    mapping = salmon.get("tx2gene")
+    mapping_metadata: dict[str, Any]
+    if isinstance(mapping, dict):
+        tx2gene = _relative_existing(run_dir, mapping.get("path"), "salmon.tx2gene.path")
+        expected = mapping.get("sha256")
+        observed = sha256_file(tx2gene)
+        if expected != observed:
+            raise DownstreamExecutionError(
+                f"Handoff Salmon tx2gene checksum mismatch: expected {expected!r}, observed {observed}."
+            )
+        if mapping.get("mapping_type") not in {"nfcore_tx2gene_augmented", "historical_ordinary"}:
+            raise DownstreamExecutionError("Handoff Salmon tx2gene mapping_type is unsupported.")
+        if not isinstance(mapping.get("role"), str) or not mapping["role"].strip():
+            raise DownstreamExecutionError("Handoff Salmon tx2gene role is missing.")
+        mapping_metadata = {
+            "mapping_type": mapping.get("mapping_type"),
+            "role": mapping.get("role"),
+            "sha256": observed,
+        }
+    else:
+        # Read-only compatibility for immutable pre-0.5.1 handoffs.
+        tx2gene = _relative_existing(run_dir, mapping, "salmon.tx2gene")
+        mapping_metadata = {
+            "mapping_type": "historical_ordinary",
+            "role": "Historical ordinary GTF-derived tx2gene mapping; no augmented self-mapping claim.",
+            "sha256": sha256_file(tx2gene),
+        }
     frozen_metadata = run_dir / "frozen" / "metadata.csv"
     if not frozen_metadata.is_file():
         raise DownstreamExecutionError("Selected run has no frozen metadata.csv.")
@@ -170,7 +202,7 @@ def prepare_l1(report: ValidationReport, *, run_id: str | None) -> PreparedL1:
     return PreparedL1(
         report.project_dir, run_dir / "downstream" / "l1", "salmon_tximport", tuple(sorted(samples)),
         frozen_metadata, formula,
-        {"source_type": "salmon_tximport", "run_id": run_id, "quant_sf": quant_paths, "tx2gene": str(tx2gene)},
+        {"source_type": "salmon_tximport", "run_id": run_id, "quant_sf": quant_paths, "tx2gene": str(tx2gene), "tx2gene_mapping": mapping_metadata},
     )
 
 

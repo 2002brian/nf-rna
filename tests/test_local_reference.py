@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 
 from conftest import BASE_CONTRASTS, base_config
 from rnaseq.errors import ExecutionPreflightError
-from rnaseq.execution import _validate_custom_reference_files
+from rnaseq.execution import RuntimeCheck, _validate_custom_reference_files
 from rnaseq.execution import build_nextflow_command
 from rnaseq.cli import app
 from rnaseq.planner import generate_plan
@@ -34,7 +34,7 @@ from rnaseq.references import (
     adopt_local_salmon_index,
     prepare_local_reference,
 )
-from rnaseq.service import create_case_run, freeze_case_inputs
+from rnaseq.service import create_case_run, freeze_case_inputs, prepare_service_run
 from rnaseq.validators import validate_project
 
 
@@ -197,6 +197,85 @@ def _local_fastq_project(tmp_path: Path, *, species: str = "Homo sapiens") -> tu
     config["reference"] = {"source": "local", "root": str(reference), "manifest": "reference_manifest.yaml"}
     (root / "project.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     return root, reference
+
+
+def _promote_reference_for_production(root: Path, reference: Path, *, purpose: str = "production") -> None:
+    _mark_salmon_built(reference)
+    manifest_path = reference / "reference_manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = "1.1"
+    manifest["purpose"] = purpose
+    manifest["sources"] = {
+        name: {
+            "accession": f"fixture:{name}",
+            "upstream_checksum": {"algorithm": "sha256", "value": item["sha256"]},
+        }
+        for name, item in manifest["files"].items()
+    }
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    config_path = root / "project.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["reference"]["acceptance"] = "production"
+    config["runtime"] = {"control_plane_image": "rnaseq-control-plane:0.5.1"}
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+
+def test_production_acceptance_requires_reviewed_managed_reference_and_verified_sources(tmp_path):
+    root, reference = _local_fastq_project(tmp_path)
+    _promote_reference_for_production(root, reference)
+    report = validate_project(root)
+    assert report.is_valid, report.errors
+    assert report.local_reference.purpose == "production"
+    assert report.local_reference.source_provenance["genome_fasta"]["upstream_checksum"]["verification"] == "matched_local_asset"
+
+
+def test_synthetic_manifest_works_normally_but_fails_production_acceptance(tmp_path):
+    root, reference = _local_fastq_project(tmp_path)
+    _promote_reference_for_production(root, reference, purpose="synthetic_test")
+    production = validate_project(root)
+    assert "synthetic_reference_not_production" in {issue.code for issue in production.errors}
+    config_path = root / "project.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["reference"]["acceptance"] = "standard"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    assert validate_project(root).is_valid
+
+
+def test_legacy_manifest_is_not_silently_promoted_to_production(tmp_path):
+    root, reference = _local_fastq_project(tmp_path)
+    _mark_salmon_built(reference)
+    config_path = root / "project.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["reference"]["acceptance"] = "production"
+    config["runtime"] = {"control_plane_image": "rnaseq-control-plane:0.5.1"}
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    report = validate_project(root)
+    assert "legacy_reference_not_production" in {issue.code for issue in report.errors}
+
+
+def test_production_runtime_requires_observed_immutable_image_identity(monkeypatch, tmp_path):
+    root, reference = _local_fastq_project(tmp_path)
+    _promote_reference_for_production(root, reference)
+    report = validate_project(root)
+    generate_plan(report)
+    monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "test"))
+    monkeypatch.setattr("rnaseq.service.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "test"))
+    monkeypatch.setattr("rnaseq.service.check_container_runtime", lambda *_args: RuntimeCheck("Control-plane container", "FOUND", "test"))
+    monkeypatch.setattr("rnaseq.service.inspect_container_image", lambda image: {"reference": image, "image_id": None, "repo_digests": []})
+    with pytest.raises(ExecutionPreflightError, match="observed immutable"):
+        prepare_service_run(report, profile="local")
+
+
+def test_production_acceptance_rejects_custom_reference_and_latest_runtime(project_factory):
+    config = deepcopy(base_config())
+    config["input"] = {"type": "fastq", "path": "input/fastq", "layout": "paired_end"}
+    config["upstream"] = {
+        "engine": "nfcore_rnaseq", "pipeline_version": "3.26.0", "strandedness": "auto",
+        "quantification": {"method": "salmon"},
+    }
+    config["reference"] = {"source": "custom", "fasta": "reference.fa", "gtf": "genes.gtf", "acceptance": "production"}
+    report = validate_project(project_factory(config=config))
+    assert "invalid_project_config" in {issue.code for issue in report.errors}
 
 
 def test_not_built_local_reference_is_valid_but_not_execution_ready(tmp_path):

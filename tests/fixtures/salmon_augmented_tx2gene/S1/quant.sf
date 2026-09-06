@@ -1,0 +1,3 @@
+Name	Length	EffectiveLength	TPM	NumReads
+TxKnown	100	80	66.6667	10
+TxOrphan	100	80	33.3333	5

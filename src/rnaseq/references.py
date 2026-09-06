@@ -20,7 +20,13 @@ from rnaseq.models import ReferenceConfig
 
 
 SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
-LOCAL_REFERENCE_MANIFEST_VERSION = "1.0"
+MD5_PATTERN = re.compile(r"^[0-9a-fA-F]{32}$")
+LEGACY_LOCAL_REFERENCE_MANIFEST_VERSION = "1.0"
+LOCAL_REFERENCE_MANIFEST_VERSION = "1.1"
+LOCAL_REFERENCE_MANIFEST_VERSIONS = frozenset(
+    (LEGACY_LOCAL_REFERENCE_MANIFEST_VERSION, LOCAL_REFERENCE_MANIFEST_VERSION)
+)
+REFERENCE_PURPOSES = frozenset(("synthetic_test", "production"))
 SALMON_NOT_BUILT = "not_built"
 SALMON_BUILT = "built"
 SALMON_VERSION = "1.10.3"
@@ -72,6 +78,8 @@ class LocalReference:
     root: Path
     manifest_path: Path
     manifest_sha256: str
+    manifest_schema_version: str
+    purpose: str | None
     species: str
     provider: str
     release: int
@@ -91,6 +99,7 @@ class LocalReference:
     hisat2_splice_sites: LocalReferenceAsset | None = None
     hisat2_status: str = HISAT2_NOT_BUILT
     hisat2_provenance: dict[str, object] | None = None
+    source_provenance: dict[str, object] | None = None
 
     @property
     def salmon_strategy(self) -> str:
@@ -138,6 +147,7 @@ class LocalReference:
         return {
             "source": "local",
             "root": str(self.root),
+            "purpose": self.purpose,
             "species": self.species,
             "provider": self.provider,
             "release": self.release,
@@ -146,8 +156,9 @@ class LocalReference:
             "manifest": {
                 "path": str(self.manifest_path),
                 "sha256": self.manifest_sha256,
-                "schema_version": LOCAL_REFERENCE_MANIFEST_VERSION,
+                "schema_version": self.manifest_schema_version,
             },
+            "source_provenance": self.source_provenance,
             "assets": {
                 asset.name: {"path": str(asset.path), "sha256": asset.sha256}
                 for asset in self.assets()
@@ -184,6 +195,14 @@ class LocalReference:
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _digest_file(path: Path, algorithm: str) -> str:
+    digest = hashlib.new(algorithm)
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
@@ -235,6 +254,61 @@ def _asset_from_payload(root: Path, payload: dict[str, Any], label: str, name: s
             f"Local reference checksum mismatch for {name}: expected {expected_sha256}, observed {observed_sha256}."
         )
     return LocalReferenceAsset(name, path, relative_path, expected_sha256.lower())
+
+
+def _validated_source_provenance(
+    value: object,
+    assets: dict[str, LocalReferenceAsset],
+) -> dict[str, object] | None:
+    """Validate only supplied upstream identities and prove supplied checksums."""
+
+    if value is None:
+        return None
+    sources = _require_mapping(value, "sources")
+    unknown = sorted(set(sources) - set(assets))
+    if unknown:
+        raise LocalReferenceError("Local reference manifest sources has unknown asset(s): " + ", ".join(unknown) + ".")
+    result: dict[str, object] = {}
+    for name, raw in sources.items():
+        item = _require_mapping(raw, f"sources.{name}")
+        recorded: dict[str, object] = {}
+        for field in ("url", "accession"):
+            if field in item:
+                recorded[field] = _require_string(item[field], f"sources.{name}.{field}")
+        if "upstream_checksum" in item:
+            checksum = _require_mapping(item["upstream_checksum"], f"sources.{name}.upstream_checksum")
+            algorithm = _require_string(
+                checksum.get("algorithm"), f"sources.{name}.upstream_checksum.algorithm"
+            ).lower()
+            expected = _require_string(
+                checksum.get("value"), f"sources.{name}.upstream_checksum.value"
+            ).lower()
+            pattern = SHA256_PATTERN if algorithm == "sha256" else MD5_PATTERN if algorithm == "md5" else None
+            if pattern is None or not pattern.fullmatch(expected):
+                raise LocalReferenceError(
+                    f"Local reference manifest sources.{name}.upstream_checksum must be a valid md5 or sha256 digest."
+                )
+            observed = _digest_file(assets[name].path, algorithm)
+            if observed != expected:
+                raise LocalReferenceError(
+                    f"Local reference upstream checksum mismatch for {name}: expected {expected}, observed {observed}."
+                )
+            recorded["upstream_checksum"] = {
+                "algorithm": algorithm,
+                "value": expected,
+                "verification": "matched_local_asset",
+            }
+        unknown_fields = sorted(set(item) - {"url", "accession", "upstream_checksum"})
+        if unknown_fields:
+            raise LocalReferenceError(
+                f"Local reference manifest sources.{name} has unsupported field(s): " + ", ".join(unknown_fields) + "."
+            )
+        if not recorded:
+            raise LocalReferenceError(
+                f"Local reference manifest sources.{name} must supply a URL, accession, or upstream checksum."
+            )
+        result[name] = recorded
+    return result
 
 
 def _validated_salmon_provenance(
@@ -430,10 +504,23 @@ def _load_local_reference_root(
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise LocalReferenceError(f"Unable to parse local reference manifest {manifest_path}: {exc}") from exc
     manifest = _require_mapping(loaded, "root")
-    if manifest.get("schema_version") != LOCAL_REFERENCE_MANIFEST_VERSION:
+    manifest_schema_version = manifest.get("schema_version")
+    if manifest_schema_version not in LOCAL_REFERENCE_MANIFEST_VERSIONS:
         raise LocalReferenceError(
             "Unsupported local reference manifest schema version: "
-            f"{manifest.get('schema_version')!r}; supported version: {LOCAL_REFERENCE_MANIFEST_VERSION}."
+            f"{manifest_schema_version!r}; supported versions: "
+            f"{LEGACY_LOCAL_REFERENCE_MANIFEST_VERSION}, {LOCAL_REFERENCE_MANIFEST_VERSION}."
+        )
+    purpose = manifest.get("purpose")
+    if manifest_schema_version == LOCAL_REFERENCE_MANIFEST_VERSION:
+        purpose = _require_string(purpose, "purpose")
+        if purpose not in REFERENCE_PURPOSES:
+            raise LocalReferenceError(
+                "Local reference manifest purpose must be synthetic_test or production."
+            )
+    elif purpose is not None:
+        raise LocalReferenceError(
+            "Legacy local reference manifest schema 1.0 must be migrated explicitly to 1.1 before adding purpose."
         )
     identity = _require_mapping(manifest.get("reference"), "reference")
     species = _require_string(identity.get("species"), "reference.species")
@@ -451,6 +538,14 @@ def _load_local_reference_root(
     genome_fasta = _asset(root, files, "genome_fasta")
     annotation_gtf = _asset(root, files, "annotation_gtf")
     transcript_fasta = _asset(root, files, "transcript_fasta")
+    source_provenance = _validated_source_provenance(
+        manifest.get("sources"),
+        {
+            "genome_fasta": genome_fasta,
+            "annotation_gtf": annotation_gtf,
+            "transcript_fasta": transcript_fasta,
+        },
+    )
     salmon = _require_mapping(manifest.get("salmon"), "salmon")
     salmon_status = _require_string(salmon.get("status"), "salmon.status")
     index_value = salmon.get("index")
@@ -520,6 +615,8 @@ def _load_local_reference_root(
         root=root,
         manifest_path=manifest_path,
         manifest_sha256=sha256_file(manifest_path),
+        manifest_schema_version=manifest_schema_version,
+        purpose=purpose,
         species=species,
         provider=provider,
         release=release,
@@ -539,6 +636,7 @@ def _load_local_reference_root(
         hisat2_splice_sites=hisat2_splice_sites,
         hisat2_status=hisat2_status,
         hisat2_provenance=hisat2_provenance,
+        source_provenance=source_provenance,
     ), manifest
 
 

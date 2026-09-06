@@ -90,6 +90,9 @@ quant.sf
 !examples/nfcore_smoke_test/input/
 !examples/nfcore_smoke_test/input/fastq/
 !examples/nfcore_smoke_test/input/fastq/*.fastq.gz
+!tests/fixtures/salmon_augmented_tx2gene/
+!tests/fixtures/salmon_augmented_tx2gene/S1/
+!tests/fixtures/salmon_augmented_tx2gene/S1/quant.sf
 !examples/nfcore_smoke_test/reference/
 !examples/nfcore_smoke_test/reference/genome.fasta
 !examples/nfcore_smoke_test/reference/genes.gtf.gz
