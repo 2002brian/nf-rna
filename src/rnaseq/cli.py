@@ -11,7 +11,10 @@ import click
 import typer
 
 from rnaseq.errors import ExecutionPreflightError, ProjectCreationError, UpstreamExecutionError
-from rnaseq.execution import doctor_checks, load_run_states
+from rnaseq.execution import (
+    detect_local_resource_capacity, doctor_checks, load_run_states,
+    suggested_local_resources, validate_local_execution_budget,
+)
 from rnaseq.service import execute_service_run, prepare_service_run, sanitize_completed_delivery, validate_case_id
 from rnaseq.models import DesignType, FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, SequencingLayout, Species
 from rnaseq.planner import generate_plan
@@ -271,7 +274,7 @@ def new_project(
     contrasts: Path | None = typer.Option(None, "--contrasts", help="Existing contrasts CSV to preserve."),
     layout: str | None = typer.Option(None, "--layout", help="paired_end or single_end; inferred from imported samplesheets."),
     preprocessing: str | None = typer.Option(None, "--preprocessing", help="raw or pretrimmed FASTQ."),
-    method: str | None = typer.Option(None, "--method", help="salmon or hisat2_featurecounts."),
+    method: str | None = typer.Option(None, "--method", "--backend", help="salmon or hisat2_featurecounts."),
     strandedness: str | None = typer.Option(None, "--strandedness", help="auto, unstranded, forward, or reverse."),
     reference_source: str | None = typer.Option(None, "--reference-source", help="igenomes, local, or custom."),
     reference_root: Path | None = typer.Option(None, "--reference-root", help="Managed local reference root."),
@@ -286,12 +289,15 @@ def new_project(
     condition_column: str | None = typer.Option(None, "--condition-column", help="Imported metadata factor used for contrasts and the design formula."),
     covariate: list[str] | None = typer.Option(None, "--covariate", help="Additional imported metadata field; repeat as needed."),
     pairing_column: str | None = typer.Option(None, "--pairing-column", help="Imported metadata field for paired designs."),
+    execution_profile: str | None = typer.Option(None, "--execution-profile", help="Only local is supported."),
+    cpus: int | None = typer.Option(None, "--cpus", help="Total local Nextflow CPU ceiling, not per-task CPUs."),
+    memory_gb: int | None = typer.Option(None, "--memory-gb", help="Total local Nextflow memory ceiling in GiB, not per-task memory."),
     scaffold: bool = typer.Option(False, "--scaffold", help="Create templates only; the project remains incomplete until inputs are supplied."),
     yes: bool = typer.Option(False, "--yes", help="Create without an interactive confirmation."),
 ) -> None:
     """Create a reviewed RNA-seq project interactively or from explicit flags."""
 
-    noninteractive = any(value is not None for value in (name, destination, species, input_type, fastq_samplesheet, counts, metadata, contrasts, layout, preprocessing, method, strandedness, reference_source, reference_root, reference_manifest, reference_fasta, reference_gtf, reference_transcript_fasta, reference_salmon_index, reference_hisat2_index, preset, design_type, condition_column, covariate, pairing_column)) or scaffold or yes
+    noninteractive = any(value is not None for value in (name, destination, species, input_type, fastq_samplesheet, counts, metadata, contrasts, layout, preprocessing, method, strandedness, reference_source, reference_root, reference_manifest, reference_fasta, reference_gtf, reference_transcript_fasta, reference_salmon_index, reference_hisat2_index, preset, design_type, condition_column, covariate, pairing_column, execution_profile, cpus, memory_gb)) or scaffold or yes
     try:
         if not noninteractive and not sys.stdin.isatty():
             raise ProjectCreationError(
@@ -350,6 +356,14 @@ def new_project(
                     if not candidates:
                         raise ProjectCreationError("Paired design needs a pairing field besides the condition field.")
                     pairing_column = _wizard_choice("Pairing field", [(field, f"levels: {', '.join(fields_by_level[field]) or 'none'}") for field in candidates], default=candidates[0])
+            capacity = detect_local_resource_capacity()
+            suggested_cpus, suggested_memory = suggested_local_resources(capacity)
+            typer.echo("\nLocal execution resources\n-------------------------")
+            typer.echo(f"Detected: {capacity.logical_cpus or 'unavailable'} logical CPUs / {capacity.available_memory_gib or capacity.total_memory_gib or 'unavailable'} GiB memory")
+            typer.echo(f"Suggested: {suggested_cpus} CPUs / {suggested_memory} GiB memory")
+            cpus = typer.prompt("CPU limit", default=suggested_cpus, type=int)
+            memory_gb = typer.prompt("Memory limit in GiB", default=suggested_memory, type=int)
+            execution_profile = "local"
 
         if preset is not None and preset.lower() == "qc" and design_type is None:
             # QC-only does not use a statistical design; keep a schema-valid
@@ -404,7 +418,12 @@ def new_project(
             if source not in {"igenomes", "local", "custom"}:
                 raise ProjectCreationError("--reference-source must be igenomes, local, or custom.")
             reference = _reference_options(source=source, species=normalized_species, method=normalized_method, local_root=reference_root, local_manifest=reference_manifest, fasta=reference_fasta, gtf=reference_gtf, transcript_fasta=reference_transcript_fasta, salmon_index=reference_salmon_index, hisat2_index=reference_hisat2_index)
-        review = {"Project": name, "Destination": destination, "Species": normalized_species.value, "Input": normalized_input.value, "Scope": normalized_preset.value, "Design": normalized_design.value, "Formula": formula or "template default", "Backend": normalized_method if normalized_input is InputType.FASTQ else "external raw counts", "Reference": reference.get("source"), "Mode": "scaffold (incomplete)" if scaffold else "import"}
+        if execution_profile not in {None, "local"}:
+            raise ProjectCreationError("Only --execution-profile local is supported.")
+        selected_cpus, selected_memory = cpus or 8, memory_gb or 12
+        validate_local_execution_budget(selected_cpus, selected_memory, detect_local_resource_capacity())
+        execution = {"profile": "local", "max_cpus": selected_cpus, "max_memory_gb": selected_memory}
+        review = {"Project": name, "Destination": destination, "Species": normalized_species.value, "Input": normalized_input.value, "Scope": normalized_preset.value, "Design": "not applicable for QC" if normalized_preset is Preset.QC else normalized_design.value, "Backend": normalized_method if normalized_input is InputType.FASTQ else "external raw counts", "Reference": reference.get("source"), "Execution": f"local, {selected_cpus} CPUs / {selected_memory} GiB", "Mode": "scaffold (incomplete)" if scaffold else "import"}
         _new_summary(review)
         if not yes and not typer.confirm("Create this project?", default=True):
             if not noninteractive and typer.confirm("Revise choices?", default=True):
@@ -418,11 +437,12 @@ def new_project(
                     reference_fasta=None, reference_gtf=None, reference_transcript_fasta=None,
                     reference_salmon_index=None, reference_hisat2_index=None, preset=None,
                     design_type=None, condition_column=None, covariate=None, pairing_column=None,
+                    execution_profile=None, cpus=None, memory_gb=None,
                     scaffold=False, yes=False,
                 )
             typer.echo("Project creation cancelled; no project was written.")
             return
-        target = create_project(project_name=name, destination=destination, species=normalized_species, preset=normalized_preset, design_type=normalized_design, input_type=normalized_input, layout=normalized_layout, preprocessing=normalized_preprocessing, strandedness=normalized_strand, quantification_method=normalized_method, reference=reference, fastq_samplesheet=fastq_samplesheet, counts_file=counts, metadata_file=metadata, contrasts_file=contrasts, scaffold=scaffold, formula=formula, pairing_column=pairing_column)
+        target = create_project(project_name=name, destination=destination, species=normalized_species, preset=normalized_preset, design_type=normalized_design, input_type=normalized_input, layout=normalized_layout, preprocessing=normalized_preprocessing, strandedness=normalized_strand, quantification_method=normalized_method, reference=reference, fastq_samplesheet=fastq_samplesheet, counts_file=counts, metadata_file=metadata, contrasts_file=contrasts, scaffold=scaffold, formula=formula, pairing_column=pairing_column, execution=execution)
     except (ValueError, ProjectCreationError) as exc:
         typer.echo(f"ERROR: {exc}", err=True)
         raise typer.Exit(code=1) from exc

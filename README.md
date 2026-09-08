@@ -142,6 +142,12 @@ FASTQ analysis and downstream analysis retain their container execution
 contracts. See [Runtime](docs/runtime.md) for the native tool/version policy,
 atomic publication behavior, and HISAT2 memory warning.
 
+The `rnaseq new` review also records a local aggregate execution budget. On a
+20 CPU / 64 GiB machine it normally suggests 16 CPUs / 48 GiB, reserving room
+for the OS, WSL and containers. This is an execution ceiling, not a scientific
+parameter or a per-task allocation; existing projects retain the conservative
+8 CPU / 12 GiB default.
+
 For the production Human Ensembl 116/GRCh38.p14 genome-only HISAT2 bundle,
 the registered GTF-derived splice-site file is supplied at runtime with
 `--known-splicesite-infile`; it is not graph-embedded. Builder version and

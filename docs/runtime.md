@@ -104,6 +104,21 @@ The successful run retained synchronized R1/R2 pairs after raw fastp processing,
 
 ## Local resource policy
 
+`rnaseq new` records an optional aggregate local execution ceiling under
+`execution.max_cpus` and `execution.max_memory_gb`. It is an execution
+preference, not a biological or statistical setting. The interactive wizard
+detects host CPU/memory on Linux/WSL and macOS, reserves approximately 20%, and
+rounds memory conservatively; a 20-CPU / 64-GiB machine normally suggests 16
+CPUs / 48 GiB. Existing projects without this section retain 8 CPUs / 12 GiB.
+`rnaseq doctor PROJECT` compares the requested ceiling with host and Docker
+capacity on the machine actually running the project. Each run freezes the
+effective local Nextflow configuration for upstream and downstream workflows.
+
+The ceiling is total executor capacity, not a per-task request. HISAT2,
+Salmon, featureCounts, process directives and `maxForks` keep their own
+declared limits. Reference preparation remains independent: use its explicit
+`--threads` option.
+
 The default local contracts are intentionally conservative:
 
 | class | CPUs | memory | time |

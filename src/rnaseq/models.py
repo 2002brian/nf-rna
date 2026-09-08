@@ -322,6 +322,14 @@ class RuntimeConfig(StrictModel):
         return value
 
 
+class ExecutionConfig(StrictModel):
+    """Portable aggregate local execution ceiling, not a scientific setting."""
+
+    profile: Literal["local"] = "local"
+    max_cpus: int = Field(default=8, ge=1)
+    max_memory_gb: int = Field(default=12, ge=1)
+
+
 class ProjectConfig(StrictModel):
     schema_version: StrictStr
     project: ProjectInfo
@@ -335,6 +343,7 @@ class ProjectConfig(StrictModel):
         default_factory=lambda: ReferenceConfig(source="igenomes", genome=None)
     )
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     thresholds: ThresholdsConfig
     annotation: AnnotationConfig | None = None
     analysis: AnalysisConfig | None = None

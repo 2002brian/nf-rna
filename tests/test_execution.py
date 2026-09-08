@@ -18,6 +18,7 @@ from rnaseq.execution import (
     RESOURCE_CONTRACTS,
     RuntimeCheck,
     RuntimeSnapshot,
+    LocalResourceCapacity,
     build_nextflow_command,
     classify_execution_failure,
     check_container_runtime,
@@ -29,6 +30,8 @@ from rnaseq.execution import (
     load_run_states,
     prepare_run,
     render_local_resource_config,
+    suggested_local_resources,
+    validate_local_execution_budget,
     resolve_execution_workspace,
     runtime_resource_checks,
 )
@@ -383,6 +386,17 @@ def test_rendered_resource_contract_bounds_salmon_concurrency_without_touching_n
     assert "resourceLimits = [cpus: 8, memory: '12.GB', time: '12.h']" in rendered
     assert "SALMON_QUANT" in rendered and "maxForks = 1" in rendered
     assert "skip_alignment" not in rendered and "skip_trimming" not in rendered
+
+
+def test_local_resource_suggestion_and_validation_are_conservative():
+    capacity = LocalResourceCapacity(20, 64, 62)
+    assert suggested_local_resources(capacity) == (16, 48)
+    validate_local_execution_budget(16, 48, capacity)
+    with pytest.raises(ExecutionPreflightError, match="positive"):
+        validate_local_execution_budget(0, 48, capacity)
+    with pytest.raises(ExecutionPreflightError, match="exceeds detected host"):
+        validate_local_execution_budget(21, 48, capacity)
+    assert suggested_local_resources(LocalResourceCapacity(None, None, None)) == (8, 12)
 
 
 def test_cli_run_requires_explicit_confirmation(monkeypatch, tmp_path):

@@ -143,6 +143,7 @@ def _project_yaml(
     strandedness: str = "auto",
     quantification_method: str = "salmon",
     reference: dict[str, object] | None = None,
+    execution: dict[str, object] | None = None,
     formula: str | None = None,
     pairing_column: str | None = None,
 ) -> str:
@@ -183,6 +184,7 @@ def _project_yaml(
         ),
         "reference": reference or {"source": "igenomes", "genome": None},
         "runtime": {"control_plane_image": "rnaseq-control-plane:latest"},
+        "execution": execution or {"profile": "local", "max_cpus": 8, "max_memory_gb": 12},
         "thresholds": {"padj": 0.05, "abs_log2fc": 1.0},
         "analysis": {"enrichment": []},
     }
@@ -289,6 +291,7 @@ def create_project(
     scaffold: bool = False,
     formula: str | None = None,
     pairing_column: str | None = None,
+    execution: dict[str, object] | None = None,
 ) -> Path:
     """Create a new project atomically and return its final path."""
 
@@ -373,7 +376,7 @@ def create_project(
             _project_yaml(
                 project_name, species, preset, design_type, input_type, layout,
                 preprocessing, strandedness, quantification_method,
-                resolved_reference, formula, pairing_column,
+                resolved_reference, execution, formula, pairing_column,
             ),
             encoding="utf-8",
             newline="\n",

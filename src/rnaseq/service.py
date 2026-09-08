@@ -45,6 +45,7 @@ from rnaseq.execution import (
     resolved_upstream_implementation,
     nfcore_runtime_params,
     prepare_execution_workspace,
+    project_execution_budget,
     RESOURCE_CONTRACTS,
     render_local_resource_config,
     require_fresh_plan,
@@ -599,13 +600,14 @@ def freeze_case_inputs(report: ValidationReport, run: CaseRun, *, profile: str, 
         # This single path-free config is passed to Salmon, HISAT2/featureCounts,
         # and the first-party downstream workflow for every local FASTQ run.
         runtime = frozen / "nfcore.local.config"
-        _write_text(runtime, render_local_resource_config())
+        _write_text(runtime, render_local_resource_config(project_execution_budget(report.config)))
 
     execution = {
         "case_id": run.case_id,
         "run_id": run.run_id,
         "timezone": "Asia/Taipei",
         "profile": profile,
+        "execution_budget": report.config.execution.model_dump(),
         "command": command,
         "pipeline": {"name": report.config.project.pipeline, "version": PIPELINE_VERSION},
         "upstream_implementation": (
@@ -722,8 +724,8 @@ def _provenance(
         "production_intended": bool(report.config and report.config.reference.acceptance == "production"),
         "runtime_resources": {
             "selected_local_ceiling": {
-                "cpus": RESOURCE_CONTRACTS["LARGE"].cpus,
-                "memory_gib": RESOURCE_CONTRACTS["LARGE"].memory_gib,
+                "cpus": report.config.execution.max_cpus,
+                "memory_gib": report.config.execution.max_memory_gb,
                 "one_project_at_a_time": True,
             },
             "host_os": runtime.host_os,

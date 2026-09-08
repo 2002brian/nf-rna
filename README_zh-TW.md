@@ -137,6 +137,8 @@ rnaseq reference prepare-hisat2 /absolute/reference-root --threads 4
 
 FASTQ 與 downstream analysis 仍使用既有的 container execution contract。native tool/version policy、atomic publication 與 HISAT2 memory warning 請見 [Runtime](docs/runtime.md)。
 
+`rnaseq new` 的 review 會記錄 local aggregate execution budget。20 CPU／64 GiB 的機器通常建議 16 CPU／48 GiB，保留 OS、WSL 與 container 所需空間。這是 execution ceiling，不是科學參數或每個 task 的配置；既有 project 仍使用保守的 8 CPU／12 GiB 預設。
+
 production Human Ensembl 116/GRCh38.p14 的 genome-only HISAT2 bundle 會在 runtime 以 `--known-splicesite-infile` 傳入由已註冊 GTF 產生的 splice-site file；splice site 並未嵌入 index graph。builder version 與 runtime aligner version 會分開記錄，並在 compatibility smoke test 通過前維持明確的驗證需求。同一 species/build/release 的 tissue 與 cell-line library 共用同一 reference；tissue identity 不會選擇另一個 genome reference。
 
 此 Human reference 的 tiny FASTQ smoke fixture 僅用於技術性 software-contract validation，不是 biological evidence，也不得用於 tissue 或 disease interpretation。

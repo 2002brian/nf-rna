@@ -32,6 +32,18 @@ def test_new_creates_versioned_project_without_placeholder_counts(tmp_path):
     assert (root / "metadata.csv").read_text(encoding="utf-8") == "sample_id,condition\n"
 
 
+def test_new_records_explicit_total_execution_budget(monkeypatch, tmp_path):
+    from rnaseq.execution import LocalResourceCapacity
+    monkeypatch.setattr("rnaseq.cli.detect_local_resource_capacity", lambda: LocalResourceCapacity(20, 64, 62))
+    result = runner.invoke(
+        app,
+        ["new", "--name", "resourced", "--destination", str(tmp_path), "--species", "mouse", "--input-type", "raw_counts", "--preset", "L2", "--design-type", "two_group", "--execution-profile", "local", "--cpus", "16", "--memory-gb", "48", "--scaffold", "--yes"],
+    )
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load((tmp_path / "resourced" / "project.yaml").read_text(encoding="utf-8"))
+    assert config["execution"] == {"profile": "local", "max_cpus": 16, "max_memory_gb": 48}
+
+
 def test_new_refuses_to_overwrite(tmp_path):
     (tmp_path / "existing").mkdir()
     result = runner.invoke(

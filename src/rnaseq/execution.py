@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -69,6 +70,65 @@ RESOURCE_CONTRACTS = {
     "LARGE": ResourceContract("LARGE", cpus=8, memory_gib=12, time_hours=12),
 }
 LOCAL_RESOURCE_CEILING = RESOURCE_CONTRACTS["LARGE"]
+
+
+@dataclass(frozen=True)
+class LocalResourceCapacity:
+    logical_cpus: int | None
+    total_memory_gib: int | None
+    available_memory_gib: int | None
+
+
+def detect_local_resource_capacity() -> LocalResourceCapacity:
+    """Read host capacity without Docker; Linux/WSL and macOS are supported."""
+
+    cpus = os.cpu_count()
+    total: int | None = None
+    available: int | None = None
+    try:
+        if sys.platform == "darwin":
+            result = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, check=False)
+            total = int(result.stdout.strip()) // 1024**3 if result.returncode == 0 else None
+            available = total
+        else:
+            fields = {
+                pieces[0].rstrip(":"): pieces[1]
+                for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines()
+                if (pieces := line.split()) and len(pieces) >= 2
+            }
+            total = int(fields["MemTotal"]) // 1024**2
+            available = int(fields.get("MemAvailable", fields["MemTotal"])) // 1024**2
+    except (OSError, ValueError, KeyError):
+        pass
+    return LocalResourceCapacity(cpus if cpus and cpus > 0 else None, total, available)
+
+
+def suggested_local_resources(capacity: LocalResourceCapacity) -> tuple[int, int]:
+    """Reserve roughly one fifth of CPUs and memory, rounded conservatively."""
+
+    fallback = (LOCAL_RESOURCE_CEILING.cpus, LOCAL_RESOURCE_CEILING.memory_gib)
+    if capacity.logical_cpus is None or capacity.total_memory_gib is None:
+        return fallback
+    cpus = max(1, math.floor(capacity.logical_cpus * 0.8))
+    usable_memory = min(capacity.total_memory_gib, capacity.available_memory_gib or capacity.total_memory_gib)
+    memory = max(1, (math.floor(usable_memory * 0.8) // 4) * 4)
+    return cpus, memory
+
+
+def validate_local_execution_budget(cpus: int, memory_gb: int, capacity: LocalResourceCapacity) -> None:
+    if isinstance(cpus, bool) or isinstance(memory_gb, bool) or cpus < 1 or memory_gb < 1:
+        raise ExecutionPreflightError("Execution CPU and memory limits must be positive integers.")
+    if cpus < LOCAL_RESOURCE_CEILING.cpus or memory_gb < LOCAL_RESOURCE_CEILING.memory_gib:
+        raise ExecutionPreflightError("Execution budget must be at least 8 CPUs and 12 GiB to satisfy enabled local process contracts.")
+    if capacity.logical_cpus is not None and cpus > capacity.logical_cpus:
+        raise ExecutionPreflightError(f"Requested {cpus} CPUs exceeds detected host capacity of {capacity.logical_cpus}.")
+    memory_capacity = min(capacity.total_memory_gib or memory_gb, capacity.available_memory_gib or memory_gb)
+    if capacity.total_memory_gib is not None and memory_gb > memory_capacity:
+        raise ExecutionPreflightError(f"Requested {memory_gb} GiB exceeds detected available memory of {memory_capacity} GiB.")
+
+
+def project_execution_budget(config: Any) -> ResourceContract:
+    return ResourceContract("PROJECT_LOCAL", config.execution.max_cpus, config.execution.max_memory_gb, LOCAL_RESOURCE_CEILING.time_hours)
 
 
 @dataclass(frozen=True)
@@ -319,7 +379,7 @@ def _gib(value: int | None) -> str:
     return "unavailable" if value is None else f"{value / (1024 ** 3):.1f} GiB"
 
 
-def runtime_resource_checks(snapshot: RuntimeSnapshot) -> tuple[RuntimeCheck, ...]:
+def runtime_resource_checks(snapshot: RuntimeSnapshot, budget: ResourceContract = LOCAL_RESOURCE_CEILING) -> tuple[RuntimeCheck, ...]:
     """Turn portable runtime facts into doctor PASS/WARN/FAIL checks."""
 
     host = RuntimeCheck(
@@ -340,33 +400,33 @@ def runtime_resource_checks(snapshot: RuntimeSnapshot) -> tuple[RuntimeCheck, ..
         checks.append(RuntimeCheck("Control-plane image architecture", "FOUND", "amd64 image on arm64 host; Docker/Rosetta emulation may reduce throughput.", "WARN"))
     else:
         checks.append(RuntimeCheck("Control-plane image architecture", "FOUND", f"image={snapshot.control_plane_image_architecture}; host={snapshot.host_architecture}"))
-    required_memory = LOCAL_RESOURCE_CEILING.memory_gib * 1024 ** 3
-    requested = f"{LOCAL_RESOURCE_CEILING.cpus} CPUs / {_gib(required_memory)}"
+    required_memory = budget.memory_gib * 1024 ** 3
+    requested = f"{budget.cpus} CPUs / {_gib(required_memory)}"
     unavailable = snapshot.docker_memory_bytes is None or snapshot.docker_cpus is None
     exceeds = (
         (snapshot.docker_memory_bytes is not None and snapshot.docker_memory_bytes < required_memory)
-        or (snapshot.docker_cpus is not None and snapshot.docker_cpus < LOCAL_RESOURCE_CEILING.cpus)
+        or (snapshot.docker_cpus is not None and snapshot.docker_cpus < budget.cpus)
     )
     if unavailable:
         checks.append(RuntimeCheck("Selected local ceiling", "NOT FOUND", f"Requested local ceiling is {requested}; Docker CPU or memory allocation is unavailable, so capacity cannot be confirmed.", "WARN"))
     elif exceeds:
         checks.append(RuntimeCheck("Selected local ceiling", "NOT FOUND", f"Requested local ceiling is {requested}; Docker exposes {snapshot.docker_cpus} CPUs / {_gib(snapshot.docker_memory_bytes)}. Reduce the requested profile or increase Docker allocation.", "WARN"))
     else:
-        checks.append(RuntimeCheck("Selected local ceiling", "FOUND", f"SMALL=1 CPU/2 GiB; MEDIUM=4 CPUs/8 GiB; LARGE={LOCAL_RESOURCE_CEILING.cpus} CPUs/{LOCAL_RESOURCE_CEILING.memory_gib} GiB; one project at a time."))
+        checks.append(RuntimeCheck("Selected local ceiling", "FOUND", f"Requested aggregate ceiling={budget.cpus} CPUs/{budget.memory_gib} GiB; per-process declarations and maxForks remain in effect; one project at a time."))
     checks.append(RuntimeCheck("nf-core upstream image architecture", "FOUND", "nf-core/rnaseq resolves process images dynamically; inspect the frozen Nextflow trace for per-process image architecture.", "WARN"))
     return tuple(checks)
 
 
-def render_local_resource_config() -> str:
+def render_local_resource_config(budget: ResourceContract = LOCAL_RESOURCE_CEILING) -> str:
     """Render the frozen, auditable local nf-core resource policy."""
 
     small, medium, large = (RESOURCE_CONTRACTS[name] for name in ("SMALL", "MEDIUM", "LARGE"))
     return (
-        "// Local research resource contract: SMALL=1/2 GiB, MEDIUM=4/8 GiB, LARGE=8/12 GiB; one project at a time.\n"
+        f"// Local research resource contract: SMALL=1/2 GiB, MEDIUM=4/8 GiB, LARGE=8/12 GiB; aggregate ceiling={budget.cpus} CPUs/{budget.memory_gib} GiB; one project at a time.\n"
         "// The local executor treats these as the aggregate per-run budget.\n"
-        f"executor {{ cpus = {large.cpus}; memory = '{large.memory_gib}.GB' }}\n"
+        f"executor {{ cpus = {budget.cpus}; memory = '{budget.memory_gib}.GB' }}\n"
         "process {\n"
-        f"  resourceLimits = [cpus: {large.cpus}, memory: '{large.memory_gib}.GB', time: '{large.time_hours}.h']\n"
+        f"  resourceLimits = [cpus: {budget.cpus}, memory: '{budget.memory_gib}.GB', time: '{budget.time_hours}.h']\n"
         f"  withLabel:process_low {{ cpus = {small.cpus}; memory = '{small.memory_gib}.GB'; time = '{small.time_hours}.h' }}\n"
         f"  withLabel:process_medium {{ cpus = {medium.cpus}; memory = '{medium.memory_gib}.GB'; time = '{medium.time_hours}.h' }}\n"
         f"  withLabel:process_high {{ cpus = {large.cpus}; memory = '{large.memory_gib}.GB'; time = '{large.time_hours}.h' }}\n"
@@ -513,10 +573,13 @@ def doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeCheck, ...]:
     writable = probe.exists() and probe.is_dir() and probe.stat().st_mode != 0
     from rnaseq.downstream import r_runtime_checks
     requested_image = CONTROL_PLANE_IMAGE
+    budget = LOCAL_RESOURCE_CEILING
     if project_dir is not None:
         try:
             from rnaseq.project import load_project
-            requested_image = load_project(project_dir).config.runtime.control_plane_image
+            config = load_project(project_dir).config
+            requested_image = config.runtime.control_plane_image
+            budget = project_execution_budget(config)
         except (OSError, ValueError):
             pass
     observed_image = inspect_container_image(requested_image)
@@ -545,7 +608,7 @@ def doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeCheck, ...]:
             None if observed_image.get("image_id") else "WARN",
         ),
         downstream_docker_user_mapping_check(),
-        *runtime_resource_checks(snapshot),
+        *runtime_resource_checks(snapshot, budget),
         _reference_runtime_check(project_dir),
         RuntimeCheck("Disk write access", "FOUND" if writable else "NOT FOUND", str(probe)),
         disk_check,
@@ -653,6 +716,10 @@ def prepare_run(report: ValidationReport, profile: str) -> PreparedRun:
             "Only '--profile local' is available."
         )
     _require_fastq_execution_report(report)
+    assert report.config is not None
+    validate_local_execution_budget(
+        report.config.execution.max_cpus, report.config.execution.max_memory_gb, detect_local_resource_capacity()
+    )
     _validate_custom_reference_files(report)
     require_fresh_plan(report)
     # Also prove the generated samplesheet remains renderable before any run directory exists.
@@ -777,7 +844,7 @@ def _freeze_inputs(prepared: PreparedRun, run_dir: Path) -> tuple[Path, Path, Pa
     _write_text(params_path, json.dumps(nfcore_runtime_params(report), sort_keys=True) + "\n")
     # Resource declarations are frozen separately from scientific parameters.
     runtime_config = frozen / "local.nextflow.config"
-    _write_text(runtime_config, render_local_resource_config())
+    _write_text(runtime_config, render_local_resource_config(project_execution_budget(report.config)))
     return samplesheet, upstream_path, params_path, runtime_config
 
 
