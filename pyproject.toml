@@ -27,7 +27,7 @@ rnaseq = "rnaseq.cli:app"
 packages = ["src/rnaseq"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/rnaseq", "tests", "examples", "docs", "README.md", "CHANGELOG.md", "CITATION.cff", "LICENSE", "environment.yml", "pyproject.toml", "Dockerfile", ".dockerignore"]
+include = ["src/rnaseq", "tests", "examples", "docs", "README.md", "CHANGELOG.md", "CITATION.cff", "LICENSE", "environment.yml", "environment.reference-builder.yml", "environment.reference-builder-hisat2-2.2.3.yml", "pyproject.toml", "Dockerfile", ".dockerignore"]
 exclude = [
   "examples/**/runs/**",
   "examples/**/work/**",

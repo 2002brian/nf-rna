@@ -1,0 +1,7 @@
+name: nf-rna-reference-builder-hisat2-2-2-3
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - hisat2=2.2.3

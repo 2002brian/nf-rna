@@ -147,7 +147,7 @@ class ValidationReport:
         if reference.source == "local":
             return self.local_reference is not None and (
                 self.local_reference.salmon_index is not None if method == "salmon"
-                else self.local_reference.hisat2_index is not None
+                else self.local_reference.hisat2_runtime_ready
             )
         if method == "hisat2_featurecounts":
             return reference.fasta is not None and reference.gtf is not None and reference.hisat2_index is not None
@@ -167,6 +167,8 @@ class ValidationReport:
                 return (f"local Salmon index is not built. Run: rnaseq reference prepare {self.local_reference.root}",)
             if self.local_reference is not None and method == "hisat2_featurecounts" and self.local_reference.hisat2_index is None:
                 return (f"local HISAT2 index is not built. Run: rnaseq reference prepare-hisat2 {self.local_reference.root}",)
+            if self.local_reference is not None and method == "hisat2_featurecounts" and not self.local_reference.hisat2_runtime_ready:
+                return ("local HISAT2 genome-only index/runtime compatibility requires the documented smoke validation before execution",)
             if self.local_reference is not None:
                 return ("FASTQ input validation must pass before execution readiness can be confirmed.",)
             return ("local reference configuration or integrity validation failed",)
@@ -770,10 +772,10 @@ def _validate_production_reference(report: ValidationReport) -> None:
         if not any(issue.code == "invalid_local_reference" for issue in report.errors):
             report.error("production_reference_unavailable", "Production acceptance requires a valid managed local reference.")
         return
-    if reference.manifest_schema_version != LOCAL_REFERENCE_MANIFEST_VERSION:
+    if reference.manifest_schema_version == "1.0":
         report.error(
             "legacy_reference_not_production",
-            "Production acceptance requires local reference manifest schema 1.1. "
+            "Production acceptance requires local reference manifest schema 1.1 or later. "
             "Migrate explicitly and declare purpose; legacy 1.0 manifests are never assumed to be production.",
         )
     provider_marker = reference.provider.lower()
@@ -791,6 +793,8 @@ def _validate_production_reference(report: ValidationReport) -> None:
         report.error("production_salmon_index_missing", "Production acceptance requires a complete checksum-bound Salmon index.")
     if method == "hisat2_featurecounts" and reference.hisat2_index is None:
         report.error("production_hisat2_index_missing", "Production acceptance requires a complete checksum-bound HISAT2 index.")
+    if method == "hisat2_featurecounts" and not reference.hisat2_runtime_ready:
+        report.error("production_hisat2_runtime_unvalidated", "Production acceptance requires validated HISAT2 index-builder/runtime compatibility.")
 
 
 def validate_project(project_dir: Path | str) -> ValidationReport:

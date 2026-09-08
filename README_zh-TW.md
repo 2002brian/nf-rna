@@ -126,6 +126,21 @@ docker build -t rnaseq-control-plane:latest .
 
 需要 Python 3.11 以上版本。使用 FASTQ route 前，請安裝 Nextflow，並確認 Docker Desktop 或其他相容的 Docker daemon 已啟動。`latest` 僅可用於明確的 non-production 開發模式；production acceptance 必須將 `runtime.control_plane_image` 設為 digest 或 versioned tag，`rnaseq doctor PROJECT` 會同時報告 requested 與 observed identity。
 
+Managed Salmon 與 HISAT2 index 必須以 host-native 方式建立，不使用 Docker：
+
+```bash
+mamba env create -f environment.reference-builder.yml
+mamba activate nf-rna-reference-builder
+rnaseq reference prepare /absolute/reference-root --threads 4
+rnaseq reference prepare-hisat2 /absolute/reference-root --threads 4
+```
+
+FASTQ 與 downstream analysis 仍使用既有的 container execution contract。native tool/version policy、atomic publication 與 HISAT2 memory warning 請見 [Runtime](docs/runtime.md)。
+
+production Human Ensembl 116/GRCh38.p14 的 genome-only HISAT2 bundle 會在 runtime 以 `--known-splicesite-infile` 傳入由已註冊 GTF 產生的 splice-site file；splice site 並未嵌入 index graph。builder version 與 runtime aligner version 會分開記錄，並在 compatibility smoke test 通過前維持明確的驗證需求。同一 species/build/release 的 tissue 與 cell-line library 共用同一 reference；tissue identity 不會選擇另一個 genome reference。
+
+此 Human reference 的 tiny FASTQ smoke fixture 僅用於技術性 software-contract validation，不是 biological evidence，也不得用於 tissue 或 disease interpretation。
+
 ### 2. 檢查 runtime
 
 ```bash
@@ -189,6 +204,8 @@ runs/<case-id>/<run-id>/
 ```
 
 實際交付內容會依 input route 與 analysis level 而定，可能包括 QC figure、PCA、sample-correlation result、normalized-count 與 expression summary、differential-expression table、volcano plot、DEG heatmap、GO GSEA 與 KEGG GSEA 結果、technical HTML report，以及 frozen configuration/provenance record。圖形以 PNG 與 300-dpi TIFF 交付；不產生 PDF 或 SVG 格式。
+
+新 delivery 會在 `delivery/counts/` 以來源語意標示 matrix：imported 與 featureCounts 的 integer input 為 `raw_counts.csv`；Salmon/tximport 為可能含非整數估計值的 `estimated_counts.csv`；`vst.csv` 是供視覺化的 transformed expression。count artifact manifest 會記錄 checksum 與 sample order。DESeq2 應使用來源正確的 raw/estimated matrix，而非 VST；未經適當 normalization，不應直接比較不同 sample 的 raw-count magnitude。
 
 ## 科學分析預設與契約
 

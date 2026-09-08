@@ -12,6 +12,9 @@ params.outdir = null
 params.fasta = null
 params.gtf = null
 params.hisat2_index = null
+params.hisat2_index_basename = 'genome'
+params.hisat2_splice_sites = null
+params.hisat2_use_runtime_splices = false
 params.layout = null
 params.strandedness = null
 params.pretrimmed = false
@@ -94,6 +97,7 @@ process HISAT2_ALIGN {
     input:
     tuple val(sample), val(strandedness), path(reads)
     path index
+    path known_splices
     output:
     tuple val(sample), val(strandedness), path("*.lane.sam"), path("*.hisat2.summary"), emit: aligned
     script:
@@ -101,8 +105,9 @@ process HISAT2_ALIGN {
     def strand = hisatStrand(strandedness, params.layout)
     def inputs = paired ? "-1 ${reads[0]} -2 ${reads[1]}" : "-U ${reads[0]}"
     def lane = reads[0].baseName.replaceFirst(/\\.fastq$/, '')
+    def spliceArgument = (params.hisat2_use_runtime_splices == true || params.hisat2_use_runtime_splices == 'true') ? "--known-splicesite-infile ${known_splices}" : ''
     """
-    hisat2 -p ${task.cpus} -x ${index}/genome ${inputs} ${strand} --summary-file ${lane}.hisat2.summary -S ${lane}.lane.sam
+    hisat2 -p ${task.cpus} -x ${index}/${params.hisat2_index_basename} ${inputs} ${strand} ${spliceArgument} --summary-file ${lane}.hisat2.summary -S ${lane}.lane.sam
     """
 }
 
@@ -248,8 +253,8 @@ process MULTIQC {
 }
 
 workflow {
-    if (!params.input || !params.outdir || !params.fasta || !params.gtf || !params.hisat2_index || !params.assembly_script || !(params.layout in ['paired_end','single_end']) || !(params.strandedness in ['unstranded','forward','reverse'])) {
-        error 'Specify --input, --outdir, --fasta, --gtf, --hisat2_index, --assembly_script, supported --layout, and explicit --strandedness.'
+    if (!params.input || !params.outdir || !params.fasta || !params.gtf || !params.hisat2_index || !params.assembly_script || !(params.layout in ['paired_end','single_end']) || !(params.strandedness in ['unstranded','forward','reverse']) || ((params.hisat2_use_runtime_splices == true || params.hisat2_use_runtime_splices == 'true') && !params.hisat2_splice_sites)) {
+        error 'Specify --input, --outdir, --fasta, --gtf, --hisat2_index, --assembly_script, supported --layout and explicit --strandedness; runtime splice mode also requires --hisat2_splice_sites.'
     }
     reads = Channel.fromPath(params.input).splitCsv(header: true).map { row ->
         def files = row.fastq_2 ? [file(row.fastq_1), file(row.fastq_2)] : [file(row.fastq_1)]
@@ -258,7 +263,8 @@ workflow {
     FASTQC_RAW(reads)
     FASTP_PREPARE(reads)
     FASTQC_PROCESSED(FASTP_PREPARE.out.prepared)
-    HISAT2_ALIGN(FASTP_PREPARE.out.prepared, Channel.value(file(params.hisat2_index)))
+    knownSplices = params.hisat2_splice_sites ? file(params.hisat2_splice_sites) : file(params.gtf)
+    HISAT2_ALIGN(FASTP_PREPARE.out.prepared, Channel.value(file(params.hisat2_index)), Channel.value(knownSplices))
     SORT_LANE_BAM(HISAT2_ALIGN.out.aligned)
     MERGE_AND_INDEX(SORT_LANE_BAM.out.sorted.groupTuple())
     PREPARE_COUNT_BAM(MERGE_AND_INDEX.out.merged)

@@ -15,6 +15,63 @@ docker build -t rnaseq-control-plane:latest .
 rnaseq doctor
 ```
 
+## Managed-reference builder (host-native)
+
+Both managed-reference commands run native executables on the host; they never
+invoke Docker or fall back to a container:
+
+```bash
+mamba env create -f environment.reference-builder.yml
+mamba activate nf-rna-reference-builder
+rnaseq reference prepare /absolute/reference-root --threads 4
+rnaseq reference prepare-hisat2 /absolute/reference-root --threads 4
+```
+
+The separately pinned builder environment contains Salmon 1.10.3, HISAT2
+2.2.1 (including `hisat2_extract_splice_sites.py`), and RSEM 1.3.3. Each
+command resolves absolute executable paths and validates versions before it
+creates staging output. Salmon retains its decoy-aware gentrome strategy with
+`k=31`; HISAT2 retains the annotation-aware genome index plus generated splice
+sites. Docker remains required for FASTQ workflow execution and the downstream
+control-plane contract, not for index construction.
+
+Preparation records host resource facts, selected threads, source-relative
+paths/checksums, tool version output, tokenized build arguments, OS and
+architecture in the managed reference manifest. It builds in a sibling staging
+directory, validates index artifacts, then atomically publishes the index and
+manifest. A failed staging directory is deliberately retained for inspection;
+the previous published index and manifest remain unchanged. Human
+annotation-aware HISAT2 construction can require substantially more memory
+than a 64 GiB machine. Swap availability is not evidence that this build is
+ready.
+
+### Human Ensembl 116 genome-only HISAT2 compatibility
+
+The production Human Ensembl 116/GRCh38.p14 bundle may declare
+`genome_only_runtime_splices`: a HISAT2 2.2.3 genome-only index and a
+registered splice-site file derived from the same GTF. This strategy never
+claims graph-embedded splice sites. The first-party 2.2.1 runtime receives
+exactly one `--known-splicesite-infile` argument only for this strategy; the
+manifest separately records `index_builder_version` and
+`runtime_aligner_version`. Until its dedicated smoke acceptance is recorded,
+the 2.2.3-builder/2.2.1-runtime pair is `requires_smoke_validation` and is
+not execution-ready. The narrow builder environment is
+`environment.reference-builder-hisat2-2.2.3.yml`; it does not silently change
+the validated 2.2.1 graph-embedded builder/runtime contract.
+
+## Delivery count semantics
+
+New runs place source-labelled matrices in `delivery/counts/` with an
+`artifact_manifest.json` containing the checksum, dimensions, sample order and
+DESeq2 construction method. `raw_counts.csv` exists only for imported integer
+counts and featureCounts integer gene counts. Salmon/tximport emits
+`estimated_counts.csv`, which can be non-integer and retains tximport offset
+semantics. `vst.csv` is normalized/transformed expression for visualization;
+it is never used for DESeq2 fitting and must not replace the raw or estimated
+matrix. QC-only runs may deliver the canonical upstream source matrix but do
+not fabricate VST. Do not compare raw-count magnitudes across samples without
+an appropriate normalization.
+
 Run `rnaseq doctor <PROJECT>` before an authorized FASTQ run. It checks the runtime image and its required executables/packages, reports host and Docker CPU/RAM, the selected local ceiling, free space at the configured Nextflow work location, and project/reference readiness. It warns when Docker has fewer CPUs or less memory than the selected local ceiling. It does not execute a workflow.
 
 Only the local execution profile is implemented. Workstation/HPC and SLURM execution remain deferred to the resource-profile milestone.

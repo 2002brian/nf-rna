@@ -50,6 +50,14 @@ def test_hisat2_workflow_publishes_fastp_reports_and_feeds_upstream_reports_to_m
         assert f".mix({channel})" in text
 
 
+def test_runtime_splice_argument_is_strategy_gated_in_the_hisat2_workflow():
+    text = (Path(__file__).parents[1] / "workflow" / "hisat2_featurecounts.nf").read_text(encoding="utf-8")
+    assert "params.hisat2_use_runtime_splices = false" in text
+    assert "--known-splicesite-infile ${known_splices}" in text
+    assert "-x ${index}/${params.hisat2_index_basename}" in text
+    assert "HISAT2_ALIGN(FASTP_PREPARE.out.prepared, Channel.value(file(params.hisat2_index)), Channel.value(knownSplices))" in text
+
+
 def test_hisat2_workflow_binds_supported_tool_threads_and_local_resources():
     text = (Path(__file__).parents[1] / "workflow" / "hisat2_featurecounts.nf").read_text(encoding="utf-8")
     for process, cpus, memory, forks in (

@@ -45,6 +45,8 @@ vst_matrix <- assay(vsd)
 write_matrix <- function(x, path) write.table(data.frame(gene_id = rownames(x), x, check.names = FALSE), path, sep = "\t", quote = FALSE, row.names = FALSE)
 write_matrix(normalized, file.path(cfg$output_dir, "normalized_counts.tsv"))
 write_matrix(vst_matrix, file.path(cfg$output_dir, "vst.tsv"))
+write.csv(data.frame(gene_id = rownames(source_counts), source_counts, check.names = FALSE), file.path(cfg$output_dir, "source_counts.csv"), row.names = FALSE, quote = FALSE)
+write.csv(data.frame(gene_id = rownames(vst_matrix), vst_matrix, check.names = FALSE), file.path(cfg$output_dir, "vst.csv"), row.names = FALSE, quote = FALSE)
 size_factor_values <- sizeFactors(dds)
 # DESeqDataSetFromTximport may use per-gene normalization factors (offsets)
 # rather than scalar size factors; retain that distinction in the QC table.

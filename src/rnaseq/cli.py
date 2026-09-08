@@ -124,11 +124,14 @@ def render_validation_report(report: ValidationReport) -> str:
 
 
 @reference_app.command("prepare")
-def prepare_reference_command(reference_root: Path) -> None:
+def prepare_reference_command(
+    reference_root: Path,
+    threads: int = typer.Option(4, "--threads", min=1, help="Host-native builder threads."),
+) -> None:
     """Build the checksum-bound decoy-aware Salmon index for one reference root."""
 
     try:
-        reference = prepare_local_reference(reference_root)
+        reference = prepare_local_reference(reference_root, threads=threads)
     except (LocalReferenceError, ReferencePreparationError) as exc:
         typer.echo(f"ERROR: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -142,11 +145,14 @@ def prepare_reference_command(reference_root: Path) -> None:
 
 
 @reference_app.command("prepare-hisat2")
-def prepare_hisat2_reference_command(reference_root: Path) -> None:
+def prepare_hisat2_reference_command(
+    reference_root: Path,
+    threads: int = typer.Option(4, "--threads", min=1, help="Host-native builder threads."),
+) -> None:
     """Build the checksum-bound HISAT2 index for one local reference root."""
 
     try:
-        reference = prepare_local_hisat2_reference(reference_root)
+        reference = prepare_local_hisat2_reference(reference_root, threads=threads)
     except (LocalReferenceError, ReferencePreparationError) as exc:
         typer.echo(f"ERROR: {exc}", err=True)
         raise typer.Exit(code=1) from exc

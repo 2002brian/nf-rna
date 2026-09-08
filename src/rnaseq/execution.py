@@ -870,7 +870,10 @@ def build_hisat2_featurecounts_command(
             "fasta": paths.get("fasta", local.genome_fasta.path),
             "gtf": paths.get("gtf", local.annotation_gtf.path),
             "hisat2_index": paths.get("hisat2_index", local.hisat2_index),
+            "hisat2_splice_sites": paths.get("hisat2_splice_sites", local.hisat2_splice_sites.path if local.hisat2_splice_sites else None),
+            "hisat2_index_basename": local.hisat2_index_prefix.name if local.hisat2_index_prefix else "genome",
         }
+        use_runtime_splices = local.hisat2_strategy == "genome_only_runtime_splices"
     else:
         if not reference.fasta or not reference.gtf or not reference.hisat2_index:
             raise ExecutionPreflightError("HISAT2 requires reference.fasta, reference.gtf, and reference.hisat2_index.")
@@ -878,7 +881,10 @@ def build_hisat2_featurecounts_command(
             key: paths.get(key, (report.project_dir / value).resolve())
             for key, value in (("fasta", reference.fasta), ("gtf", reference.gtf), ("hisat2_index", reference.hisat2_index))
         }
-    if any(value is None for value in reference_arguments.values()):
+        reference_arguments["hisat2_splice_sites"] = paths.get("hisat2_splice_sites")
+        reference_arguments["hisat2_index_basename"] = "genome"
+        use_runtime_splices = False
+    if any(reference_arguments[key] is None for key in ("fasta", "gtf", "hisat2_index")):
         raise ExecutionPreflightError("HISAT2 reference is not prepared.")
     command = ["nextflow", "run"]
     if config_file is not None:
@@ -888,10 +894,15 @@ def build_hisat2_featurecounts_command(
         "--input", str(samplesheet.resolve()), "--outdir", str(output_dir.resolve()),
         "--fasta", str(reference_arguments["fasta"]), "--gtf", str(reference_arguments["gtf"]),
         "--hisat2_index", str(reference_arguments["hisat2_index"]),
+        "--hisat2_index_basename", str(reference_arguments["hisat2_index_basename"]),
         "--assembly_script", str((Path(__file__).resolve().parent / "hisat2_featurecounts.py")),
         "--layout", report.fastq.layout.value, "--strandedness", report.config.upstream.strandedness,
         "--pretrimmed", str(report.config.input.preprocessing is FastqPreprocessing.PRETRIMMED).lower(),
     ])
+    if use_runtime_splices:
+        splice_sites = reference_arguments["hisat2_splice_sites"]
+        assert splice_sites is not None
+        command.extend(["--hisat2_splice_sites", str(splice_sites), "--hisat2_use_runtime_splices", "true"])
     if work_dir is not None:
         command.extend(["-work-dir", str(work_dir.resolve())])
     return command

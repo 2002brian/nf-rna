@@ -128,6 +128,28 @@ docker build -t rnaseq-control-plane:latest .
 
 Python 3.11+ is required. Install Nextflow before using the FASTQ route, and ensure Docker Desktop or another compatible Docker daemon is running. `latest` is permitted only for explicitly non-production development. Set `runtime.control_plane_image` to a digest or versioned tag for production acceptance; `rnaseq doctor PROJECT` reports both requested and observed identity.
 
+Managed Salmon and HISAT2 indexes are prepared natively, not in Docker. Create
+the separate pinned builder environment and use the explicit thread option:
+
+```bash
+mamba env create -f environment.reference-builder.yml
+mamba activate nf-rna-reference-builder
+rnaseq reference prepare /absolute/reference-root --threads 4
+rnaseq reference prepare-hisat2 /absolute/reference-root --threads 4
+```
+
+FASTQ analysis and downstream analysis retain their container execution
+contracts. See [Runtime](docs/runtime.md) for the native tool/version policy,
+atomic publication behavior, and HISAT2 memory warning.
+
+For the production Human Ensembl 116/GRCh38.p14 genome-only HISAT2 bundle,
+the registered GTF-derived splice-site file is supplied at runtime with
+`--known-splicesite-infile`; it is not graph-embedded. Builder version and
+runtime aligner version remain separate until a compatibility smoke test has
+validated the pair. Tissue and cell-line libraries of the same species use the
+same species/build/release reference; tissue identity does not select a new
+genome reference.
+
 ### 2. Check the runtime
 
 ```bash
@@ -191,6 +213,14 @@ runs/<case-id>/<run-id>/
 ```
 
 Depending on the selected route and analysis level, the package can include QC figures, PCA, sample-correlation results, normalized-count and expression summaries, differential-expression tables, volcano plots, DEG heatmaps, GO GSEA and KEGG GSEA results, a technical HTML report, and frozen configuration/provenance records. Figures are delivered as PNG and 300-dpi TIFF; no PDF or SVG delivery format is produced.
+
+New deliveries label source matrices under `delivery/counts/`: imported and
+featureCounts inputs use `raw_counts.csv`; Salmon/tximport uses
+`estimated_counts.csv` because those values are estimates and may be
+non-integer; `vst.csv` is transformed expression for visualization. The count
+artifact manifest records checksum and sample order. Fit DESeq2 from the
+source-appropriate raw/estimated matrix, never VST, and do not compare raw
+count magnitudes across samples without normalization.
 
 ## Scientific defaults
 

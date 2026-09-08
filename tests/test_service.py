@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import shutil
 import subprocess
 from datetime import datetime
@@ -227,6 +228,78 @@ def test_downstream_command_is_argument_array_and_delivery_is_allowlisted(projec
     assert not list(delivery.rglob("*.pdf"))
     assert not list(delivery.rglob("*.svg"))
     assert not any(path.name.endswith(".log") or path.name.startswith("._") for path in delivery.rglob("*"))
+
+
+def test_imported_raw_counts_delivery_is_exact_and_has_integer_semantics(project_factory):
+    _root, _report, run = _frozen_run(project_factory)
+    source = run.run_dir / "frozen" / "input" / "counts.csv"
+    delivery = assemble_delivery(run)
+    target = delivery / "counts" / "raw_counts.csv"
+    assert target.read_bytes() == source.read_bytes()
+    manifest = json.loads((delivery / "counts" / "artifact_manifest.json").read_text(encoding="utf-8"))
+    artifact = manifest["artifacts"][0]
+    assert artifact["source_type"] == "raw_counts"
+    assert artifact["value_semantics"] == "integer_raw_counts"
+    assert artifact["integer_required"] is True
+    assert artifact["sha256"] == hashlib.sha256(target.read_bytes()).hexdigest()
+
+
+def test_featurecounts_delivery_uses_canonical_integer_matrix(project_factory):
+    _root, _report, run = _frozen_run(project_factory)
+    matrix = run.run_dir / "upstream" / "hisat2_featurecounts" / "counts" / "canonical_counts.csv"
+    matrix.parent.mkdir(parents=True)
+    matrix.write_text("gene_id,C1,C2,C3,T1,T2,T3\nGeneA,1,2,3,4,5,6\n", encoding="utf-8")
+    handoff = {"featurecounts": {"canonical_matrix": str(matrix.relative_to(run.run_dir))}}
+    (run.run_dir / "frozen" / "upstream_handoff_manifest.yaml").write_text(yaml.safe_dump(handoff), encoding="utf-8")
+    contract_path = run.run_dir / "frozen" / "downstream_contract.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract["source"] = {"type": "featurecounts_raw_counts", "construction_method": "DESeqDataSetFromMatrix", "upstream_handoff": str((run.run_dir / "frozen" / "upstream_handoff_manifest.yaml").resolve())}
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    delivery = assemble_delivery(run)
+    assert (delivery / "counts" / "raw_counts.csv").read_bytes() == matrix.read_bytes()
+    artifact = json.loads((delivery / "counts" / "artifact_manifest.json").read_text())['artifacts'][0]
+    assert artifact["source_type"] == "featurecounts_raw_counts"
+    assert artifact["deseq2_construction_method"] == "DESeqDataSetFromMatrix"
+
+
+def test_salmon_delivery_is_estimated_never_raw_and_qc_uses_upstream_matrix(tmp_path):
+    run, _salmon = _fastq_handoff_run(tmp_path)
+    delivery = assemble_delivery(run)
+    estimated = delivery / "counts" / "estimated_counts.csv"
+    assert estimated.read_text(encoding="utf-8") == "gene_id,C1,C2,T1,T2\nGeneA,1,2,3,4\n"
+    assert not (delivery / "counts" / "raw_counts.csv").exists()
+    artifact = json.loads((delivery / "counts" / "artifact_manifest.json").read_text())['artifacts'][0]
+    assert artifact["source_type"] == "salmon_tximport"
+    assert artifact["value_semantics"] == "salmon_estimated_counts"
+    assert artifact["integer_required"] is False
+
+
+def test_salmon_l1_delivery_preserves_noninteger_tximport_source_counts(tmp_path):
+    run, _salmon = _fastq_handoff_run(tmp_path)
+    l1 = run.run_dir / "downstream" / "l1"
+    l1.mkdir(parents=True)
+    source_counts = l1 / "source_counts.csv"
+    source_counts.write_text("gene_id,C1,C2,T1,T2\nGeneA,1.25,2.5,3.75,4.125\n", encoding="utf-8")
+    delivery = assemble_delivery(run)
+    target = delivery / "counts" / "estimated_counts.csv"
+    assert target.read_bytes() == source_counts.read_bytes()
+    assert not (delivery / "counts" / "raw_counts.csv").exists()
+    artifact = json.loads((delivery / "counts" / "artifact_manifest.json").read_text())['artifacts'][0]
+    assert artifact["deseq2_construction_method"] == "DESeqDataSetFromTximport"
+    assert artifact["integer_required"] is False
+
+
+def test_vst_delivery_is_explicitly_transformed_and_accepts_negative_values(project_factory):
+    _root, _report, run = _frozen_run(project_factory)
+    vst = run.run_dir / "downstream" / "l1" / "vst.csv"
+    vst.parent.mkdir(parents=True)
+    vst.write_text("gene_id,C1,C2,C3,T1,T2,T3\nGeneA,-1.2,0,1.1,2.2,3.3,4.4\n", encoding="utf-8")
+    delivery = assemble_delivery(run)
+    assert (delivery / "counts" / "vst.csv").read_bytes() == vst.read_bytes()
+    artifacts = json.loads((delivery / "counts" / "artifact_manifest.json").read_text())['artifacts']
+    vst_artifact = next(item for item in artifacts if item["filename"] == "counts/vst.csv")
+    assert vst_artifact["value_semantics"] == "variance_stabilized_expression"
+    assert vst_artifact["normalized"] is True
 
 
 def test_delivery_finalizer_removes_only_appledouble_without_following_symlinks(tmp_path):

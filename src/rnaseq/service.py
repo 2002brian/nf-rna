@@ -905,20 +905,145 @@ def _run_command(command: list[str], *, cwd: Path, stdout_path: Path, stderr_pat
         return subprocess.run(command, cwd=cwd, stdout=stdout, stderr=stderr, check=False).returncode
 
 
+def _validate_delivery_count_matrix(
+    path: Path, samples: tuple[str, ...], *, integer_required: bool, nonnegative: bool = True, delimiter: str = ",",
+) -> tuple[int, int]:
+    """Validate a source matrix before exposing it as a delivery count artifact."""
+
+    try:
+        with path.open(encoding="utf-8", newline="") as handle:
+            rows = list(csv.reader(handle, delimiter=delimiter))
+    except (OSError, UnicodeError, csv.Error) as exc:
+        raise UpstreamExecutionError(f"Delivery count matrix is unreadable: {path}: {exc}") from exc
+    if len(rows) < 2 or rows[0] != ["gene_id", *samples]:
+        raise UpstreamExecutionError(f"Delivery count matrix has unexpected gene/sample columns: {path}")
+    genes: set[str] = set()
+    for row in rows[1:]:
+        if len(row) != len(rows[0]) or not row[0] or row[0] in genes:
+            raise UpstreamExecutionError(f"Delivery count matrix has invalid gene identifiers: {path}")
+        genes.add(row[0])
+        for value in row[1:]:
+            try:
+                numeric = float(value)
+            except ValueError as exc:
+                raise UpstreamExecutionError(f"Delivery count matrix contains a non-numeric value: {path}") from exc
+            if numeric != numeric or numeric in {float("inf"), float("-inf")} or (nonnegative and numeric < 0):
+                raise UpstreamExecutionError(f"Delivery matrix contains a non-finite or invalid value: {path}")
+            if integer_required and not numeric.is_integer():
+                raise UpstreamExecutionError(f"Delivery raw-count matrix contains a non-integer value: {path}")
+    return len(rows) - 1, len(samples)
+
+
+def _delivery_count_source(run: CaseRun) -> tuple[Path, str, bool, str, str, str] | None:
+    """Resolve the exact untransformed matrix used by this newly-created run."""
+
+    contract = _read_json_mapping(run.run_dir / "frozen" / "downstream_contract.json", "frozen downstream contract")
+    source = contract.get("source")
+    if not isinstance(source, dict):
+        return None
+    source_type = source.get("type")
+    construction = source.get("construction_method")
+    if not isinstance(construction, str):
+        raise UpstreamExecutionError("Frozen downstream contract has no source construction method.")
+    if source_type == "raw_counts":
+        return run.run_dir / "frozen" / "input" / "counts.csv", "raw_counts.csv", True, "integer_raw_counts", construction, ","
+    if source_type == "featurecounts_raw_counts":
+        handoff = _read_yaml_mapping(run.run_dir / "frozen" / "upstream_handoff_manifest.yaml", "frozen upstream handoff")
+        featurecounts = handoff.get("featurecounts")
+        if not isinstance(featurecounts, dict):
+            raise UpstreamExecutionError("Frozen upstream handoff has no featureCounts count matrix.")
+        matrix = _safe_existing_under(run.run_dir, featurecounts.get("canonical_matrix"), "featurecounts.canonical_matrix", allowed_root=run.run_dir / "upstream" / "hisat2_featurecounts")
+        return matrix, "raw_counts.csv", True, "integer_raw_counts", construction, ","
+    if source_type == "salmon_tximport":
+        l1 = run.run_dir / "downstream" / "l1" / "source_counts.csv"
+        if l1.is_file():
+            return l1, "estimated_counts.csv", False, "salmon_estimated_counts", construction, ","
+        # QC-only has no L1/tximport task. Deliver the canonical upstream
+        # estimate as explicitly upstream-only, never as raw counts.
+        handoff = _read_yaml_mapping(run.run_dir / "frozen" / "upstream_handoff_manifest.yaml", "frozen upstream handoff")
+        salmon = handoff.get("salmon")
+        if not isinstance(salmon, dict):
+            return None
+        gene_counts = handoff.get("gene_level_counts")
+        if not isinstance(gene_counts, dict):
+            return None
+        matrix = _safe_existing_under(run.run_dir, gene_counts.get("path"), "salmon.gene_level_counts", allowed_root=run.run_dir / "upstream" / "nfcore_rnaseq")
+        return matrix, "estimated_counts.csv", False, "salmon_estimated_counts", construction, "\t"
+    raise UpstreamExecutionError(f"Unsupported delivery count source: {source_type!r}")
+
+
+def _write_delivery_count_manifest(delivery: Path, artifacts: list[dict[str, object]]) -> None:
+    _write_text(delivery / "counts" / "artifact_manifest.json", json.dumps({"schema_version": "1.0", "artifacts": artifacts}, indent=2, sort_keys=True) + "\n")
+
+
+def _copy_matrix_as_csv(source: Path, destination: Path, *, delimiter: str) -> None:
+    if delimiter == ",":
+        _copy_delivery_artifact(source, destination)
+        return
+    with source.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.reader(handle, delimiter=delimiter))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("w", encoding="utf-8", newline="") as handle:
+        csv.writer(handle, lineterminator="\n").writerows(rows)
+
+
+def _delivery_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def assemble_delivery(run: CaseRun) -> Path:
     """Build a client-safe package from an explicit allowlist of final artifacts."""
 
     delivery = _resolved_delivery_root(run.run_dir / "delivery", run_dir=run.run_dir)
     figures = {".png": delivery / "figures" / "png", ".tif": delivery / "figures" / "tiff_300dpi", ".tiff": delivery / "figures" / "tiff_300dpi"}
     tables = delivery / "tables"
-    for directory in [*figures.values(), tables, delivery / "methods_and_versions"]:
+    counts_dir = delivery / "counts"
+    for directory in [*figures.values(), tables, counts_dir, delivery / "methods_and_versions"]:
         directory.mkdir(parents=True, exist_ok=True)
     downstream = run.run_dir / "downstream"
     report = downstream / "report" / "report.html"
     if report.is_file():
         _copy_delivery_artifact(report, delivery / delivery_filename("report.html", run.run_id))
+    artifacts: list[dict[str, object]] = []
+    source = _delivery_count_source(run)
+    samples = _frozen_sample_ids(run.run_dir / "frozen" / "metadata.csv")
+    if source is not None:
+        matrix, filename, integer_required, semantics, construction, delimiter = source
+        rows, columns = _validate_delivery_count_matrix(matrix, samples, integer_required=integer_required, delimiter=delimiter)
+        target = counts_dir / filename
+        _copy_matrix_as_csv(matrix, target, delimiter=delimiter)
+        artifacts.append({
+            "role": "analysis_input" if matrix.is_relative_to(run.run_dir / "downstream") else "frozen_or_upstream_input",
+            "filename": f"counts/{filename}", "source_type": _read_json_mapping(run.run_dir / "frozen" / "downstream_contract.json", "frozen downstream contract")["source"]["type"],
+            "value_semantics": semantics, "normalized": False, "integer_required": integer_required,
+            "deseq2_construction_method": construction, "sha256": _delivery_sha256(target), "rows": rows, "columns": columns,
+            "ordered_sample_ids": list(samples), "gene_identifier_namespace": "gene_id",
+        })
+    vst = run.run_dir / "downstream" / "l1" / "vst.csv"
+    if vst.is_file():
+        rows, columns = _validate_delivery_count_matrix(vst, samples, integer_required=False, nonnegative=False)
+        target = counts_dir / "vst.csv"
+        _copy_delivery_artifact(vst, target)
+        artifacts.append({
+            "role": "visualization", "filename": "counts/vst.csv", "source_type": "downstream_l1",
+            "value_semantics": "variance_stabilized_expression", "normalized": True, "integer_required": False,
+            "deseq2_construction_method": "varianceStabilizingTransformation_or_vst", "sha256": _delivery_sha256(target),
+            "rows": rows, "columns": columns, "ordered_sample_ids": list(samples), "gene_identifier_namespace": "gene_id",
+        })
+    if artifacts:
+        _write_delivery_count_manifest(delivery, artifacts)
     for path in downstream.rglob("*") if downstream.is_dir() else ():
         if not path.is_file() or _is_appledouble(path):
+            continue
+        # These have a single, source-labelled canonical location under
+        # delivery/counts.  Keeping an unlabelled duplicate under tables
+        # invites using VST as a count matrix or treating Salmon estimates as
+        # raw counts.
+        if path in {downstream / "l1" / "source_counts.csv", downstream / "l1" / "vst.csv"}:
             continue
         suffix = path.suffix.lower()
         relative = path.relative_to(downstream)

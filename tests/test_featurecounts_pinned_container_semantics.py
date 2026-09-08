@@ -20,7 +20,15 @@ from rnaseq.hisat2_featurecounts import SAMTOOLS_IMAGE, SUBREAD_IMAGE
 
 
 DOCKER = shutil.which("docker")
-pytestmark = pytest.mark.skipif(DOCKER is None, reason="Docker is required for pinned-container semantics")
+
+
+def _docker_ready() -> bool:
+    if DOCKER is None:
+        return False
+    return subprocess.run([DOCKER, "info"], capture_output=True, text=True, check=False).returncode == 0
+
+
+pytestmark = pytest.mark.skipif(not _docker_ready(), reason="A running Docker daemon is required for pinned-container semantics")
 
 
 def _run(image: str, arguments: list[str], cwd: Path) -> None:
