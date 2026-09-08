@@ -159,10 +159,14 @@ def render_analysis_plan(report: ValidationReport) -> str:
                 f"- Manifest: `{local.manifest_path}` (SHA256 `{local.manifest_sha256}`)",
                 f"- Genome FASTA: `{local.genome_fasta.path}` (SHA256 `{local.genome_fasta.sha256}`)",
                 f"- GTF: `{local.annotation_gtf.path}` (SHA256 `{local.annotation_gtf.sha256}`)",
-                f"- Transcript FASTA asset: `{local.transcript_fasta.path}` (SHA256 `{local.transcript_fasta.sha256}`; runtime used: `{str(local.external_transcript_fasta_used).lower()}`)",
                 f"- Transcriptome strategy: `{local.transcriptome_strategy}`",
                 f"- {'Salmon' if method == 'salmon' else 'HISAT2'} index strategy: {local.salmon_strategy if method == 'salmon' else local.hisat2_status}",
             ])
+            if local.transcript_fasta is not None:
+                lines.append(
+                    f"- Transcript FASTA asset: `{local.transcript_fasta.path}` "
+                    f"(SHA256 `{local.transcript_fasta.sha256}`; runtime used: `{str(local.external_transcript_fasta_used).lower()}`)"
+                )
             if local.salmon_transcriptome is not None:
                 lines.append(
                     f"- Adopted GTF-derived transcriptome: `{local.salmon_transcriptome.path}` "
@@ -173,9 +177,9 @@ def render_analysis_plan(report: ValidationReport) -> str:
                     f"`{option} {path}`" for option, path in local.nfcore_arguments()
                 ))
             elif method == "salmon":
-                lines.append(f"- Reference preparation required: `rnaseq reference prepare {local.root}`")
+                lines.append("- Register a validated prebuilt Salmon index in the reference manifest, or use the optional host-native builder.")
             elif local.hisat2_index is None:
-                lines.append(f"- Reference preparation required: `rnaseq reference prepare-hisat2 {local.root}`")
+                lines.append("- Register a validated prebuilt HISAT2 index in the reference manifest, or use the optional host-native builder.")
         else:
             lines.append(f"- Reference genome: `{reference.genome}`")
         lines.extend([

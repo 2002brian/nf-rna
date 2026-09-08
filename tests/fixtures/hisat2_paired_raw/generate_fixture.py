@@ -3,7 +3,8 @@
 
 This creates intentionally tiny synthetic Mus musculus assets.  It is a
 software-contract fixture, not a biological reference.  Run this script, then
-prepare its managed HISAT2 index with the public CLI:
+either register a compatible prebuilt HISAT2 index in its manifest or use the
+optional host-native builder:
 
   python -c 'from rnaseq.cli import app; app()' reference prepare-hisat2 \\
     tests/fixtures/hisat2_paired_raw/reference

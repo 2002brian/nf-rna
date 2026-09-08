@@ -131,7 +131,7 @@ def prepare_reference_command(
     reference_root: Path,
     threads: int = typer.Option(4, "--threads", min=1, help="Host-native builder threads."),
 ) -> None:
-    """Build the checksum-bound decoy-aware Salmon index for one reference root."""
+    """Optionally build a checksum-bound, host-native Salmon index."""
 
     try:
         reference = prepare_local_reference(reference_root, threads=threads)
@@ -152,7 +152,7 @@ def prepare_hisat2_reference_command(
     reference_root: Path,
     threads: int = typer.Option(4, "--threads", min=1, help="Host-native builder threads."),
 ) -> None:
-    """Build the checksum-bound HISAT2 index for one local reference root."""
+    """Optionally build a checksum-bound, host-native HISAT2 index."""
 
     try:
         reference = prepare_local_hisat2_reference(reference_root, threads=threads)
@@ -172,11 +172,11 @@ def prepare_hisat2_reference_command(
 def adopt_salmon_index_command(
     reference_root: Path,
     index: str = typer.Option(..., "--index", help="Reference-root-relative prebuilt Salmon index directory."),
-    transcriptome: str = typer.Option(..., "--transcriptome", help="Reference-root-relative GTF-derived transcriptome FASTA."),
-    strategy: str = typer.Option(..., "--strategy", help="Declared Salmon strategy; currently transcriptome_only."),
-    validation_artifact: str = typer.Option(..., "--validation-artifact", help="Reference-root-relative transcript validation JSON."),
+    transcriptome: str | None = typer.Option(None, "--transcriptome", help="Optional root-relative transcriptome; it must match files.transcript_fasta."),
+    strategy: str = typer.Option(..., "--strategy", help="Declared Salmon strategy: transcriptome_only or decoy_aware."),
+    validation_artifact: str | None = typer.Option(None, "--validation-artifact", help="Optional root-relative external validation record."),
 ) -> None:
-    """Atomically adopt an explicitly selected, validated existing Salmon index."""
+    """Atomically register an explicitly selected prebuilt Salmon index."""
 
     try:
         reference = adopt_local_salmon_index(

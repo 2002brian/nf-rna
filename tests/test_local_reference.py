@@ -327,13 +327,13 @@ def test_not_built_local_reference_is_valid_but_not_execution_ready(tmp_path):
     assert preview["reference"]["release"] == 116
     assert preview["nfcore_reference_arguments"] == []
     assert preview["transcriptome_strategy"] == TRANSCRIPTOME_STRATEGY
-    assert "prepare it before production execution" in preview["salmon_index_strategy"]
+    assert "no validated pre-built Salmon index" in preview["salmon_index_strategy"]
     assert preview["blocking_requirements"] == [
-        f"local Salmon index is not built. Run: rnaseq reference prepare {reference}"
+        "Local reference manifest has no validated Salmon index; register a compatible prebuilt index or use the optional host-native builder."
     ]
     assert preview["reference"]["transcriptome"]["external_transcript_fasta_used"] is False
     assert preview["reference"]["assets"]["transcript_fasta"]["sha256"]
-    with pytest.raises(ExecutionPreflightError, match="Salmon index is not built"):
+    with pytest.raises(ExecutionPreflightError, match="no validated Salmon index"):
         build_nextflow_command(
             report,
             samplesheet=root / "planning" / "samplesheet.csv",
@@ -522,10 +522,8 @@ def test_reference_prepare_atomically_builds_and_registers_expected_nfcore_strat
         if command[-1] == "--version":
             output = "salmon 1.10.3" if Path(command[0]).name == "salmon" else "RSEM v1.3.3"
             return subprocess.CompletedProcess(command, 0, output, "")
-        if Path(command[0]).name == "rsem-prepare-reference":
-            Path(command[-1] + ".transcripts.fa").write_text(">TX1\nACGT\n", encoding="utf-8")
         if Path(command[0]).name == "salmon":
-            _write_salmon_index(Path(command[command.index("-i") + 1]))
+            _write_salmon_index(Path(command[command.index("-i") + 1]), num_decoys=1)
         return subprocess.CompletedProcess(command, 0, "", "")
 
     prepared = prepare_local_reference(
@@ -577,10 +575,8 @@ def test_manifest_publish_failure_returns_new_index_to_retained_staging(monkeypa
         executable = Path(command[0]).name
         if command[-1] == "--version":
             return subprocess.CompletedProcess(command, 0, "salmon 1.10.3" if executable == "salmon" else "RSEM v1.3.3", "")
-        if executable == "rsem-prepare-reference":
-            Path(command[-1] + ".transcripts.fa").write_text(">TX1\nACGT\n", encoding="utf-8")
-        elif executable == "salmon":
-            _write_salmon_index(Path(command[command.index("-i") + 1]))
+        if executable == "salmon":
+            _write_salmon_index(Path(command[command.index("-i") + 1]), num_decoys=1)
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr("rnaseq.references._write_manifest_atomically", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("fixture manifest failure")))
@@ -593,7 +589,7 @@ def test_manifest_publish_failure_returns_new_index_to_retained_staging(monkeypa
 
 def test_host_native_reference_preflight_fails_before_staging_for_missing_or_unsupported_tools(tmp_path):
     _root, reference = _local_fastq_project(tmp_path)
-    with pytest.raises(ReferencePreparationError, match="Missing required host executable 'rsem-prepare-reference'"):
+    with pytest.raises(ReferencePreparationError, match="Missing required host executable 'salmon'"):
         prepare_local_reference(reference, tool_resolver=lambda _name: None)
     assert not list(reference.glob(".rnaseq-reference-prepare-*"))
 
@@ -620,10 +616,8 @@ def test_host_native_reference_command_is_tokenized_for_paths_with_spaces(tmp_pa
         executable = Path(command[0]).name
         if command[-1] == "--version":
             return subprocess.CompletedProcess(command, 0, "salmon 1.10.3" if executable == "salmon" else "RSEM v1.3.3", "")
-        if executable == "rsem-prepare-reference":
-            Path(command[-1] + ".transcripts.fa").write_text(">TX1\nACGT\n", encoding="utf-8")
-        elif executable == "salmon":
-            _write_salmon_index(Path(command[command.index("-i") + 1]))
+        if executable == "salmon":
+            _write_salmon_index(Path(command[command.index("-i") + 1]), num_decoys=1)
         return subprocess.CompletedProcess(command, 0, "", "")
 
     prepare_local_reference(reference, runner=fake_runner, tool_resolver=lambda name: f"/tools/{name}")
@@ -672,10 +666,10 @@ def test_host_native_hisat2_preparation_records_annotation_aware_provenance(tmp_
     provenance = manifest["hisat2"]["provenance"]
     assert provenance["builder"]["mode"] == "host_native"
     assert provenance["threads"] == 7
-    assert provenance["index_strategy"] == "graph_embedded_splice_sites"
-    assert "--ss" in provenance["commands"]["hisat2_build"]
+    assert provenance["index_strategy"] == "genome_only_runtime_splicesites"
+    assert "--ss" not in provenance["commands"]["hisat2_build"]
     assert all("docker" not in item for command in commands for item in command)
-    assert "--hisat2_splice_sites" not in dict(prepared.hisat2_arguments())
+    assert dict(prepared.hisat2_arguments())["--hisat2_splice_sites"] == reference / "hisat2" / "splice_sites.txt"
 
 
 def test_genome_only_runtime_splices_require_registered_matching_nonempty_provenance(tmp_path):
@@ -695,8 +689,12 @@ def test_genome_only_runtime_splices_require_registered_matching_nonempty_proven
 
     _mark_genome_only_hisat2(reference)
     splice.write_text("", encoding="utf-8")
-    with pytest.raises(LocalReferenceError, match="must be non-empty"):
-        load_local_reference_root(reference)
+    # A reference with no introns has a valid, empty runtime splice-site file.
+    manifest_path = reference / "reference_manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["hisat2"]["splice_sites"]["sha256"] = _sha(splice)
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    assert load_local_reference_root(reference).hisat2_splice_sites.path == splice
 
     _mark_genome_only_hisat2(reference)
     manifest_path = reference / "reference_manifest.yaml"
@@ -705,6 +703,103 @@ def test_genome_only_runtime_splices_require_registered_matching_nonempty_proven
     manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
     with pytest.raises(LocalReferenceError, match="splice_sites_derived_from_gtf_sha256"):
         load_local_reference_root(reference)
+
+
+def test_manifest_accepts_prebuilt_salmon_without_nf_rna_builder_provenance(tmp_path):
+    _root, reference = _local_fastq_project(tmp_path)
+    index = reference / "vendor indexes" / "salmon"
+    _write_salmon_index(index)
+    manifest_path = reference / "reference_manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = "1.2"
+    manifest["purpose"] = "production"
+    manifest["salmon"] = {
+        "status": "built",
+        "index": "vendor indexes/salmon",
+        "version": "1.10.3",
+        "strategy": "transcriptome_only",
+        "source_transcriptome_sha256": manifest["files"]["transcript_fasta"]["sha256"],
+    }
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+
+    loaded = load_local_reference_root(reference)
+    assert loaded.salmon_index == index
+    assert loaded.salmon_strategy_type == "transcriptome_only"
+    assert loaded.external_transcript_fasta_used
+    assert loaded.nfcore_arguments()[-1] == ("--salmon_index", index)
+
+
+def test_prebuilt_salmon_rejects_source_checksum_or_strategy_mismatch(tmp_path):
+    _root, reference = _local_fastq_project(tmp_path)
+    index = reference / "vendor" / "salmon"
+    _write_salmon_index(index, num_decoys=1)
+    manifest_path = reference / "reference_manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = "1.2"
+    manifest["purpose"] = "production"
+    manifest["salmon"] = {
+        "status": "built", "index": "vendor/salmon", "version": "1.10.3",
+        "strategy": "decoy_aware", "source_transcriptome_sha256": "0" * 64,
+        "source_genome_sha256": manifest["files"]["genome_fasta"]["sha256"],
+    }
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    with pytest.raises(LocalReferenceError, match="source_transcriptome_sha256"):
+        load_local_reference_root(reference)
+
+
+def test_adopt_prebuilt_decoy_aware_salmon_without_rsem_or_validation_artifact(tmp_path):
+    _root, reference = _local_fastq_project(tmp_path)
+    index = reference / "external" / "salmon"
+    _write_salmon_index(index, num_decoys=1)
+
+    adopted = adopt_local_salmon_index(
+        reference,
+        index="external/salmon",
+        strategy="decoy_aware",
+        now=lambda: datetime(2026, 9, 8, tzinfo=UTC),
+    )
+    assert adopted.salmon_index == index
+    manifest = yaml.safe_load((reference / "reference_manifest.yaml").read_text(encoding="utf-8"))
+    assert manifest["salmon"]["strategy"] == "decoy_aware"
+    assert manifest["salmon"]["source_transcriptome_sha256"] == manifest["files"]["transcript_fasta"]["sha256"]
+    assert manifest["salmon"]["provenance"]["mode"] == ADOPTED_EXISTING_INDEX
+
+
+def test_manifest_accepts_prebuilt_genome_only_hisat2_prefix_without_builder_provenance(tmp_path):
+    _root, reference = _local_fastq_project(tmp_path)
+    index = reference / "third party" / "hisat2"
+    _write_hisat2_index(index)
+    splice = reference / "third party" / "splice_sites.txt"
+    splice.write_text("chr1\t1\t4\t+\n", encoding="utf-8")
+    manifest_path = reference / "reference_manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = "1.2"
+    manifest["purpose"] = "production"
+    # A HISAT2-only reference does not need a Salmon transcript FASTA.
+    manifest["files"].pop("transcript_fasta")
+    manifest["hisat2"] = {
+        "status": "built", "index_prefix": "third party/hisat2/genome", "version": "2.2.1",
+        "strategy": "genome_only_runtime_splicesites",
+        "genome_fasta_sha256": manifest["files"]["genome_fasta"]["sha256"],
+        "source_gtf_sha256": manifest["files"]["annotation_gtf"]["sha256"],
+        "splice_sites_gtf_sha256": manifest["files"]["annotation_gtf"]["sha256"],
+        "splice_sites": {"path": "third party/splice_sites.txt", "sha256": _sha(splice)},
+    }
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+
+    loaded = load_local_reference_root(reference)
+    assert loaded.hisat2_index == index
+    assert loaded.hisat2_index_prefix == index / "genome"
+    assert loaded.hisat2_runtime_ready
+    assert loaded.hisat2_arguments()[-1] == ("--hisat2_splice_sites", splice)
+    config_path = _root / "project.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["upstream"]["strandedness"] = "forward"
+    config["upstream"]["quantification"] = {"method": "hisat2_featurecounts"}
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    report = validate_project(_root)
+    assert report.execution_ready
+    assert generate_plan(report)
 
 
 def test_genome_only_runtime_splices_require_compatibility_smoke_before_ready(tmp_path):

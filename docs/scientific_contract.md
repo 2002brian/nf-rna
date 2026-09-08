@@ -38,13 +38,13 @@ The ranking uses all finite tested-gene DESeq2 Wald statistics, without a DEG, a
 
 ## Reference and provenance
 
-Reference identity is explicit: species, assembly/release, checksums, selected-backend index status, and index-build provenance are frozen for a run. HISAT2 preparation records annotation-derived splice sites and its genome-index inputs; it never reuses a Salmon index. No reference is downloaded, auto-discovered, or silently migrated during validation/planning. External runtime behavior and versions are captured in provenance without changing the scientific configuration.
+Reference identity is explicit: species, assembly/release, checksums, selected-backend index status, and optional index-build provenance are frozen for a run. Prebuilt Salmon and HISAT2 indexes are supported directly; their checksums and declared strategies are validated without requiring nf-rna to have created them. HISAT2 records annotation-derived splice sites and its genome-index inputs; it never reuses a Salmon index. No reference is downloaded, auto-discovered, or silently migrated during validation/planning. External runtime behavior and versions are captured in provenance without changing the scientific configuration.
 
 Managed Salmon and HISAT2 reference preparation is host-native only. It validates the controlled builder executable/version set before staging, records non-scientific host-builder facts separately from biological/index identity, and atomically publishes only validated artifacts. Existing valid Docker-built manifests remain readable and are not relabelled or rebuilt merely because their historical builder mode differs.
 
 Schema 1.2 adds an explicit HISAT2 strategy discriminator. Legacy
 graph-embedded splice-site manifests remain readable. A
-`genome_only_runtime_splices` reference instead requires a non-empty,
+`genome_only_runtime_splicesites` reference instead requires a non-empty,
 checksum-bound GTF-derived splice-site file and passes it at alignment runtime;
 the index-builder and runtime-aligner versions are distinct provenance fields.
 An unvalidated version combination is not execution-ready. Its tiny Human

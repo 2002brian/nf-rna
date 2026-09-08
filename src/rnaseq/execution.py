@@ -85,19 +85,16 @@ def detect_local_resource_capacity() -> LocalResourceCapacity:
     cpus = os.cpu_count()
     total: int | None = None
     available: int | None = None
+    system = platform.system().lower()
     try:
-        if sys.platform == "darwin":
-            result = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, check=False)
-            total = int(result.stdout.strip()) // 1024**3 if result.returncode == 0 else None
+        if system == "darwin":
+            total_bytes = _darwin_memory_bytes()
+            total = total_bytes // 1024**3 if total_bytes is not None else None
             available = total
-        else:
-            fields = {
-                pieces[0].rstrip(":"): pieces[1]
-                for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines()
-                if (pieces := line.split()) and len(pieces) >= 2
-            }
-            total = int(fields["MemTotal"]) // 1024**2
-            available = int(fields.get("MemAvailable", fields["MemTotal"])) // 1024**2
+        elif system == "linux":
+            total_bytes, available_bytes = _linux_memory_bytes()
+            total = total_bytes // 1024**3 if total_bytes is not None else None
+            available = available_bytes // 1024**3 if available_bytes is not None else total
     except (OSError, ValueError, KeyError):
         pass
     return LocalResourceCapacity(cpus if cpus and cpus > 0 else None, total, available)
@@ -277,18 +274,39 @@ def _normalise_architecture(value: str | None) -> str | None:
     return aliases.get(normalized, normalized)
 
 
+def _linux_memory_bytes() -> tuple[int | None, int | None]:
+    """Read Linux/WSL host memory from procfs without an external utility."""
+
+    fields = {
+        pieces[0].rstrip(":"): int(pieces[1]) * 1024
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines()
+        if (pieces := line.split()) and len(pieces) >= 2
+    }
+    total = fields.get("MemTotal")
+    return total, fields.get("MemAvailable", total)
+
+
+def _darwin_memory_bytes() -> int | None:
+    """Read macOS physical memory through its native sysctl interface."""
+
+    result = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, check=False)
+    return int(result.stdout.strip()) if result.returncode == 0 else None
+
+
 def _host_memory_bytes() -> int | None:
+    system = platform.system().lower()
+    try:
+        if system == "linux":
+            total, _available = _linux_memory_bytes()
+            return total
+        if system == "darwin":
+            return _darwin_memory_bytes()
+    except (OSError, ValueError, KeyError):
+        return None
     try:
         return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
     except (AttributeError, OSError, ValueError):
-        pass
-    if sys.platform == "darwin":
-        try:
-            result = _run_capture(["sysctl", "-n", "hw.memsize"])
-            return int(result.stdout.strip()) if result.returncode == 0 else None
-        except (FileNotFoundError, ValueError):
-            return None
-    return None
+        return None
 
 
 def runtime_snapshot(image: str = CONTROL_PLANE_IMAGE) -> RuntimeSnapshot:
@@ -510,7 +528,7 @@ def check_container_runtime(image: str = CONTROL_PLANE_IMAGE) -> RuntimeCheck:
         )
     packages = ", ".join(repr(package) for package in CONTAINER_R_PACKAGES)
     probe = (
-        "for executable in ps python Rscript; do "
+        "for executable in python Rscript; do "
         "command -v \"$executable\" >/dev/null || { echo \"missing executable: $executable\" >&2; exit 1; }; "
         "done; "
         f"Rscript -e \"packages <- c({packages}); missing <- packages[!vapply(packages, requireNamespace, logical(1), quietly=TRUE)]; if (length(missing)) {{ cat('missing R package(s): ', paste(missing, collapse=', '), '\\n', file=stderr()); quit(status=1) }}\"; "
@@ -940,7 +958,10 @@ def build_hisat2_featurecounts_command(
             "hisat2_splice_sites": paths.get("hisat2_splice_sites", local.hisat2_splice_sites.path if local.hisat2_splice_sites else None),
             "hisat2_index_basename": local.hisat2_index_prefix.name if local.hisat2_index_prefix else "genome",
         }
-        use_runtime_splices = local.hisat2_strategy == "genome_only_runtime_splices"
+        use_runtime_splices = local.hisat2_strategy in {
+            "genome_only_runtime_splicesites",
+            "genome_only_runtime_splices",  # legacy manifest spelling
+        }
     else:
         if not reference.fasta or not reference.gtf or not reference.hisat2_index:
             raise ExecutionPreflightError("HISAT2 requires reference.fasta, reference.gtf, and reference.hisat2_index.")

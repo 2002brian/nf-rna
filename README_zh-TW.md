@@ -82,11 +82,11 @@ FASTQ 專案支援 paired-end 與 single-end reads。使用者必須明確指定
 FASTQ → fastp/FastQC → HISAT2 → sorted BAM → featureCounts → DESeqDataSetFromMatrix → nf-rna downstream analysis
 ```
 
-在 `upstream.quantification.method` 指定 `hisat2_featurecounts`，並使用已準備 HISAT2 index 的 checksum-bound custom 或 local reference。此 route 必須明確指定 `upstream.strandedness: unstranded|forward|reverse`；`auto` 會被拒絕，Milestone A 不提供 strand inference。預設以 `exon`/`gene_id` 計數，不納入 multimapper、跨 gene ambiguous assignment、fractional count，或 secondary/supplementary alignment。計數前會產生只排除 `0x100` 與 `0x800` flags 的獨立 BAM，同時保留原始 diagnostic BAM 與所有 alignment tags，因此仍可辨識 ambiguous mapping。paired-end 使用 `-p --countReadPairs -B -C`，single-end 以 read 計數；這些是 nf-rna 預設，並非所有實驗的通用建議。
+在 `upstream.quantification.method` 指定 `hisat2_featurecounts`，並使用含已驗證 HISAT2 index 的 checksum-bound custom 或 local reference。prebuilt index 是受支援的一級 local-reference 輸入：manifest 會宣告 index prefix、strategy、version 與相符的 FASTA/GTF/splice-site checksum。此 route 必須明確指定 `upstream.strandedness: unstranded|forward|reverse`；`auto` 會被拒絕，Milestone A 不提供 strand inference。預設以 `exon`/`gene_id` 計數，不納入 multimapper、跨 gene ambiguous assignment、fractional count，或 secondary/supplementary alignment。計數前會產生只排除 `0x100` 與 `0x800` flags 的獨立 BAM，同時保留原始 diagnostic BAM 與所有 alignment tags，因此仍可辨識 ambiguous mapping。paired-end 使用 `-p --countReadPairs -B -C`，single-end 以 read 計數；這些是 nf-rna 預設，並非所有實驗的通用建議。
 
 為了相容既有 FASTQ project，`upstream.engine: nfcore_rnaseq` 與 `pipeline_version: "3.26.0"` 仍是必要的 legacy configuration fields；它們只描述並選擇 Salmon implementation。HISAT2 run 會將實際執行 implementation 記錄為 `nf-rna/hisat2_featurecounts`、nf-rna version 與 `workflow/hisat2_featurecounts.nf` 的 SHA-256，絕不會歸因為 nf-core/rnaseq。
 
-Local reference 請先執行 `rnaseq reference prepare-hisat2 /absolute/reference-root`，再執行 `rnaseq plan PROJECT` 與 `rnaseq run PROJECT --case-id CASE --profile local --yes`。raw 與 processed 的 per-lane FastQC report/archive 會加上不同 prefix 防止碰撞，並與 fastp JSON、HISAT2 summary、featureCounts summary 一起送入 MultiQC。此 route 固定 HISAT2 2.2.1、SAMtools 1.21、Subread/featureCounts 2.0.6、FastQC 0.12.1、fastp 0.24.0 與 MultiQC 1.33。
+Local reference 請在 `reference_manifest.yaml` 登錄相容的 prebuilt HISAT2 index，再執行 `rnaseq plan PROJECT` 與 `rnaseq run PROJECT --case-id CASE --profile local --yes`。`rnaseq reference prepare-hisat2` 是可選的 host-native builder，不是使用前置條件。raw 與 processed 的 per-lane FastQC report/archive 會加上不同 prefix 防止碰撞，並與 fastp JSON、HISAT2 summary、featureCounts summary 一起送入 MultiQC。此 route 固定 HISAT2 2.2.1、SAMtools 1.21、Subread/featureCounts 2.0.6、FastQC 0.12.1、fastp 0.24.0 與 MultiQC 1.33。
 
 ### Milestone A 驗證（2026-09-05）
 
@@ -96,7 +96,7 @@ Local reference 請先執行 `rnaseq reference prepare-hisat2 /absolute/referenc
 
 獨立的 interactive single-end QC 驗收 run `WIZARD-HISAT2-QC-R3/20260905-144237+0800` 亦於同日通過；它僅以 single-end synthetic fixture 驗證 raw preprocessing、HISAT2、featureCounts、FastQC/MultiQC 與 QC delivery，沒有宣稱 paired fragment accounting 或 L1/L2/enrichment。這些項目分別由後述 paired UAT 與上述 Milestone A smoke records 支持。
 
-同日的 interactive paired-end QC 驗收 run 為 `PAIRED-HISAT2-QC-UAT-R3/20260905-150643+0800`；其 immutable validation record 保留於未發布的本機 workspace。可重現的小型合成 fixture 位於 `tests/fixtures/hisat2_paired_raw_v2`；在空白 destination 用 `python tests/fixtures/hisat2_paired_raw/generate_fixture.py --root PATH/TO/EMPTY/hisat2_paired_raw_v2` 產生後，再以 `rnaseq reference prepare-hisat2 PATH/TO/EMPTY/hisat2_paired_raw_v2/reference` 建立 managed index。fixture 是 forward stranded（HISAT2 `FR`、featureCounts `-s 1`），PairAlpha 的兩條 technical lane 應合併為 `GeneA=3, GeneB=1`，獨立 PairBeta 應為 `GeneA=0, GeneB=2`。實際 run 的 raw/retained R1/R2 均同步；每條 lane 的 adapter pair 都被剪除 2 reads／66 bases、mapping rate 100%，且 canonical matrix 與先驗值完全一致。featureCounts 使用 `-p --countReadPairs -B -C`；PairAlpha 的 8 個 alignment records 代表 4 個 fragments，PairBeta 的 4 個 records 代表 2 個 fragments，兩者不可混為同一數量。original/count-only BAM 均通過 `samtools quickcheck`，count-only BAM 沒有 `0x900` records 且所有 mapped records 保有 `NH:i:1`。MultiQC 含 FastQC、fastp、HISAT2、featureCounts；QC scope 沒有執行 L1/L2/enrichment。這是 software-contract fixture，不是 biological evidence。
+同日的 interactive paired-end QC 驗收 run 為 `PAIRED-HISAT2-QC-UAT-R3/20260905-150643+0800`；其 immutable validation record 保留於未發布的本機 workspace。可重現的小型合成 fixture 位於 `tests/fixtures/hisat2_paired_raw_v2`；在空白 destination 用 `python tests/fixtures/hisat2_paired_raw/generate_fixture.py --root PATH/TO/EMPTY/hisat2_paired_raw_v2` 產生後，可在 manifest 登錄相容 prebuilt HISAT2 index，或選擇性執行 `rnaseq reference prepare-hisat2 PATH/TO/EMPTY/hisat2_paired_raw_v2/reference`。fixture 是 forward stranded（HISAT2 `FR`、featureCounts `-s 1`），PairAlpha 的兩條 technical lane 應合併為 `GeneA=3, GeneB=1`，獨立 PairBeta 應為 `GeneA=0, GeneB=2`。實際 run 的 raw/retained R1/R2 均同步；每條 lane 的 adapter pair 都被剪除 2 reads／66 bases、mapping rate 100%，且 canonical matrix 與先驗值完全一致。featureCounts 使用 `-p --countReadPairs -B -C`；PairAlpha 的 8 個 alignment records 代表 4 個 fragments，PairBeta 的 4 個 records 代表 2 個 fragments，兩者不可混為同一數量。original/count-only BAM 均通過 `samtools quickcheck`，count-only BAM 沒有 `0x900` records 且所有 mapped records 保有 `NH:i:1`。MultiQC 含 FastQC、fastp、HISAT2、featureCounts；QC scope 沒有執行 L1/L2/enrichment。這是 software-contract fixture，不是 biological evidence。
 
 ### Raw counts
 
@@ -124,9 +124,10 @@ conda activate nf-rna
 docker build -t rnaseq-control-plane:latest .
 ```
 
-需要 Python 3.11 以上版本。使用 FASTQ route 前，請安裝 Nextflow，並確認 Docker Desktop 或其他相容的 Docker daemon 已啟動。`latest` 僅可用於明確的 non-production 開發模式；production acceptance 必須將 `runtime.control_plane_image` 設為 digest 或 versioned tag，`rnaseq doctor PROJECT` 會同時報告 requested 與 observed identity。
+需要 Python 3.11 以上版本。共用的 `environment.yml` 支援 Linux/WSL 與 Apple Silicon macOS，並刻意不含 Linux-only 的 `procps-ng`。使用 FASTQ route 前，請安裝 Nextflow，並確認 Docker Desktop 或其他相容的 Docker daemon 已啟動。`latest` 僅可用於明確的 non-production 開發模式；production acceptance 必須將 `runtime.control_plane_image` 設為 digest 或 versioned tag，`rnaseq doctor PROJECT` 會同時報告 requested 與 observed identity。
 
-Managed Salmon 與 HISAT2 index 必須以 host-native 方式建立，不使用 Docker：
+Prebuilt Salmon 與 HISAT2 index 是一級 managed-reference 輸入：請在
+`reference_manifest.yaml` 宣告 root-relative path/prefix、version、strategy 與相符的 source checksum。下列 builders 僅在需要由 nf-rna 建立新 index 時使用；它們是 host-native、不使用 Docker，也不需要 RSEM：
 
 ```bash
 mamba env create -f environment.reference-builder.yml

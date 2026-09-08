@@ -2,7 +2,9 @@
 
 ## Required local components
 
-- Python 3.11+ and the supplied Conda environment.
+- Python 3.11+ and the supplied Conda environment. The shared environment is
+  portable across Linux/WSL and macOS arm64; it has no Linux-only `procps-ng`
+  dependency.
 - Docker Desktop or a compatible running Docker daemon.
 - Nextflow for FASTQ execution.
 - A first-party control-plane image selected by `runtime.control_plane_image`.
@@ -17,8 +19,10 @@ rnaseq doctor
 
 ## Managed-reference builder (host-native)
 
-Both managed-reference commands run native executables on the host; they never
-invoke Docker or fall back to a container:
+Prebuilt, checksum-bound indexes are first-class managed-reference inputs.
+Register them in `reference_manifest.yaml`; validation and planning do not
+require nf-rna to have built them. The two builder commands are optional
+host-native conveniences and never invoke Docker or fall back to a container:
 
 ```bash
 mamba env create -f environment.reference-builder.yml
@@ -27,37 +31,67 @@ rnaseq reference prepare /absolute/reference-root --threads 4
 rnaseq reference prepare-hisat2 /absolute/reference-root --threads 4
 ```
 
-The separately pinned builder environment contains Salmon 1.10.3, HISAT2
-2.2.1 (including `hisat2_extract_splice_sites.py`), and RSEM 1.3.3. Each
-command resolves absolute executable paths and validates versions before it
-creates staging output. Salmon retains its decoy-aware gentrome strategy with
-`k=31`; HISAT2 retains the annotation-aware genome index plus generated splice
-sites. Docker remains required for FASTQ workflow execution and the downstream
-control-plane contract, not for index construction.
+The separately pinned builder environment contains Salmon 1.10.3 and HISAT2
+2.2.1 (including `hisat2_extract_splice_sites.py`); RSEM is not required.
+Each command resolves absolute executable paths and validates versions before it
+creates staging output. Salmon uses the manifest-registered transcript FASTA
+and retains its decoy-aware gentrome strategy with `k=31`. HISAT2 builds a
+genome-only index and registers GTF-derived splice sites for the runtime
+`--known-splicesite-infile` argument. Docker remains required for FASTQ workflow
+execution and the downstream control-plane contract, not for index construction.
+
+For a prebuilt Salmon index, declare `index`, `version`, `strategy`, and
+`source_transcriptome_sha256`; `decoy_aware` additionally requires the matching
+`source_genome_sha256`. For a prebuilt HISAT2 index, declare `index_prefix`,
+`version`, `strategy: genome_only_runtime_splicesites`, `genome_fasta_sha256`,
+`source_gtf_sha256`, and a checksum-bound `splice_sites` asset. All paths are
+reference-root-relative. The manifest validates asset/index consistency; builder
+mode is provenance, not a prerequisite for use.
+An HISAT2-only reference need not include `files.transcript_fasta`; that asset
+is required only when a Salmon index is declared or Salmon preparation is used.
+
+For example, a manifest can register external assets without copying or
+rebuilding them:
+
+```yaml
+salmon:
+  status: built
+  index: vendor/salmon/index
+  version: "1.10.3"
+  strategy: decoy_aware
+  source_transcriptome_sha256: "<files.transcript_fasta SHA-256>"
+  source_genome_sha256: "<files.genome_fasta SHA-256>"
+hisat2:
+  status: built
+  index_prefix: vendor/hisat2/genome
+  version: "2.2.1"
+  strategy: genome_only_runtime_splicesites
+  genome_fasta_sha256: "<files.genome_fasta SHA-256>"
+  source_gtf_sha256: "<files.annotation_gtf SHA-256>"
+  splice_sites_gtf_sha256: "<files.annotation_gtf SHA-256>"
+  splice_sites: {path: vendor/hisat2/splice_sites.txt, sha256: "<SHA-256>"}
+```
 
 Preparation records host resource facts, selected threads, source-relative
 paths/checksums, tool version output, tokenized build arguments, OS and
 architecture in the managed reference manifest. It builds in a sibling staging
 directory, validates index artifacts, then atomically publishes the index and
 manifest. A failed staging directory is deliberately retained for inspection;
-the previous published index and manifest remain unchanged. Human
-annotation-aware HISAT2 construction can require substantially more memory
-than a 64 GiB machine. Swap availability is not evidence that this build is
-ready.
+the previous published index and manifest remain unchanged. Human HISAT2
+construction can require substantially more memory than a 64 GiB machine.
+Swap availability is not evidence that this build is ready.
 
 ### Human Ensembl 116 genome-only HISAT2 compatibility
 
 The production Human Ensembl 116/GRCh38.p14 bundle may declare
-`genome_only_runtime_splices`: a HISAT2 2.2.3 genome-only index and a
+`genome_only_runtime_splicesites`: a HISAT2 genome-only index and a
 registered splice-site file derived from the same GTF. This strategy never
 claims graph-embedded splice sites. The first-party 2.2.1 runtime receives
 exactly one `--known-splicesite-infile` argument only for this strategy; the
 manifest separately records `index_builder_version` and
-`runtime_aligner_version`. Until its dedicated smoke acceptance is recorded,
-the 2.2.3-builder/2.2.1-runtime pair is `requires_smoke_validation` and is
-not execution-ready. The narrow builder environment is
-`environment.reference-builder-hisat2-2.2.3.yml`; it does not silently change
-the validated 2.2.1 graph-embedded builder/runtime contract.
+`runtime_aligner_version`. A prebuilt index whose declared builder version
+differs from the runtime defaults to `requires_smoke_validation`; it becomes
+ready only when that compatibility is explicitly recorded as validated.
 
 ## Delivery count semantics
 
@@ -98,7 +132,7 @@ On 2026-09-05, the separate interactive-wizard single-end QC run `WIZARD-HISAT2-
 
 ## Paired-end HISAT2 QC acceptance
 
-On 2026-09-05, a public interactive-wizard paired-end QC run passed as `PAIRED-HISAT2-QC-UAT-R3/20260905-150643+0800`. Its immutable validation record remains outside the source distribution. Its durable synthetic fixture is `tests/fixtures/hisat2_paired_raw_v2`; regenerate a new empty fixture root with `python tests/fixtures/hisat2_paired_raw/generate_fixture.py --root PATH/TO/EMPTY/hisat2_paired_raw_v2`, then prepare its managed index with `rnaseq reference prepare-hisat2 PATH/TO/EMPTY/hisat2_paired_raw_v2/reference`. The fixture is forward stranded (HISAT2 `FR`; featureCounts `-s 1`), has PairAlpha lanes 001/002 and separate PairBeta, and defines counts before execution: PairAlpha `GeneA=3, GeneB=1`; PairBeta `GeneA=0, GeneB=2`.
+On 2026-09-05, a public interactive-wizard paired-end QC run passed as `PAIRED-HISAT2-QC-UAT-R3/20260905-150643+0800`. Its immutable validation record remains outside the source distribution. Its durable synthetic fixture is `tests/fixtures/hisat2_paired_raw_v2`; regenerate a new empty fixture root with `python tests/fixtures/hisat2_paired_raw/generate_fixture.py --root PATH/TO/EMPTY/hisat2_paired_raw_v2`, then register a matching prebuilt index or optionally run `rnaseq reference prepare-hisat2 PATH/TO/EMPTY/hisat2_paired_raw_v2/reference`. The fixture is forward stranded (HISAT2 `FR`; featureCounts `-s 1`), has PairAlpha lanes 001/002 and separate PairBeta, and defines counts before execution: PairAlpha `GeneA=3, GeneB=1`; PairBeta `GeneA=0, GeneB=2`.
 
 The successful run retained synchronized R1/R2 pairs after raw fastp processing, trimmed the three short-insert adapter pairs (two reads and 66 bases per lane), mapped every lane at 100%, and exactly reproduced the fixture counts. featureCounts executed `-p --countReadPairs -B -C`; PairAlpha's eight alignment records represented four fragments and PairBeta's four records represented two fragments. Original and count-only BAMs passed `samtools quickcheck`; count-only BAMs had no `0x900` records and retained `NH:i:1` on every mapped record. Its MultiQC contains FastQC, fastp, HISAT2, and featureCounts, and the QC scope created no downstream L1/L2/enrichment artifacts. The run freezes workflow SHA-256 `ead01d1a6c84f20ad8d7f2c4943c97be20d748cc6adff0fe060520e852706d33` and the resolved container identities in provenance. This remains a software-contract fixture, not biological evidence.
 

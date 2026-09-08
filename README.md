@@ -80,7 +80,7 @@ Use this route when nf-rna should own read processing as well as downstream anal
 FASTQ → fastp/FastQC → HISAT2 → sorted BAM → featureCounts → DESeqDataSetFromMatrix → nf-rna downstream analysis
 ```
 
-Set `upstream.quantification.method: hisat2_featurecounts`, use a checksum-bound custom or local reference with a prepared HISAT2 index, and declare `upstream.strandedness` as `unstranded`, `forward`, or `reverse`. `auto` is intentionally rejected for this route. The default count contract is `exon`/`gene_id`; it excludes multimappers, multi-gene overlaps, fractional counts, and secondary/supplementary alignments. Before counting, a separate BAM excludes flags `0x100` and `0x800` while retaining the original diagnostic BAM and all alignment tags, so ambiguity remains detectable. Paired-end data use `-p --countReadPairs -B -C`; single-end data are counted as reads. These are nf-rna defaults, not universal recommendations.
+Set `upstream.quantification.method: hisat2_featurecounts`, use a checksum-bound custom or local reference with a validated HISAT2 index, and declare `upstream.strandedness` as `unstranded`, `forward`, or `reverse`. A prebuilt index is a supported local-reference input: its manifest declares the index prefix, strategy, version, and matching FASTA/GTF/splice-site checksums. `auto` is intentionally rejected for this route. The default count contract is `exon`/`gene_id`; it excludes multimappers, multi-gene overlaps, fractional counts, and secondary/supplementary alignments. Before counting, a separate BAM excludes flags `0x100` and `0x800` while retaining the original diagnostic BAM and all alignment tags, so ambiguity remains detectable. Paired-end data use `-p --countReadPairs -B -C`; single-end data are counted as reads. These are nf-rna defaults, not universal recommendations.
 
 `upstream.engine: nfcore_rnaseq` and `pipeline_version: "3.26.0"` remain required legacy FASTQ configuration fields for compatibility. They select and describe the Salmon implementation only. A HISAT2 run records `nf-rna/hisat2_featurecounts`, its nf-rna version, and the SHA-256 of `workflow/hisat2_featurecounts.nf` as the resolved executed implementation; it is never attributed to nf-core/rnaseq.
 
@@ -98,7 +98,7 @@ reference:
   hisat2_index: reference/hisat2/index
 ```
 
-For a managed local reference, run `rnaseq reference prepare-hisat2 /absolute/reference-root`, then `rnaseq plan PROJECT` and `rnaseq run PROJECT --case-id CASE --profile local --yes`. Raw and processed per-lane FastQC reports/archives are uniquely prefixed and included in MultiQC together with fastp JSON, HISAT2 summaries and featureCounts summaries. The route pins HISAT2 2.2.1, SAMtools 1.21, Subread/featureCounts 2.0.6, FastQC 0.12.1 and fastp 0.24.0 through Biocontainers build tags, plus MultiQC 1.33 through the Seqera Wave library.
+For a managed local reference, register a compatible prebuilt HISAT2 index in `reference_manifest.yaml`, then run `rnaseq plan PROJECT` and `rnaseq run PROJECT --case-id CASE --profile local --yes`. `rnaseq reference prepare-hisat2` is an optional host-native builder, not a prerequisite. Raw and processed per-lane FastQC reports/archives are uniquely prefixed and included in MultiQC together with fastp JSON, HISAT2 summaries and featureCounts summaries. The route pins HISAT2 2.2.1, SAMtools 1.21, Subread/featureCounts 2.0.6, FastQC 0.12.1 and fastp 0.24.0 through Biocontainers build tags, plus MultiQC 1.33 through the Seqera Wave library.
 
 ### Raw counts
 
@@ -126,10 +126,13 @@ conda activate nf-rna
 docker build -t rnaseq-control-plane:latest .
 ```
 
-Python 3.11+ is required. Install Nextflow before using the FASTQ route, and ensure Docker Desktop or another compatible Docker daemon is running. `latest` is permitted only for explicitly non-production development. Set `runtime.control_plane_image` to a digest or versioned tag for production acceptance; `rnaseq doctor PROJECT` reports both requested and observed identity.
+Python 3.11+ is required. The shared `environment.yml` is portable across Linux/WSL and Apple Silicon macOS; it deliberately contains no Linux-only `procps-ng` dependency. Install Nextflow before using the FASTQ route, and ensure Docker Desktop or another compatible Docker daemon is running. `latest` is permitted only for explicitly non-production development. Set `runtime.control_plane_image` to a digest or versioned tag for production acceptance; `rnaseq doctor PROJECT` reports both requested and observed identity.
 
-Managed Salmon and HISAT2 indexes are prepared natively, not in Docker. Create
-the separate pinned builder environment and use the explicit thread option:
+Prebuilt Salmon and HISAT2 indexes are first-class managed-reference inputs:
+declare their root-relative path/prefix, version, strategy, and matching source
+checksums in `reference_manifest.yaml`. The optional builders are native, never
+use Docker, and do not require RSEM. Create the separate pinned builder
+environment only when you want nf-rna to construct a new index:
 
 ```bash
 mamba env create -f environment.reference-builder.yml

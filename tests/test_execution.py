@@ -25,6 +25,8 @@ from rnaseq.execution import (
     downstream_docker_user_mapping,
     downstream_docker_user_mapping_check,
     doctor_checks,
+    detect_local_resource_capacity,
+    _host_memory_bytes,
     _reference_runtime_check,
     execute_prepared_run,
     load_run_states,
@@ -242,7 +244,7 @@ def test_execution_root_override_is_local_and_portable(monkeypatch, tmp_path):
     assert workspace.work_dir == workspace.root / "work"
 
 
-def test_container_runtime_probe_requires_process_utility_python_r_and_r_packages(monkeypatch):
+def test_container_runtime_probe_requires_python_r_and_r_packages(monkeypatch):
     calls: list[list[str]] = []
 
     def successful(arguments):
@@ -258,7 +260,7 @@ def test_container_runtime_probe_requires_process_utility_python_r_and_r_package
     assert probe[:6] == ["docker", "run", "--rm", "rnaseq-control-plane:latest", "sh", "-c"]
     assert "--entrypoint" not in probe
     assert "-lc" not in probe
-    assert "for executable in ps python Rscript" in probe[-1]
+    assert "for executable in python Rscript" in probe[-1]
     assert "command -v \"$executable\"" in probe[-1]
     assert "DESeq2" in probe[-1] and "org.Mm.eg.db" in probe[-1]
     assert "python -m rnaseq.workflow_support report --help" in probe[-1]
@@ -397,6 +399,23 @@ def test_local_resource_suggestion_and_validation_are_conservative():
     with pytest.raises(ExecutionPreflightError, match="exceeds detected host"):
         validate_local_execution_budget(21, 48, capacity)
     assert suggested_local_resources(LocalResourceCapacity(None, None, None)) == (8, 12)
+
+
+def test_host_resource_detection_uses_linux_procfs_and_darwin_sysctl_without_procps(monkeypatch):
+    gib = 1024**3
+    monkeypatch.setattr("rnaseq.execution.platform.system", lambda: "Linux")
+    monkeypatch.setattr("rnaseq.execution._linux_memory_bytes", lambda: (64 * gib, 48 * gib))
+    linux = detect_local_resource_capacity()
+    assert linux.total_memory_gib == 64
+    assert linux.available_memory_gib == 48
+    assert _host_memory_bytes() == 64 * gib
+
+    monkeypatch.setattr("rnaseq.execution.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("rnaseq.execution._darwin_memory_bytes", lambda: 32 * gib)
+    darwin = detect_local_resource_capacity()
+    assert darwin.total_memory_gib == 32
+    assert darwin.available_memory_gib == 32
+    assert _host_memory_bytes() == 32 * gib
 
 
 def test_cli_run_requires_explicit_confirmation(monkeypatch, tmp_path):

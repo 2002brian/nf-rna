@@ -164,9 +164,9 @@ class ValidationReport:
         if self.config.reference.source == "local":
             method = self.config.upstream.quantification.method if self.config.upstream.quantification else "salmon"
             if self.local_reference is not None and method == "salmon" and self.local_reference.salmon_index is None:
-                return (f"local Salmon index is not built. Run: rnaseq reference prepare {self.local_reference.root}",)
+                return ("Local reference manifest has no validated Salmon index; register a compatible prebuilt index or use the optional host-native builder.",)
             if self.local_reference is not None and method == "hisat2_featurecounts" and self.local_reference.hisat2_index is None:
-                return (f"local HISAT2 index is not built. Run: rnaseq reference prepare-hisat2 {self.local_reference.root}",)
+                return ("Local reference manifest has no validated HISAT2 index; register a compatible prebuilt index or use the optional host-native builder.",)
             if self.local_reference is not None and method == "hisat2_featurecounts" and not self.local_reference.hisat2_runtime_ready:
                 return ("local HISAT2 genome-only index/runtime compatibility requires the documented smoke validation before execution",)
             if self.local_reference is not None:

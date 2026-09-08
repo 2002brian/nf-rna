@@ -23,6 +23,7 @@ from rnaseq.models import ReferenceConfig
 
 SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 MD5_PATTERN = re.compile(r"^[0-9a-fA-F]{32}$")
+SEMVER_PATTERN = re.compile(r"^[0-9]+\.[0-9]+(?:\.[0-9]+)?$")
 LEGACY_LOCAL_REFERENCE_MANIFEST_VERSION = "1.0"
 LOCAL_REFERENCE_MANIFEST_VERSION = "1.2"
 LOCAL_REFERENCE_MANIFEST_VERSIONS = frozenset(
@@ -33,6 +34,9 @@ SALMON_NOT_BUILT = "not_built"
 SALMON_BUILT = "built"
 SALMON_VERSION = "1.10.3"
 SALMON_KMER_SIZE = 31
+# Kept only to read the provenance of historic nf-rna-built indexes.  New
+# manifests bind an index directly to ``files.transcript_fasta`` and do not
+# require RSEM to have created that file.
 TRANSCRIPTOME_STRATEGY = "nfcore_rnaseq_3.26.0_rsem_from_genome_fasta_and_gtf"
 DECOY_STRATEGY = "nfcore_rnaseq_3.26.0_gentrome"
 SALMON_STRATEGY_TRANSCRIPTOME_ONLY = "transcriptome_only"
@@ -41,16 +45,20 @@ SALMON_STRATEGIES = frozenset((SALMON_STRATEGY_TRANSCRIPTOME_ONLY, SALMON_STRATE
 ADOPTED_EXISTING_INDEX = "adopted_existing_index"
 HISAT2_VERSION = "2.2.1"
 HISAT2_RUNTIME_VERSION = HISAT2_VERSION
-HISAT2_GENOME_ONLY_BUILDER_VERSION = "2.2.3"
 HISAT2_NOT_BUILT = "not_built"
 HISAT2_BUILT = "built"
 HISAT2_STRATEGY_GRAPH_EMBEDDED = "graph_embedded_splice_sites"
 HISAT2_STRATEGY_LEGACY_ANNOTATION_AWARE = "annotation_aware_genome_index_with_splice_sites"
-HISAT2_STRATEGY_GENOME_ONLY_RUNTIME_SPLICES = "genome_only_runtime_splices"
+HISAT2_STRATEGY_GENOME_ONLY_RUNTIME_SPLICES = "genome_only_runtime_splicesites"
+# 1.2 manifests written during the earlier compatibility work used this
+# spelling.  It remains readable, but new manifests use the public spelling
+# above.
+HISAT2_STRATEGY_GENOME_ONLY_RUNTIME_SPLICES_LEGACY = "genome_only_runtime_splices"
 HISAT2_STRATEGIES = frozenset((
     HISAT2_STRATEGY_GRAPH_EMBEDDED,
     HISAT2_STRATEGY_LEGACY_ANNOTATION_AWARE,
     HISAT2_STRATEGY_GENOME_ONLY_RUNTIME_SPLICES,
+    HISAT2_STRATEGY_GENOME_ONLY_RUNTIME_SPLICES_LEGACY,
 ))
 HISAT2_RUNTIME_COMPATIBILITY_VALIDATED = "validated"
 HISAT2_RUNTIME_COMPATIBILITY_SMOKE_REQUIRED = "requires_smoke_validation"
@@ -98,7 +106,7 @@ class LocalReference:
     assembly_patch: str
     genome_fasta: LocalReferenceAsset
     annotation_gtf: LocalReferenceAsset
-    transcript_fasta: LocalReferenceAsset
+    transcript_fasta: LocalReferenceAsset | None
     salmon_index: Path | None
     salmon_status: str
     salmon_strategy_type: str | None
@@ -117,21 +125,25 @@ class LocalReference:
     @property
     def salmon_strategy(self) -> str:
         if self.salmon_index is None:
-            return "no pre-built Salmon index; prepare it before production execution"
+            return "no validated pre-built Salmon index is registered in the manifest"
         assert self.salmon_strategy_type is not None
         return f"use the manifest-declared pre-built {self.salmon_strategy_type.replace('_', '-')} Salmon index"
 
     @property
     def transcriptome_strategy(self) -> str:
+        if self.transcript_fasta is None:
+            return "not_applicable_without_salmon"
+        if self.transcript_fasta is not None and self.salmon_transcriptome == self.transcript_fasta:
+            return "manifest_registered_transcript_fasta"
         if self.salmon_transcriptome is not None:
             return "gtf_derived_exact_transcript_id_contract"
         return TRANSCRIPTOME_STRATEGY
 
     @property
     def external_transcript_fasta_used(self) -> bool:
-        """The downloaded transcript FASTA is provenance only, never a runtime input."""
+        """Whether the selected Salmon index is checksum-bound to this FASTA."""
 
-        return False
+        return self.transcript_fasta is not None and self.salmon_transcriptome == self.transcript_fasta
 
     @property
     def hisat2_runtime_ready(self) -> bool:
@@ -139,22 +151,23 @@ class LocalReference:
 
         if self.hisat2_index is None:
             return False
-        if self.hisat2_strategy != HISAT2_STRATEGY_GENOME_ONLY_RUNTIME_SPLICES:
+        if not _uses_runtime_splice_sites(self.hisat2_strategy):
             return True
         return bool(self.hisat2_provenance) and (
             self.hisat2_provenance.get("runtime_compatibility") == HISAT2_RUNTIME_COMPATIBILITY_VALIDATED
         )
 
     def assets(self) -> tuple[LocalReferenceAsset, ...]:
-        return (self.genome_fasta, self.annotation_gtf, self.transcript_fasta)
+        return tuple(asset for asset in (self.genome_fasta, self.annotation_gtf, self.transcript_fasta) if asset is not None)
 
     def hisat2_arguments(self) -> list[tuple[str, Path]]:
         if self.hisat2_index is None:
             raise LocalReferenceError(
-                f"Local reference HISAT2 index is not built. Run: rnaseq reference prepare-hisat2 {self.root}"
+                "Local reference manifest has no validated HISAT2 index. "
+                "Register a prebuilt index and matching splice_sites asset, or run the optional host-native builder."
             )
         arguments = [("--fasta", self.genome_fasta.path), ("--gtf", self.annotation_gtf.path), ("--hisat2_index", self.hisat2_index)]
-        if self.hisat2_strategy == HISAT2_STRATEGY_GENOME_ONLY_RUNTIME_SPLICES:
+        if _uses_runtime_splice_sites(self.hisat2_strategy):
             assert self.hisat2_splice_sites is not None
             arguments.append(("--hisat2_splice_sites", self.hisat2_splice_sites.path))
         return arguments
@@ -162,7 +175,8 @@ class LocalReference:
     def nfcore_arguments(self) -> list[tuple[str, Path]]:
         if self.salmon_index is None:
             raise LocalReferenceError(
-                f"Local reference Salmon index is not built. Run: rnaseq reference prepare {self.root}"
+                "Local reference manifest has no validated Salmon index. "
+                "Register a prebuilt index, or run the optional host-native builder."
             )
         # Never pass downloaded Ensembl cDNA as --transcript_fasta: nf-core
         # derives tx2gene-compatible transcripts from the frozen GTF itself.
@@ -198,8 +212,8 @@ class LocalReference:
                 "annotation_gtf": {"path": str(self.annotation_gtf.path), "sha256": self.annotation_gtf.sha256},
                 "external_transcript_fasta": {
                     "path": str(self.transcript_fasta.path), "sha256": self.transcript_fasta.sha256,
-                },
-                "external_transcript_fasta_used": False,
+                } if self.transcript_fasta is not None else None,
+                "external_transcript_fasta_used": self.external_transcript_fasta_used,
                 "adopted_transcriptome": (
                     {"path": str(self.salmon_transcriptome.path), "sha256": self.salmon_transcriptome.sha256}
                     if self.salmon_transcriptome is not None else None
@@ -226,7 +240,7 @@ class LocalReference:
                 "runtime_aligner_version": HISAT2_RUNTIME_VERSION,
                 "runtime_arguments": (
                     ["hisat2", "-x", str(self.hisat2_index_prefix or (self.hisat2_index / "genome")), "--known-splicesite-infile", str(self.hisat2_splice_sites.path)]
-                    if self.hisat2_strategy == HISAT2_STRATEGY_GENOME_ONLY_RUNTIME_SPLICES and self.hisat2_index and self.hisat2_splice_sites
+                    if _uses_runtime_splice_sites(self.hisat2_strategy) and self.hisat2_index and self.hisat2_splice_sites
                     else ["hisat2", "-x", str(self.hisat2_index_prefix or (self.hisat2_index / "genome"))] if self.hisat2_index else None
                 ),
                 "provenance": self.hisat2_provenance,
@@ -431,6 +445,13 @@ def _require_equal(value: object, expected: object, label: str) -> None:
         )
 
 
+def _uses_runtime_splice_sites(strategy: str | None) -> bool:
+    return strategy in {
+        HISAT2_STRATEGY_GENOME_ONLY_RUNTIME_SPLICES,
+        HISAT2_STRATEGY_GENOME_ONLY_RUNTIME_SPLICES_LEGACY,
+    }
+
+
 def _salmon_index_metadata(index: Path) -> dict[str, object]:
     """Read the stable metadata emitted by the pinned Salmon 1.10.3 index format."""
 
@@ -457,6 +478,59 @@ def _salmon_index_metadata(index: Path) -> dict[str, object]:
     result["salmon_version"] = version["salmonVersion"]
     result["salmon_index_version"] = version["indexVersion"]
     return result
+
+
+def _validated_prebuilt_salmon(
+    root: Path,
+    salmon: dict[str, Any],
+    genome_fasta: LocalReferenceAsset,
+    transcript_fasta: LocalReferenceAsset,
+) -> tuple[Path, dict[str, object], dict[str, object]]:
+    """Validate a first-class externally built Salmon index declaration.
+
+    The index is validated from its own metadata and is tied to the source
+    transcriptome by checksum.  No claim is made about which tool created it.
+    """
+
+    strategy = _require_string(salmon.get("strategy"), "salmon.strategy")
+    if strategy not in SALMON_STRATEGIES:
+        raise LocalReferenceError(
+            "Local reference salmon.strategy must be one of: "
+            f"{SALMON_STRATEGY_TRANSCRIPTOME_ONLY}, {SALMON_STRATEGY_DECOY_AWARE}."
+        )
+    index = _resolve_under(root, _require_string(salmon.get("index"), "salmon.index"), "salmon.index", directory=True)
+    metadata = _salmon_index_metadata(index)
+    version = _require_string(salmon.get("version", salmon.get("salmon_version")), "salmon.version")
+    _require_equal(version, metadata["salmon_version"], "salmon.version versus index metadata")
+    _require_equal(version, SALMON_VERSION, "salmon.version")
+    _require_equal(metadata["kmer_size"], SALMON_KMER_SIZE, "salmon index k")
+
+    source_transcriptome = _require_string(
+        salmon.get("source_transcriptome_sha256"), "salmon.source_transcriptome_sha256"
+    ).lower()
+    if not SHA256_PATTERN.fullmatch(source_transcriptome):
+        raise LocalReferenceError("Local reference salmon.source_transcriptome_sha256 must be a SHA256 hex digest.")
+    _require_equal(
+        source_transcriptome, transcript_fasta.sha256, "salmon.source_transcriptome_sha256 versus files.transcript_fasta.sha256"
+    )
+    expected_decoys = 0 if strategy == SALMON_STRATEGY_TRANSCRIPTOME_ONLY else None
+    if expected_decoys is not None:
+        _require_equal(metadata["num_decoys"], expected_decoys, "salmon index num_decoys")
+    elif not isinstance(metadata["num_decoys"], int) or metadata["num_decoys"] <= 0:
+        raise LocalReferenceError("Local reference decoy_aware Salmon index must declare at least one decoy in info.json.")
+    if strategy == SALMON_STRATEGY_DECOY_AWARE:
+        genome_sha256 = _require_string(salmon.get("source_genome_sha256"), "salmon.source_genome_sha256").lower()
+        if not SHA256_PATTERN.fullmatch(genome_sha256):
+            raise LocalReferenceError("Local reference salmon.source_genome_sha256 must be a SHA256 hex digest.")
+        _require_equal(genome_sha256, genome_fasta.sha256, "salmon.source_genome_sha256 versus files.genome_fasta.sha256")
+    provenance = dict(_require_mapping(salmon.get("provenance", {}), "salmon.provenance"))
+    provenance.setdefault("mode", "prebuilt")
+    provenance.setdefault("source_transcriptome_sha256", source_transcriptome)
+    return index, metadata, provenance
+
+
+def _is_prebuilt_salmon_declaration(salmon: dict[str, Any]) -> bool:
+    return "source_transcriptome_sha256" in salmon
 
 
 def _validation_artifact(
@@ -580,14 +654,16 @@ def _load_local_reference_root(
     files = _require_mapping(manifest.get("files"), "files")
     genome_fasta = _asset(root, files, "genome_fasta")
     annotation_gtf = _asset(root, files, "annotation_gtf")
-    transcript_fasta = _asset(root, files, "transcript_fasta")
+    transcript_fasta = _asset(root, files, "transcript_fasta") if files.get("transcript_fasta") is not None else None
+    source_assets: dict[str, LocalReferenceAsset] = {
+        "genome_fasta": genome_fasta,
+        "annotation_gtf": annotation_gtf,
+    }
+    if transcript_fasta is not None:
+        source_assets["transcript_fasta"] = transcript_fasta
     source_provenance = _validated_source_provenance(
         manifest.get("sources"),
-        {
-            "genome_fasta": genome_fasta,
-            "annotation_gtf": annotation_gtf,
-            "transcript_fasta": transcript_fasta,
-        },
+        source_assets,
     )
     salmon = _require_mapping(manifest.get("salmon"), "salmon")
     salmon_status = _require_string(salmon.get("status"), "salmon.status")
@@ -612,7 +688,19 @@ def _load_local_reference_root(
                 "Local reference salmon.strategy must be one of: "
                 f"{SALMON_STRATEGY_TRANSCRIPTOME_ONLY}, {SALMON_STRATEGY_DECOY_AWARE}."
             )
-        if strategy == SALMON_STRATEGY_TRANSCRIPTOME_ONLY:
+        if _is_prebuilt_salmon_declaration(salmon):
+            if transcript_fasta is None:
+                raise LocalReferenceError(
+                    "A built Salmon declaration requires files.transcript_fasta and its matching source checksum."
+                )
+            salmon_index, salmon_index_metadata, salmon_provenance = _validated_prebuilt_salmon(
+                root, salmon, genome_fasta, transcript_fasta
+            )
+            salmon_transcriptome = transcript_fasta
+            salmon_strategy_type = _require_string(salmon.get("strategy"), "salmon.strategy")
+        elif strategy == SALMON_STRATEGY_TRANSCRIPTOME_ONLY:
+            if transcript_fasta is None:
+                raise LocalReferenceError("A built Salmon declaration requires files.transcript_fasta.")
             (
                 salmon_index,
                 salmon_transcriptome,
@@ -648,19 +736,10 @@ def _load_local_reference_root(
     hisat2_provenance: dict[str, object] | None = None
     hisat2_strategy: str | None = None
     if hisat2_status == HISAT2_BUILT:
-        hisat2_index = _resolve_under(root, _require_string(hisat2.get("index"), "hisat2.index"), "hisat2.index", directory=True)
-        splice_payload = _require_mapping(hisat2.get("splice_sites"), "hisat2.splice_sites")
-        splice_path = _resolve_under(root, _require_string(splice_payload.get("path"), "hisat2.splice_sites.path"), "hisat2.splice_sites")
-        if splice_path.stat().st_size == 0:
-            raise LocalReferenceError("Local reference hisat2.splice_sites must be non-empty.")
-        hisat2_splice_sites = _asset_from_payload(root, splice_payload, "hisat2.splice_sites", "hisat2_splice_sites")
-        hisat2_provenance = _require_mapping(hisat2.get("provenance"), "hisat2.provenance")
-        declared_strategy = hisat2.get("strategy", hisat2_provenance.get("index_strategy"))
-        if declared_strategy is None:
-            declared_strategy = HISAT2_STRATEGY_LEGACY_ANNOTATION_AWARE
-        hisat2_strategy = _require_string(declared_strategy, "hisat2.strategy")
-        if hisat2_strategy not in HISAT2_STRATEGIES:
-            raise LocalReferenceError(f"Local reference hisat2.strategy is unsupported: {hisat2_strategy!r}.")
+        # ``index_prefix`` is the portable HISAT2 identity.  Retain the
+        # directory field for old manifests, but do not require nf-rna to have
+        # created an ``hisat2/index`` layout before an existing index can be
+        # used.
         index_prefix_value = hisat2.get("index_prefix")
         if index_prefix_value is not None:
             configured_prefix = Path(_require_string(index_prefix_value, "hisat2.index_prefix"))
@@ -671,35 +750,55 @@ def _load_local_reference_root(
                 hisat2_index_prefix.relative_to(root)
             except ValueError as exc:
                 raise LocalReferenceError("Local reference hisat2.index_prefix escapes reference.root.") from exc
-            if hisat2_index_prefix.parent != hisat2_index:
-                raise LocalReferenceError("Local reference hisat2.index_prefix must be inside hisat2.index.")
-            prefix = hisat2_index_prefix.name
+            hisat2_index = hisat2_index_prefix.parent
         else:
+            hisat2_index = _resolve_under(root, _require_string(hisat2.get("index"), "hisat2.index"), "hisat2.index", directory=True)
             hisat2_index_prefix = hisat2_index / "genome"
-            prefix = "genome"
+        if hisat2.get("index") is not None:
+            declared_index = _resolve_under(root, _require_string(hisat2.get("index"), "hisat2.index"), "hisat2.index", directory=True)
+            if declared_index != hisat2_index:
+                raise LocalReferenceError("Local reference hisat2.index must be the parent directory of hisat2.index_prefix.")
+        splice_payload = _require_mapping(hisat2.get("splice_sites"), "hisat2.splice_sites")
+        splice_path = _resolve_under(root, _require_string(splice_payload.get("path"), "hisat2.splice_sites.path"), "hisat2.splice_sites")
+        hisat2_splice_sites = _asset_from_payload(root, splice_payload, "hisat2.splice_sites", "hisat2_splice_sites")
+        hisat2_provenance = dict(_require_mapping(hisat2.get("provenance", {}), "hisat2.provenance"))
+        declared_strategy = hisat2.get("strategy", hisat2_provenance.get("index_strategy"))
+        if declared_strategy is None:
+            declared_strategy = HISAT2_STRATEGY_LEGACY_ANNOTATION_AWARE
+        hisat2_strategy = _require_string(declared_strategy, "hisat2.strategy")
+        if hisat2_strategy not in HISAT2_STRATEGIES:
+            raise LocalReferenceError(f"Local reference hisat2.strategy is unsupported: {hisat2_strategy!r}.")
+        prefix = hisat2_index_prefix.name
         validate_hisat2_index(hisat2_index, prefix=prefix)
-        for key, expected in (("genome_fasta_sha256", genome_fasta.sha256), ("annotation_gtf_sha256", annotation_gtf.sha256)):
-            _require_equal(hisat2_provenance.get(key), expected, f"hisat2.provenance.{key}")
+        # New prebuilt declarations keep scientific asset identity at the
+        # backend level; historic builder manifests keep it in provenance.
+        genome_checksum = hisat2.get("genome_fasta_sha256", hisat2_provenance.get("genome_fasta_sha256"))
+        gtf_checksum = hisat2.get("source_gtf_sha256", hisat2_provenance.get("annotation_gtf_sha256"))
+        _require_equal(genome_checksum, genome_fasta.sha256, "hisat2.genome_fasta_sha256")
+        _require_equal(gtf_checksum, annotation_gtf.sha256, "hisat2.source_gtf_sha256")
+        hisat2_provenance.setdefault("genome_fasta_sha256", genome_fasta.sha256)
+        hisat2_provenance.setdefault("annotation_gtf_sha256", annotation_gtf.sha256)
         builder_version = _require_string(
-            hisat2_provenance.get("index_builder_version", hisat2_provenance.get("hisat2_version")),
+            hisat2.get("version", hisat2_provenance.get("index_builder_version", hisat2_provenance.get("hisat2_version"))),
             "hisat2.provenance.index_builder_version",
         )
-        if hisat2_strategy == HISAT2_STRATEGY_GENOME_ONLY_RUNTIME_SPLICES:
-            if manifest_schema_version != LOCAL_REFERENCE_MANIFEST_VERSION:
-                raise LocalReferenceError("genome_only_runtime_splices requires reference manifest schema 1.2.")
-            if builder_version != HISAT2_GENOME_ONLY_BUILDER_VERSION:
-                raise LocalReferenceError(
-                    f"genome_only_runtime_splices requires HISAT2 index builder {HISAT2_GENOME_ONLY_BUILDER_VERSION}, observed {builder_version!r}."
-                )
+        if not SEMVER_PATTERN.fullmatch(builder_version):
+            raise LocalReferenceError("Local reference HISAT2 version must be a numeric release, for example 2.2.1.")
+        hisat2_provenance.setdefault("index_builder_version", builder_version)
+        if _uses_runtime_splice_sites(hisat2_strategy):
             _require_equal(
-                hisat2_provenance.get("splice_sites_derived_from_gtf_sha256"), annotation_gtf.sha256,
+                hisat2.get("splice_sites_gtf_sha256", hisat2_provenance.get("splice_sites_derived_from_gtf_sha256", gtf_checksum)), annotation_gtf.sha256,
                 "hisat2.provenance.splice_sites_derived_from_gtf_sha256",
             )
-            compatibility = _require_string(
-                hisat2_provenance.get("runtime_compatibility"), "hisat2.provenance.runtime_compatibility"
+            default_compatibility = (
+                HISAT2_RUNTIME_COMPATIBILITY_VALIDATED
+                if builder_version == HISAT2_RUNTIME_VERSION
+                else HISAT2_RUNTIME_COMPATIBILITY_SMOKE_REQUIRED
             )
+            compatibility = _require_string(hisat2.get("runtime_compatibility", hisat2_provenance.get("runtime_compatibility", default_compatibility)), "hisat2.runtime_compatibility")
             if compatibility not in {HISAT2_RUNTIME_COMPATIBILITY_VALIDATED, HISAT2_RUNTIME_COMPATIBILITY_SMOKE_REQUIRED}:
                 raise LocalReferenceError("Local reference hisat2.provenance.runtime_compatibility is unsupported.")
+            hisat2_provenance.setdefault("runtime_compatibility", compatibility)
         elif builder_version != HISAT2_VERSION:
             raise LocalReferenceError(
                 f"Local reference {hisat2_strategy} requires HISAT2 index builder {HISAT2_VERSION}, observed {builder_version!r}."
@@ -950,9 +1049,9 @@ def adopt_local_salmon_index(
     reference_root: Path | str,
     *,
     index: str,
-    transcriptome: str,
+    transcriptome: str | None = None,
     strategy: str,
-    validation_artifact: str,
+    validation_artifact: str | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> LocalReference:
     """Validate and atomically register an already-built Salmon index.
@@ -974,20 +1073,21 @@ def adopt_local_salmon_index(
             "Unsupported Salmon strategy: "
             f"{strategy!r}. Supported strategies: {SALMON_STRATEGY_TRANSCRIPTOME_ONLY}, {SALMON_STRATEGY_DECOY_AWARE}."
         )
-    if strategy != SALMON_STRATEGY_TRANSCRIPTOME_ONLY:
-        raise ReferenceAdoptionError(
-            "Adopting existing indexes currently supports only strategy 'transcriptome_only'. "
-            "Use 'rnaseq reference prepare' for decoy-aware construction."
-        )
     if reference.salmon_status != SALMON_NOT_BUILT:
         raise ReferenceAdoptionError(
             "Refusing to replace an existing local reference Salmon declaration; "
             f"current status is {reference.salmon_status!r}."
         )
+    if reference.transcript_fasta is None:
+        raise ReferenceAdoptionError(
+            "Adopting a Salmon index requires files.transcript_fasta so its source SHA256 can be verified."
+        )
     try:
         index_path = _resolve_under(root, index, "adoption index", directory=True)
-        transcriptome_path = _resolve_under(root, transcriptome, "adoption transcriptome")
-        artifact_path = _resolve_under(root, validation_artifact, "adoption validation artifact")
+        transcriptome_path = (
+            _resolve_under(root, transcriptome, "adoption transcriptome")
+            if transcriptome is not None else reference.transcript_fasta.path
+        )
     except LocalReferenceError as exc:
         raise ReferenceAdoptionError(str(exc)) from exc
     try:
@@ -995,49 +1095,65 @@ def adopt_local_salmon_index(
     except LocalReferenceError as exc:
         raise ReferenceAdoptionError(str(exc)) from exc
     transcriptome_sha256 = sha256_file(transcriptome_path)
+    # Keep the former, stricter GTF-derived adoption record readable for
+    # already scripted users.  New adoption (no validation artifact) is the
+    # lightweight prebuilt-index contract below.
+    if validation_artifact is not None and transcriptome is not None and transcriptome_sha256 != reference.transcript_fasta.sha256:
+        try:
+            artifact_path = _resolve_under(root, validation_artifact, "adoption validation artifact")
+        except LocalReferenceError as exc:
+            raise ReferenceAdoptionError(str(exc)) from exc
+        candidate = deepcopy(manifest)
+        candidate["salmon"] = {
+            "status": SALMON_BUILT, "strategy": SALMON_STRATEGY_TRANSCRIPTOME_ONLY,
+            "index": index_path.relative_to(root).as_posix(),
+            "transcriptome": {"path": transcriptome_path.relative_to(root).as_posix(), "sha256": transcriptome_sha256, "source": "gtf_derived"},
+            "version": index_metadata["salmon_version"], "kmer_size": index_metadata["kmer_size"],
+            "num_decoys": index_metadata["num_decoys"], "decoy_aware": False,
+            "index_metadata": {key: index_metadata[key] for key in ("seq_hash", "name_hash", "info_index_version", "salmon_index_version", "seq_length", "num_kmers", "num_contigs")},
+            "validation": {"artifact": artifact_path.relative_to(root).as_posix(), "transcript_id_contract": "exact", "fasta_only_transcripts": 0, "zero_gene_mappings": 0, "multi_gene_mappings": 0},
+            "provenance": {"mode": ADOPTED_EXISTING_INDEX, "adopted_at": now().astimezone(UTC).replace(microsecond=0).isoformat()},
+        }
+        try:
+            _validated_transcriptome_only_salmon(root, _require_mapping(candidate["salmon"], "salmon"), reference.genome_fasta, reference.annotation_gtf, identity={"species": reference.species, "provider": reference.provider, "release": reference.release, "assembly": reference.assembly})
+        except LocalReferenceError as exc:
+            raise ReferenceAdoptionError(str(exc)) from exc
+        _write_manifest_atomically(reference.manifest_path, candidate)
+        return load_local_reference_root(root)
+    if transcriptome_sha256 != reference.transcript_fasta.sha256:
+        raise ReferenceAdoptionError(
+            "The adopted Salmon transcriptome must match files.transcript_fasta by SHA256; "
+            "update and validate the manifest source asset first."
+        )
+    expected_decoys = 0 if strategy == SALMON_STRATEGY_TRANSCRIPTOME_ONLY else None
+    if expected_decoys is not None and index_metadata["num_decoys"] != expected_decoys:
+        raise ReferenceAdoptionError("The adopted transcriptome_only Salmon index contains decoys.")
+    if strategy == SALMON_STRATEGY_DECOY_AWARE and (
+        not isinstance(index_metadata["num_decoys"], int) or index_metadata["num_decoys"] <= 0
+    ):
+        raise ReferenceAdoptionError("The adopted decoy_aware Salmon index declares no decoys.")
     candidate = deepcopy(manifest)
     candidate["salmon"] = {
         "status": SALMON_BUILT,
-        "strategy": SALMON_STRATEGY_TRANSCRIPTOME_ONLY,
+        "strategy": strategy,
         "index": index_path.relative_to(root).as_posix(),
-        "transcriptome": {
-            "path": transcriptome_path.relative_to(root).as_posix(),
-            "sha256": transcriptome_sha256,
-            "source": "gtf_derived",
-        },
         "version": index_metadata["salmon_version"],
-        "kmer_size": index_metadata["kmer_size"],
-        "num_decoys": index_metadata["num_decoys"],
-        "decoy_aware": False,
-        "index_metadata": {
-            key: index_metadata[key]
-            for key in ("seq_hash", "name_hash", "info_index_version", "salmon_index_version", "seq_length", "num_kmers", "num_contigs")
-        },
-        "validation": {
-            "artifact": artifact_path.relative_to(root).as_posix(),
-            "transcript_id_contract": "exact",
-            "fasta_only_transcripts": 0,
-            "zero_gene_mappings": 0,
-            "multi_gene_mappings": 0,
-        },
+        "source_transcriptome_sha256": transcriptome_sha256,
         "provenance": {
             "mode": ADOPTED_EXISTING_INDEX,
             "adopted_at": now().astimezone(UTC).replace(microsecond=0).isoformat(),
         },
     }
+    if strategy == SALMON_STRATEGY_DECOY_AWARE:
+        candidate["salmon"]["source_genome_sha256"] = reference.genome_fasta.sha256
+    if validation_artifact is not None:
+        try:
+            artifact_path = _resolve_under(root, validation_artifact, "adoption validation artifact")
+        except LocalReferenceError as exc:
+            raise ReferenceAdoptionError(str(exc)) from exc
+        candidate["salmon"]["provenance"]["validation_artifact"] = artifact_path.relative_to(root).as_posix()
     try:
-        _validated_transcriptome_only_salmon(
-            root,
-            _require_mapping(candidate["salmon"], "salmon"),
-            reference.genome_fasta,
-            reference.annotation_gtf,
-            identity={
-                "species": reference.species,
-                "provider": reference.provider,
-                "release": reference.release,
-                "assembly": reference.assembly,
-            },
-        )
+        _validated_prebuilt_salmon(root, _require_mapping(candidate["salmon"], "salmon"), reference.genome_fasta, reference.transcript_fasta)
     except LocalReferenceError as exc:
         raise ReferenceAdoptionError(str(exc)) from exc
     _write_manifest_atomically(reference.manifest_path, candidate)
@@ -1052,7 +1168,7 @@ def prepare_local_reference(
     tool_resolver: Callable[[str], str | None] = shutil.which,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> LocalReference:
-    """Build and atomically register a host-native decoy-aware Salmon index."""
+    """Optionally build a host-native decoy-aware index from registered assets."""
 
     reference, manifest = _load_local_reference_root(
         Path(reference_root).expanduser().resolve(), "reference_manifest.yaml", None
@@ -1063,6 +1179,11 @@ def prepare_local_reference(
         )
     if reference.salmon_status != SALMON_NOT_BUILT:
         raise ReferencePreparationError(f"Unsupported local reference Salmon status: {reference.salmon_status}.")
+    if reference.transcript_fasta is None:
+        raise ReferencePreparationError(
+            "Host-native Salmon preparation requires files.transcript_fasta; "
+            "register the source transcriptome asset and SHA256 first."
+        )
 
     salmon_root = reference.root / "salmon"
     final_index = salmon_root / "index"
@@ -1072,41 +1193,25 @@ def prepare_local_reference(
         )
     preflight = _reference_build_preflight(reference, route="Salmon decoy-aware", threads=threads)
     tools = {
-        "rsem-prepare-reference": _host_tool(
-            "rsem-prepare-reference", route="Salmon decoy-aware", version_pattern=None,
-            expected="a versioned RSEM installation compatible with --gtf", runner=runner,
-            resolver=tool_resolver, cwd=reference.root,
-        ),
         "salmon": _host_tool(
             "salmon", route="Salmon decoy-aware", version_pattern=re.compile(r"(?:salmon\s+|version\s+)([0-9]+\.[0-9]+\.[0-9]+)", re.I),
             expected=f"Salmon {SALMON_VERSION}", runner=runner, resolver=tool_resolver, cwd=reference.root,
         ),
     }
     temporary_root = reference.root / f".rnaseq-reference-prepare-{uuid.uuid4().hex}"
-    transcript_dir = temporary_root / "transcriptome"
     salmon_dir = temporary_root / "salmon"
     temporary_index = salmon_dir / "index"
     temporary_root.mkdir()
-    transcript_dir.mkdir()
     salmon_dir.mkdir()
-    transcript_prefix = transcript_dir / "genome"
-    transcript_fasta = Path(str(transcript_prefix) + ".transcripts.fa")
     decoys = salmon_dir / "decoys.txt"
     gentrome = salmon_dir / "gentrome.fa"
-    rsem_command = [
-        str(tools["rsem-prepare-reference"]["executable"]), "--gtf", str(reference.annotation_gtf.path),
-        "--num-threads", str(threads), str(reference.genome_fasta.path), str(transcript_prefix),
-    ]
     salmon_command = [
         str(tools["salmon"]["executable"]), "index", "--threads", str(threads), "-t", str(gentrome),
         "-d", str(decoys), "-i", str(temporary_index), "-k", str(SALMON_KMER_SIZE),
     ]
     try:
-        _run_reference_command(rsem_command, runner, cwd=temporary_root)
-        if not transcript_fasta.is_file():
-            raise ReferencePreparationError("Host-native rsem-prepare-reference did not produce the expected transcript FASTA.")
         _write_decoys(reference.genome_fasta.path, decoys)
-        _concat_files(gentrome, (transcript_fasta, reference.genome_fasta.path))
+        _concat_files(gentrome, (reference.transcript_fasta.path, reference.genome_fasta.path))
         _run_reference_command(salmon_command, runner, cwd=temporary_root)
         validate_salmon_index(temporary_index)
         _assert_host_owned((temporary_index,))
@@ -1116,19 +1221,23 @@ def prepare_local_reference(
             "index": "salmon/index",
             "status": SALMON_BUILT,
             "strategy": SALMON_STRATEGY_DECOY_AWARE,
+            "version": SALMON_VERSION,
+            "source_transcriptome_sha256": reference.transcript_fasta.sha256,
+            "source_genome_sha256": reference.genome_fasta.sha256,
             "provenance": {
                 "builder": _host_builder_provenance(
-                    tools, preflight, {"rsem_prepare_reference": rsem_command, "salmon_index": salmon_command}
+                    tools, preflight, {"salmon_index": salmon_command}
                 ),
                 "salmon_version": SALMON_VERSION,
                 "index_path": "salmon/index",
                 "source_assets": _reference_source_assets(reference),
+                "source_transcriptome_sha256": reference.transcript_fasta.sha256,
                 "genome_fasta_sha256": reference.genome_fasta.sha256,
                 "annotation_gtf_sha256": reference.annotation_gtf.sha256,
-                "transcriptome_strategy": TRANSCRIPTOME_STRATEGY,
+                "transcriptome_strategy": "manifest_registered_transcript_fasta",
                 "decoy_strategy": DECOY_STRATEGY,
                 "kmer_size": SALMON_KMER_SIZE,
-                "commands": {"rsem_prepare_reference": rsem_command, "salmon_index": salmon_command},
+                "commands": {"salmon_index": salmon_command},
                 "index_validation": "required Salmon index artifacts present and non-empty",
                 "built_at": now().astimezone(UTC).replace(microsecond=0).isoformat(),
             },
@@ -1174,14 +1283,14 @@ def prepare_local_hisat2_reference(
     final_index = final_root / "index"
     if final_index.exists():
         raise ReferencePreparationError(f"Refusing to overwrite existing local HISAT2 index directory: {final_index}.")
-    preflight = _reference_build_preflight(reference, route="HISAT2 annotation-aware", threads=threads)
+    preflight = _reference_build_preflight(reference, route="HISAT2 genome-only runtime splice-sites", threads=threads)
     tools = {
         "hisat2-build": _host_tool(
-            "hisat2-build", route="HISAT2 annotation-aware", version_pattern=re.compile(r"(?:version\s+)?([0-9]+\.[0-9]+\.[0-9]+)", re.I),
+            "hisat2-build", route="HISAT2 genome-only runtime splice-sites", version_pattern=re.compile(r"(?:version\s+)?([0-9]+\.[0-9]+\.[0-9]+)", re.I),
             expected=f"HISAT2 {HISAT2_VERSION}", runner=runner, resolver=tool_resolver, cwd=reference.root,
         ),
         "hisat2_extract_splice_sites.py": _host_tool(
-            "hisat2_extract_splice_sites.py", route="HISAT2 annotation-aware", version_pattern=re.compile(r"([0-9]+\.[0-9]+(?:\.[0-9]+)?)"),
+            "hisat2_extract_splice_sites.py", route="HISAT2 genome-only runtime splice-sites", version_pattern=re.compile(r"([0-9]+\.[0-9]+(?:\.[0-9]+)?)"),
             expected=f"the helper shipped with HISAT2 {HISAT2_VERSION}", runner=runner, resolver=tool_resolver, cwd=reference.root,
         ),
     }
@@ -1200,7 +1309,7 @@ def prepare_local_hisat2_reference(
         splice = temporary / "splice_sites.txt"
         splice.write_text(splice_result.stdout or "", encoding="utf-8", newline="\n")
         index_command = [
-            str(tools["hisat2-build"]["executable"]), "--threads", str(threads), "--ss", str(splice),
+            str(tools["hisat2-build"]["executable"]), "--threads", str(threads),
             str(reference.genome_fasta.path), str(temporary_index / "genome"),
         ]
         _run_reference_command(index_command, runner, cwd=temporary)
@@ -1219,7 +1328,12 @@ def prepare_local_hisat2_reference(
             "status": HISAT2_BUILT,
             "index": "hisat2/index",
             "index_prefix": "hisat2/index/genome",
-            "strategy": HISAT2_STRATEGY_GRAPH_EMBEDDED,
+            "strategy": HISAT2_STRATEGY_GENOME_ONLY_RUNTIME_SPLICES,
+            "version": HISAT2_VERSION,
+            "genome_fasta_sha256": reference.genome_fasta.sha256,
+            "source_gtf_sha256": reference.annotation_gtf.sha256,
+            "splice_sites_gtf_sha256": reference.annotation_gtf.sha256,
+            "runtime_compatibility": HISAT2_RUNTIME_COMPATIBILITY_VALIDATED,
             "splice_sites": {"path": "hisat2/splice_sites.txt", "sha256": sha256_file(final_splice)},
             "provenance": {
                 "builder": _host_builder_provenance(
@@ -1232,7 +1346,7 @@ def prepare_local_hisat2_reference(
                 "genome_fasta_sha256": reference.genome_fasta.sha256,
                 "annotation_gtf_sha256": reference.annotation_gtf.sha256,
                 "threads": threads,
-                "index_strategy": HISAT2_STRATEGY_GRAPH_EMBEDDED,
+                "index_strategy": HISAT2_STRATEGY_GENOME_ONLY_RUNTIME_SPLICES,
                 "commands": {"splice_sites": splice_command, "hisat2_build": index_command},
                 "index_validation": "complete numbered .ht2 or .ht2l family",
                 "built_at": now().astimezone(UTC).replace(microsecond=0).isoformat(),
