@@ -186,6 +186,7 @@ def test_interactive_fastq_new_accepts_one_registered_managed_reference(monkeypa
         release=116,
         assembly="GRCh38",
         assembly_patch="p14",
+        assembly_identity="GRCh38.p14",
     )
     monkeypatch.setattr("rnaseq.cli._is_interactive_terminal", lambda: True)
     monkeypatch.setattr("rnaseq.cli.detect_local_resource_capacity", lambda: LocalResourceCapacity(20, 64, 62))

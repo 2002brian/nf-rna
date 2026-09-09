@@ -87,7 +87,7 @@ def render_validation_report(report: ValidationReport) -> str:
                 "Reference",
                 "---------",
                 "Source: local",
-                f"Identity: {reference.species}; {reference.provider} release {reference.release}; {reference.assembly} {reference.assembly_patch}",
+                f"Identity: {reference.species}; {reference.provider} release {reference.release}; {reference.assembly_identity}",
                 f"Manifest SHA256: {reference.manifest_sha256}",
                 f"Salmon index: {reference.salmon_status}",
             ]
@@ -167,7 +167,7 @@ def register_reference_command(reference_root: Path) -> None:
     typer.echo(f"Registered managed reference: {reference.root}")
     typer.echo(
         f"Identity: {reference.species}; {reference.provider} release {reference.release}; "
-        f"{reference.assembly}.{reference.assembly_patch}"
+        f"{reference.assembly_identity}"
     )
     typer.echo(f"Registry: {reference_registry_path()}")
 
@@ -326,7 +326,7 @@ def _is_interactive_terminal() -> bool:
 
 
 def _managed_reference_identity(reference: LocalReference) -> str:
-    return f"{reference.provider} {reference.release} / {reference.assembly}.{reference.assembly_patch}"
+    return f"{reference.provider} {reference.release} / {reference.assembly_identity}"
 
 
 def _registered_reference_choice(species: Species, backend: str) -> LocalReference | None:
@@ -348,7 +348,7 @@ def _registered_reference_choice(species: Species, backend: str) -> LocalReferen
         typer.echo(f"  Species: {reference.species}")
         typer.echo(f"  Provider: {reference.provider}")
         typer.echo(f"  Release: {reference.release}")
-        typer.echo(f"  Assembly: {reference.assembly}.{reference.assembly_patch}")
+        typer.echo(f"  Assembly: {reference.assembly_identity}")
         typer.echo(f"  Root: {reference.root}")
         typer.echo(f"  {asset_label}: available")
         return reference if typer.confirm("Use this reference?", default=True) else None

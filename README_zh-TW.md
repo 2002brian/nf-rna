@@ -86,7 +86,7 @@ FASTQ → fastp/FastQC → HISAT2 → sorted BAM → featureCounts → DESeqData
 
 為了相容既有 FASTQ project，`upstream.engine: nfcore_rnaseq` 與 `pipeline_version: "3.26.0"` 仍是必要的 legacy configuration fields；它們只描述並選擇 Salmon implementation。HISAT2 run 會將實際執行 implementation 記錄為 `nf-rna/hisat2_featurecounts`、nf-rna version 與 `workflow/hisat2_featurecounts.nf` 的 SHA-256，絕不會歸因為 nf-core/rnaseq。
 
-Local reference 請在 `reference_manifest.yaml` 登錄相容的 prebuilt HISAT2 index，再執行 `rnaseq plan PROJECT` 與 `rnaseq run PROJECT --case-id CASE --profile local --yes`。`rnaseq reference prepare-hisat2` 是可選的 host-native builder，不是使用前置條件。raw 與 processed 的 per-lane FastQC report/archive 會加上不同 prefix 防止碰撞，並與 fastp JSON、HISAT2 summary、featureCounts summary 一起送入 MultiQC。此 route 固定 HISAT2 2.2.1、SAMtools 1.21、Subread/featureCounts 2.0.6、FastQC 0.12.1、fastp 0.24.0 與 MultiQC 1.33。
+Local reference 請在 `reference_manifest.yaml` 登錄相容的 prebuilt HISAT2 index，再執行 `rnaseq plan PROJECT` 與 `rnaseq run PROJECT --case-id CASE --profile local --yes`。`rnaseq reference prepare-hisat2` 是可選的 host-native builder，不是使用前置條件。raw 與 processed 的 per-lane FastQC report/archive 會加上不同 prefix 防止碰撞，並與 fastp JSON、HISAT2 summary、featureCounts summary 一起送入 MultiQC。此 route 精確固定 HISAT2 2.2.3、SAMtools 1.21、Subread/featureCounts 2.0.6、FastQC 0.12.1、fastp 0.24.0 與 MultiQC 1.33。
 
 ### Milestone A 驗證（2026-09-05）
 
@@ -108,7 +108,7 @@ raw-count route 接受第一欄為 `gene_id` 的非負整數 count matrix、可�
 
 生物學 pairing 必須明確設定：paired design 會保存 `design.pairing_column`，驗證每個 block 對 requested condition 各有一個 observation，並在 execution 前拒絕 rank-deficient additive model matrix。這與 FASTQ 的 paired-end／single-end layout 無關。Report 會依實際來源標示 Salmon/tximport、featureCounts raw counts 或 imported raw counts。
 
-Production reference acceptance 以 `reference.acceptance: production` 明確啟用，只接受 schema 1.1、經人工指定 `purpose: production` 的 managed local manifest；所有 asset hash 必須通過驗證，所選 backend index 也必須完整並綁定相同 FASTA/GTF identity。Legacy 與 synthetic manifest 在 standard mode 仍可使用，但不會被靜默升級為 production。第一個文件化的人類 identity 為 Ensembl release 116、GRCh38.p14；本 repository 不下載 reference。
+Production reference acceptance 以 `reference.acceptance: production` 明確啟用，只接受 schema 1.1、經人工指定 `purpose: production` 的 managed local manifest；所有 asset hash 必須通過驗證，所選 backend index 也必須完整並綁定相同 FASTA/GTF identity。Legacy 與 synthetic manifest 在 standard mode 仍可使用，但不會被靜默升級為 production。第一個文件化的人類 identity 為 Ensembl release 116、GRCh38.p14；像 Mouse GRCm39 這類沒有 patch release 的 assembly 應使用 `assembly_patch: null` 或省略該欄位，顯示為 `GRCm39`。本 repository 不下載 reference。
 
 完整的設定規則請參閱 [quick start](docs/quickstart.md) 與 [scientific contract](docs/scientific_contract.md)。
 

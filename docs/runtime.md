@@ -39,8 +39,10 @@ candidate must be a production manifest and have the selected backend's fully
 validated asset; stale registrations are ignored so manual and custom routes
 remain usable.
 
-The separately pinned builder environment contains Salmon 1.10.3 and HISAT2
-2.2.1 (including `hisat2_extract_splice_sites.py`); RSEM is not required.
+The separately pinned builder environment contains Salmon 1.10.3 and exactly
+HISAT2 2.2.3 (including `hisat2_extract_splice_sites.py`); RSEM is not required.
+Other 2.2.x releases are rejected so that reference construction remains
+reproducible.
 Each command resolves absolute executable paths and validates versions before it
 creates staging output. Salmon uses the manifest-registered transcript FASTA
 and retains its decoy-aware gentrome strategy with `k=31`. HISAT2 builds a
@@ -53,8 +55,9 @@ For a prebuilt Salmon index, declare `index`, `version`, `strategy`, and
 `source_genome_sha256`. For a prebuilt HISAT2 index, declare `index_prefix`,
 `version`, `strategy: genome_only_runtime_splicesites`, `genome_fasta_sha256`,
 `source_gtf_sha256`, and a checksum-bound `splice_sites` asset. All paths are
-reference-root-relative. The manifest validates asset/index consistency; builder
-mode is provenance, not a prerequisite for use.
+reference-root-relative. The manifest validates asset/index consistency; native
+versus external builder mode is provenance, but the declared HISAT2 version
+must be exactly 2.2.3.
 An HISAT2-only reference need not include `files.transcript_fasta`; that asset
 is required only when a Salmon index is declared or Salmon preparation is used.
 
@@ -72,7 +75,7 @@ salmon:
 hisat2:
   status: built
   index_prefix: vendor/hisat2/genome
-  version: "2.2.1"
+  version: "2.2.3"
   strategy: genome_only_runtime_splicesites
   genome_fasta_sha256: "<files.genome_fasta SHA-256>"
   source_gtf_sha256: "<files.annotation_gtf SHA-256>"
@@ -94,12 +97,13 @@ Swap availability is not evidence that this build is ready.
 The production Human Ensembl 116/GRCh38.p14 bundle may declare
 `genome_only_runtime_splicesites`: a HISAT2 genome-only index and a
 registered splice-site file derived from the same GTF. This strategy never
-claims graph-embedded splice sites. The first-party 2.2.1 runtime receives
+claims graph-embedded splice sites. The first-party 2.2.3 runtime receives
 exactly one `--known-splicesite-infile` argument only for this strategy; the
 manifest separately records `index_builder_version` and
-`runtime_aligner_version`. A prebuilt index whose declared builder version
-differs from the runtime defaults to `requires_smoke_validation`; it becomes
-ready only when that compatibility is explicitly recorded as validated.
+`runtime_aligner_version`. A prebuilt index without an explicit
+`runtime_compatibility: validated` remains `requires_smoke_validation`, even
+when its builder version is 2.2.3. This prevents a version-pin update from
+silently substituting for real FASTQ acceptance evidence.
 
 ## Delivery count semantics
 
@@ -124,7 +128,7 @@ On Linux and WSL, downstream Nextflow task containers run with the invoking host
 
 ## Versioned execution
 
-The Salmon FASTQ route is pinned to nf-core/rnaseq 3.26.0. The HISAT2 route uses Biocontainers build tags for HISAT2 2.2.1, SAMtools 1.21, Subread/featureCounts 2.0.6, FastQC 0.12.1 and fastp 0.24.0, plus Seqera Wave MultiQC 1.33; each resolved Docker digest is recorded only when the runtime can inspect it. The first-party downstream image includes Python, R, DESeq2, tximport, plotting, and enrichment packages. Container image availability, host architecture, and registry access remain operator/runtime responsibilities.
+The Salmon FASTQ route is pinned to nf-core/rnaseq 3.26.0. The HISAT2 route uses the exact Biocontainers 2.2.3 build tag, plus SAMtools 1.21, Subread/featureCounts 2.0.6, FastQC 0.12.1 and fastp 0.24.0, and Seqera Wave MultiQC 1.33; each resolved Docker digest is recorded only when the runtime can inspect it. The first-party downstream image includes Python, R, DESeq2, tximport, plotting, and enrichment packages. Container image availability, host architecture, and registry access remain operator/runtime responsibilities.
 
 ## Milestone A validation status
 

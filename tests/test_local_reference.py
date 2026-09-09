@@ -26,6 +26,7 @@ from rnaseq.references import (
     SALMON_STRATEGY_DECOY_AWARE,
     SALMON_STRATEGY_TRANSCRIPTOME_ONLY,
     SALMON_VERSION,
+    HISAT2_VERSION,
     LocalReferenceError,
     TRANSCRIPTOME_STRATEGY,
     ReferenceAdoptionError,
@@ -193,7 +194,7 @@ def _mark_genome_only_hisat2(reference: Path, *, runtime_compatibility: str = "v
         "strategy": "genome_only_runtime_splices",
         "splice_sites": {"path": "hisat2/splice_sites.txt", "sha256": _sha(splice)},
         "provenance": {
-            "index_builder_version": "2.2.3", "runtime_aligner_version": "2.2.1",
+            "index_builder_version": "2.2.3", "runtime_aligner_version": "2.2.3",
             "genome_fasta_sha256": manifest["files"]["genome_fasta"]["sha256"],
             "annotation_gtf_sha256": manifest["files"]["annotation_gtf"]["sha256"],
             "splice_sites_derived_from_gtf_sha256": manifest["files"]["annotation_gtf"]["sha256"],
@@ -310,6 +311,43 @@ def test_reference_register_command_uses_xdg_registry(monkeypatch, tmp_path):
     assert result.exit_code == 0, result.output
     assert "Registered managed reference" in result.output
     assert (config_home / "nf-rna" / "references.yaml").is_file()
+
+
+def test_assembly_identity_accepts_patched_and_unpatched_manifests_and_registry_matches(tmp_path):
+    human_root, human_reference = _local_fastq_project(tmp_path / "human")
+    _promote_reference_for_production(human_root, human_reference)
+    human = load_local_reference_root(human_reference)
+    assert human.assembly_patch == "p14"
+    assert human.assembly_identity == "GRCh38.p14"
+
+    mouse_root, mouse_reference = _local_fastq_project(tmp_path / "mouse", species="Mus musculus")
+    _promote_reference_for_production(mouse_root, mouse_reference)
+    mouse_manifest_path = mouse_reference / "reference_manifest.yaml"
+    mouse_manifest = yaml.safe_load(mouse_manifest_path.read_text(encoding="utf-8"))
+    mouse_manifest["reference"]["assembly"] = "GRCm39"
+    mouse_manifest["reference"].pop("assembly_patch")
+    mouse_manifest_path.write_text(yaml.safe_dump(mouse_manifest, sort_keys=False), encoding="utf-8")
+    mouse = load_local_reference_root(mouse_reference)
+    assert mouse.assembly_patch is None
+    assert mouse.assembly_identity == "GRCm39"
+
+    mouse_manifest = yaml.safe_load(mouse_manifest_path.read_text(encoding="utf-8"))
+    mouse_manifest["reference"]["assembly_patch"] = None
+    mouse_manifest_path.write_text(yaml.safe_dump(mouse_manifest, sort_keys=False), encoding="utf-8")
+    assert load_local_reference_root(mouse_reference).assembly_identity == "GRCm39"
+    mouse_manifest["reference"]["assembly_patch"] = ""
+    mouse_manifest_path.write_text(yaml.safe_dump(mouse_manifest, sort_keys=False), encoding="utf-8")
+    assert load_local_reference_root(mouse_reference).assembly_identity == "GRCm39"
+
+    registry = tmp_path / "config" / "nf-rna" / "references.yaml"
+    register_local_reference(human_reference, registry_path=registry)
+    register_local_reference(mouse_reference, registry_path=registry)
+    assert [item.assembly_identity for item in compatible_registered_references(
+        "Homo sapiens", "salmon", registry_path=registry
+    )] == ["GRCh38.p14"]
+    assert [item.assembly_identity for item in compatible_registered_references(
+        "Mus musculus", "salmon", registry_path=registry
+    )] == ["GRCm39"]
 
 
 def test_synthetic_manifest_works_normally_but_fails_production_acceptance(tmp_path):
@@ -699,7 +737,7 @@ def test_host_native_hisat2_preparation_records_annotation_aware_provenance(tmp_
         commands.append(command)
         executable = Path(command[0]).name
         if command[-1] == "--version":
-            output = "hisat2-build version 2.2.1" if executable == "hisat2-build" else "hisat2 2.2.1"
+            output = "hisat2-build version 2.2.3" if executable == "hisat2-build" else "hisat2 2.2.3"
             return subprocess.CompletedProcess(command, 0, output, "")
         if executable == "hisat2_extract_splice_sites.py":
             return subprocess.CompletedProcess(command, 0, "chr1\t1\t4\t+\n", "")
@@ -716,9 +754,63 @@ def test_host_native_hisat2_preparation_records_annotation_aware_provenance(tmp_
     assert provenance["builder"]["mode"] == "host_native"
     assert provenance["threads"] == 7
     assert provenance["index_strategy"] == "genome_only_runtime_splicesites"
+    assert manifest["hisat2"]["version"] == "2.2.3"
+    assert provenance["index_builder_version"] == "2.2.3"
+    assert provenance["runtime_aligner_version"] == "2.2.3"
     assert "--ss" not in provenance["commands"]["hisat2_build"]
     assert all("docker" not in item for command in commands for item in command)
     assert dict(prepared.hisat2_arguments())["--hisat2_splice_sites"] == reference / "hisat2" / "splice_sites.txt"
+
+
+@pytest.mark.parametrize("observed", ("2.2.1", "2.2.2", "2.3.0"))
+def test_host_native_hisat2_preparation_rejects_every_noncanonical_version(tmp_path, observed):
+    _root, reference = _local_fastq_project(tmp_path)
+
+    def fake_runner(command, **_kwargs):
+        executable = Path(command[0]).name
+        output = f"hisat2-build version {observed}" if executable == "hisat2-build" else f"hisat2 {observed}"
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    with pytest.raises(ReferencePreparationError, match=rf"expected {HISAT2_VERSION}"):
+        prepare_local_hisat2_reference(
+            reference, runner=fake_runner, tool_resolver=lambda name: f"/tools/{name}"
+        )
+    assert not list(reference.glob(".rnaseq-hisat2-prepare-*"))
+    assert not (reference / "hisat2" / "index").exists()
+
+
+def test_existing_2_2_3_index_is_not_rebuilt_or_promoted_without_smoke_validation(tmp_path):
+    _root, reference = _local_fastq_project(tmp_path)
+    _mark_genome_only_hisat2(reference, runtime_compatibility="requires_smoke_validation")
+    manifest_path = reference / "reference_manifest.yaml"
+    before = manifest_path.read_bytes()
+    index_before = {
+        path.name: path.read_bytes() for path in (reference / "hisat2" / "index").iterdir()
+    }
+
+    loaded = load_local_reference_root(reference)
+    assert loaded.hisat2_index is not None
+    assert not loaded.hisat2_runtime_ready
+    with pytest.raises(ReferencePreparationError, match="already built"):
+        prepare_local_hisat2_reference(reference, tool_resolver=lambda name: f"/tools/{name}")
+    assert manifest_path.read_bytes() == before
+    assert {
+        path.name: path.read_bytes() for path in (reference / "hisat2" / "index").iterdir()
+    } == index_before
+    assert not loaded.hisat2_runtime_ready
+
+
+@pytest.mark.parametrize("observed", ("2.2.1", "2.2.2", "2.3.0"))
+def test_manifest_rejects_prebuilt_hisat2_indexes_outside_the_exact_contract(tmp_path, observed):
+    _root, reference = _local_fastq_project(tmp_path)
+    _mark_genome_only_hisat2(reference)
+    manifest_path = reference / "reference_manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["hisat2"]["provenance"]["index_builder_version"] = observed
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(LocalReferenceError, match=r"requires exactly 2\.2\.3"):
+        load_local_reference_root(reference)
 
 
 def test_genome_only_runtime_splices_require_registered_matching_nonempty_provenance(tmp_path):
@@ -729,7 +821,7 @@ def test_genome_only_runtime_splices_require_registered_matching_nonempty_proven
     assert loaded.hisat2_index_prefix == reference / "hisat2" / "index" / "genome"
     assert loaded.hisat2_arguments()[-1] == ("--hisat2_splice_sites", reference / "hisat2" / "splice_sites.txt")
     assert loaded.provenance()["hisat2"]["index_builder_version"] == "2.2.3"
-    assert loaded.provenance()["hisat2"]["runtime_aligner_version"] == "2.2.1"
+    assert loaded.provenance()["hisat2"]["runtime_aligner_version"] == "2.2.3"
 
     splice = reference / "hisat2" / "splice_sites.txt"
     splice.unlink()
@@ -827,12 +919,13 @@ def test_manifest_accepts_prebuilt_genome_only_hisat2_prefix_without_builder_pro
     # A HISAT2-only reference does not need a Salmon transcript FASTA.
     manifest["files"].pop("transcript_fasta")
     manifest["hisat2"] = {
-        "status": "built", "index_prefix": "third party/hisat2/genome", "version": "2.2.1",
+        "status": "built", "index_prefix": "third party/hisat2/genome", "version": "2.2.3",
         "strategy": "genome_only_runtime_splicesites",
         "genome_fasta_sha256": manifest["files"]["genome_fasta"]["sha256"],
         "source_gtf_sha256": manifest["files"]["annotation_gtf"]["sha256"],
         "splice_sites_gtf_sha256": manifest["files"]["annotation_gtf"]["sha256"],
         "splice_sites": {"path": "third party/splice_sites.txt", "sha256": _sha(splice)},
+        "runtime_compatibility": "validated",
     }
     manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
 
@@ -889,7 +982,7 @@ def test_genome_only_runtime_splices_are_frozen_and_passed_once(tmp_path):
     frozen_hisat2 = execution["reference"]["hisat2"]
     assert frozen_hisat2["strategy"] == "genome_only_runtime_splices"
     assert frozen_hisat2["index_builder_version"] == "2.2.3"
-    assert frozen_hisat2["runtime_aligner_version"] == "2.2.1"
+    assert frozen_hisat2["runtime_aligner_version"] == "2.2.3"
     assert frozen_hisat2["splice_sites"]["sha256"] == _sha(reference / "hisat2" / "splice_sites.txt")
 
 

@@ -155,7 +155,7 @@ def render_analysis_plan(report: ValidationReport) -> str:
         if report.local_reference is not None:
             local = report.local_reference
             lines.extend([
-                f"- Local reference identity: `{local.species}` / `{local.provider}` release `{local.release}` / `{local.assembly}` patch `{local.assembly_patch}`",
+                f"- Local reference identity: `{local.species}` / `{local.provider}` release `{local.release}` / `{local.assembly_identity}`",
                 f"- Manifest: `{local.manifest_path}` (SHA256 `{local.manifest_sha256}`)",
                 f"- Genome FASTA: `{local.genome_fasta.path}` (SHA256 `{local.genome_fasta.sha256}`)",
                 f"- GTF: `{local.annotation_gtf.path}` (SHA256 `{local.annotation_gtf.sha256}`)",

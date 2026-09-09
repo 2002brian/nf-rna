@@ -44,7 +44,7 @@ SALMON_STRATEGY_TRANSCRIPTOME_ONLY = "transcriptome_only"
 SALMON_STRATEGY_DECOY_AWARE = "decoy_aware"
 SALMON_STRATEGIES = frozenset((SALMON_STRATEGY_TRANSCRIPTOME_ONLY, SALMON_STRATEGY_DECOY_AWARE))
 ADOPTED_EXISTING_INDEX = "adopted_existing_index"
-HISAT2_VERSION = "2.2.1"
+HISAT2_VERSION = "2.2.3"
 HISAT2_RUNTIME_VERSION = HISAT2_VERSION
 HISAT2_NOT_BUILT = "not_built"
 HISAT2_BUILT = "built"
@@ -104,7 +104,7 @@ class LocalReference:
     provider: str
     release: int
     assembly: str
-    assembly_patch: str
+    assembly_patch: str | None
     genome_fasta: LocalReferenceAsset
     annotation_gtf: LocalReferenceAsset
     transcript_fasta: LocalReferenceAsset | None
@@ -157,6 +157,12 @@ class LocalReference:
         return bool(self.hisat2_provenance) and (
             self.hisat2_provenance.get("runtime_compatibility") == HISAT2_RUNTIME_COMPATIBILITY_VALIDATED
         )
+
+    @property
+    def assembly_identity(self) -> str:
+        """Render a biological assembly without inventing an absent patch."""
+
+        return f"{self.assembly}.{self.assembly_patch}" if self.assembly_patch else self.assembly
 
     def assets(self) -> tuple[LocalReferenceAsset, ...]:
         return tuple(asset for asset in (self.genome_fasta, self.annotation_gtf, self.transcript_fasta) if asset is not None)
@@ -651,7 +657,16 @@ def _load_local_reference_root(
     if not isinstance(release, int) or isinstance(release, bool):
         raise LocalReferenceError("Local reference manifest reference.release must be an integer.")
     assembly = _require_string(identity.get("assembly"), "reference.assembly")
-    assembly_patch = _require_string(identity.get("assembly_patch"), "reference.assembly_patch")
+    assembly_patch_value = identity.get("assembly_patch")
+    if assembly_patch_value is None:
+        assembly_patch = None
+    elif not isinstance(assembly_patch_value, str):
+        raise LocalReferenceError("Local reference manifest reference.assembly_patch must be a string or null.")
+    else:
+        # Historic manifests occasionally used an empty placeholder for an
+        # assembly without a named patch.  Interpret it as absent without
+        # changing the operator-owned manifest on disk.
+        assembly_patch = assembly_patch_value.strip() or None
     files = _require_mapping(manifest.get("files"), "files")
     genome_fasta = _asset(root, files, "genome_fasta")
     annotation_gtf = _asset(root, files, "annotation_gtf")
@@ -784,26 +799,26 @@ def _load_local_reference_root(
             "hisat2.provenance.index_builder_version",
         )
         if not SEMVER_PATTERN.fullmatch(builder_version):
-            raise LocalReferenceError("Local reference HISAT2 version must be a numeric release, for example 2.2.1.")
+            raise LocalReferenceError("Local reference HISAT2 version must be a numeric release, for example 2.2.3.")
+        if builder_version != HISAT2_VERSION:
+            raise LocalReferenceError(
+                f"Local reference HISAT2 index builder requires exactly {HISAT2_VERSION}; "
+                f"observed {builder_version!r}. Create or update the documented reference-builder environment."
+            )
         hisat2_provenance.setdefault("index_builder_version", builder_version)
         if _uses_runtime_splice_sites(hisat2_strategy):
             _require_equal(
                 hisat2.get("splice_sites_gtf_sha256", hisat2_provenance.get("splice_sites_derived_from_gtf_sha256", gtf_checksum)), annotation_gtf.sha256,
                 "hisat2.provenance.splice_sites_derived_from_gtf_sha256",
             )
-            default_compatibility = (
-                HISAT2_RUNTIME_COMPATIBILITY_VALIDATED
-                if builder_version == HISAT2_RUNTIME_VERSION
-                else HISAT2_RUNTIME_COMPATIBILITY_SMOKE_REQUIRED
-            )
+            # A version match proves only the pinned binary contract.  It does
+            # not replace a recorded FASTQ acceptance/smoke validation for an
+            # existing prebuilt index.
+            default_compatibility = HISAT2_RUNTIME_COMPATIBILITY_SMOKE_REQUIRED
             compatibility = _require_string(hisat2.get("runtime_compatibility", hisat2_provenance.get("runtime_compatibility", default_compatibility)), "hisat2.runtime_compatibility")
             if compatibility not in {HISAT2_RUNTIME_COMPATIBILITY_VALIDATED, HISAT2_RUNTIME_COMPATIBILITY_SMOKE_REQUIRED}:
                 raise LocalReferenceError("Local reference hisat2.provenance.runtime_compatibility is unsupported.")
             hisat2_provenance.setdefault("runtime_compatibility", compatibility)
-        elif builder_version != HISAT2_VERSION:
-            raise LocalReferenceError(
-                f"Local reference {hisat2_strategy} requires HISAT2 index builder {HISAT2_VERSION}, observed {builder_version!r}."
-            )
     elif hisat2_status != HISAT2_NOT_BUILT:
         raise LocalReferenceError("Local reference hisat2.status must be 'not_built' or 'built'.")
     return LocalReference(
@@ -1019,7 +1034,7 @@ def compatible_registered_references(
             reference.provider.casefold(),
             -reference.release,
             reference.assembly.casefold(),
-            reference.assembly_patch.casefold(),
+            (reference.assembly_patch or "").casefold(),
             str(reference.root),
         ),
     )

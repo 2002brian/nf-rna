@@ -86,7 +86,7 @@ runtime:
   control_plane_image: rnaseq-control-plane:0.5.1
 ```
 
-The managed manifest must use schema 1.1 with deliberate `purpose: production`. The initial human identity contract is Ensembl 116, GRCh38.p14; assets are not downloaded by this project.
+The managed manifest must use schema 1.1 with deliberate `purpose: production`. The initial human identity contract is Ensembl 116, GRCh38.p14; an unpatched assembly such as mouse GRCm39 uses `assembly_patch: null` (or omits it) and displays simply as `GRCm39`. Assets are not downloaded by this project.
 
 ### Register a reusable managed reference
 

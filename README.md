@@ -98,7 +98,7 @@ reference:
   hisat2_index: reference/hisat2/index
 ```
 
-For a managed local reference, register a compatible prebuilt HISAT2 index in `reference_manifest.yaml`, then run `rnaseq plan PROJECT` and `rnaseq run PROJECT --case-id CASE --profile local --yes`. `rnaseq reference prepare-hisat2` is an optional host-native builder, not a prerequisite. Raw and processed per-lane FastQC reports/archives are uniquely prefixed and included in MultiQC together with fastp JSON, HISAT2 summaries and featureCounts summaries. The route pins HISAT2 2.2.1, SAMtools 1.21, Subread/featureCounts 2.0.6, FastQC 0.12.1 and fastp 0.24.0 through Biocontainers build tags, plus MultiQC 1.33 through the Seqera Wave library.
+For a managed local reference, register a compatible prebuilt HISAT2 index in `reference_manifest.yaml`, then run `rnaseq plan PROJECT` and `rnaseq run PROJECT --case-id CASE --profile local --yes`. `rnaseq reference prepare-hisat2` is an optional host-native builder, not a prerequisite. Raw and processed per-lane FastQC reports/archives are uniquely prefixed and included in MultiQC together with fastp JSON, HISAT2 summaries and featureCounts summaries. The route pins exactly HISAT2 2.2.3, SAMtools 1.21, Subread/featureCounts 2.0.6, FastQC 0.12.1 and fastp 0.24.0 through Biocontainers build tags, plus MultiQC 1.33 through the Seqera Wave library.
 
 ### Raw counts
 

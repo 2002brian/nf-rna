@@ -8,7 +8,7 @@ import yaml
 
 from conftest import base_config
 from rnaseq.execution import build_hisat2_featurecounts_command, resolved_upstream_implementation
-from rnaseq.hisat2_featurecounts import assemble_count_matrix, featurecounts_arguments, hisat2_strand_option
+from rnaseq.hisat2_featurecounts import HISAT2_IMAGE, HISAT2_VERSION, assemble_count_matrix, featurecounts_arguments, hisat2_strand_option
 from rnaseq.service import CaseRun, freeze_case_inputs
 from rnaseq.validators import validate_project
 
@@ -30,6 +30,14 @@ def test_featurecounts_policy_translates_layout_and_strand():
     paired = featurecounts_arguments(layout="paired_end", strandedness="reverse")
     assert paired == ["-t", "exon", "-g", "gene_id", "-s", "2", "-Q", "0", "--primary", "-p", "--countReadPairs", "-B", "-C"]
     assert featurecounts_arguments(layout="single_end", strandedness="unstranded") == ["-t", "exon", "-g", "gene_id", "-s", "0", "-Q", "0", "--primary"]
+
+
+def test_hisat2_is_pinned_to_2_2_3_for_builder_and_runtime():
+    root = Path(__file__).parents[1]
+    assert HISAT2_VERSION == "2.2.3"
+    assert HISAT2_IMAGE == "quay.io/biocontainers/hisat2:2.2.3--h8471819_0"
+    assert "hisat2=2.2.3" in (root / "environment.reference-builder.yml").read_text(encoding="utf-8")
+    assert "hisat2:2.2.3--h8471819_0" in (root / "workflow" / "hisat2_featurecounts.nf").read_text(encoding="utf-8")
 
 
 def test_hisat2_workflow_publishes_fastp_reports_and_feeds_upstream_reports_to_multiqc():

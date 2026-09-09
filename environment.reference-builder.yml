@@ -5,4 +5,4 @@ channels:
 dependencies:
   - python=3.11
   - salmon=1.10.3
-  - hisat2=2.2.1
+  - hisat2=2.2.3
