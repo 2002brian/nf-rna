@@ -1088,7 +1088,6 @@ def _host_tool(
     required_versions = {
         "salmon": SALMON_VERSION,
         "hisat2-build": HISAT2_VERSION,
-        "hisat2_extract_splice_sites.py": HISAT2_VERSION,
     }
     if name in required_versions and version != required_versions[name]:
         expected_version = required_versions[name]
@@ -1097,6 +1096,51 @@ def _host_tool(
             "Create the documented environment with: mamba env create -f environment.reference-builder.yml"
         )
     return {"name": name, "executable": executable, "version": version, "version_output": raw}
+
+
+def _hisat2_splice_site_helper(
+    *, route: str, hisat2_build: dict[str, object], runner: Callable[..., subprocess.CompletedProcess[str]],
+    resolver: Callable[[str], str | None], cwd: Path,
+) -> dict[str, object]:
+    """Validate the packaged splice-site helper without inventing a version API.
+
+    ``hisat2_extract_splice_sites.py`` exposes ``-h`` and ``-v`` (verbose),
+    but no semantic-version option.  Tie it to the exact checked
+    ``hisat2-build`` installation by location and verify its documented help
+    contract instead of treating a verbose flag as a version report.
+    """
+
+    name = "hisat2_extract_splice_sites.py"
+    configured = resolver(name)
+    if not configured:
+        raise ReferencePreparationError(
+            f"Missing required host executable {name!r} for {route}. "
+            "Create the documented environment with: mamba env create -f environment.reference-builder.yml"
+        )
+    executable = str(Path(configured).resolve())
+    build_executable = Path(str(hisat2_build["executable"])).resolve()
+    if Path(executable).parent != build_executable.parent:
+        raise ReferencePreparationError(
+            f"Host executable {name!r} must resolve beside the validated hisat2-build executable "
+            f"for {route}; observed {executable}, hisat2-build {build_executable}."
+        )
+    try:
+        result = runner([executable, "-h"], check=False, text=True, capture_output=True, cwd=cwd)
+    except OSError as exc:
+        raise ReferencePreparationError(f"Unable to inspect host executable {name!r}: {exc}") from exc
+    raw = ((result.stdout or "") + ("\n" + result.stderr if result.stderr else "")).strip()
+    if result.returncode != 0 or "Extract splice junctions from a GTF file" not in raw or "gtf_file" not in raw:
+        raise ReferencePreparationError(
+            f"Host executable {name!r} does not provide the expected HISAT2 splice-site helper help contract "
+            f"for {route}. Output: {raw or 'none'}"
+        )
+    return {
+        "name": name,
+        "executable": executable,
+        "validation": "help_contract",
+        "help_output": raw,
+        "associated_hisat2_build_version": hisat2_build["version"],
+    }
 
 
 def _reference_build_preflight(reference: LocalReference, *, route: str, threads: int) -> dict[str, object]:
@@ -1468,11 +1512,14 @@ def prepare_local_hisat2_reference(
             "hisat2-build", route="HISAT2 genome-only runtime splice-sites", version_pattern=re.compile(r"(?:version\s+)?([0-9]+\.[0-9]+\.[0-9]+)", re.I),
             expected=f"HISAT2 {HISAT2_VERSION}", runner=runner, resolver=tool_resolver, cwd=reference.root,
         ),
-        "hisat2_extract_splice_sites.py": _host_tool(
-            "hisat2_extract_splice_sites.py", route="HISAT2 genome-only runtime splice-sites", version_pattern=re.compile(r"([0-9]+\.[0-9]+(?:\.[0-9]+)?)"),
-            expected=f"the helper shipped with HISAT2 {HISAT2_VERSION}", runner=runner, resolver=tool_resolver, cwd=reference.root,
-        ),
     }
+    tools["hisat2_extract_splice_sites.py"] = _hisat2_splice_site_helper(
+        route="HISAT2 genome-only runtime splice-sites",
+        hisat2_build=tools["hisat2-build"],
+        runner=runner,
+        resolver=tool_resolver,
+        cwd=reference.root,
+    )
     temporary = reference.root / f".rnaseq-hisat2-prepare-{uuid.uuid4().hex}"
     temporary_index = temporary / "index"
     temporary.mkdir()

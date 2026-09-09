@@ -43,6 +43,11 @@ The separately pinned builder environment contains Salmon 1.10.3 and exactly
 HISAT2 2.2.3 (including `hisat2_extract_splice_sites.py`); RSEM is not required.
 Other 2.2.x releases are rejected so that reference construction remains
 reproducible.
+`hisat2-build --version` is the authoritative version check. The splice-site
+helper has no semantic-version interface (`-v` is verbose mode), so preflight
+instead requires the helper beside `hisat2-build` and verifies its supported
+`-h` help contract. Provenance records the helper path and its association with
+the checked HISAT2 binary rather than inventing a helper version.
 Each command resolves absolute executable paths and validates versions before it
 creates staging output. Salmon uses the manifest-registered transcript FASTA
 and retains its decoy-aware gentrome strategy with `k=31`. HISAT2 builds a

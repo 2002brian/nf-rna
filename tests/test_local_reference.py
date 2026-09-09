@@ -737,8 +737,13 @@ def test_host_native_hisat2_preparation_records_annotation_aware_provenance(tmp_
         commands.append(command)
         executable = Path(command[0]).name
         if command[-1] == "--version":
-            output = "hisat2-build version 2.2.3" if executable == "hisat2-build" else "hisat2 2.2.3"
-            return subprocess.CompletedProcess(command, 0, output, "")
+            if executable == "hisat2_extract_splice_sites.py":
+                return subprocess.CompletedProcess(command, 2, "", "unrecognized arguments: --version")
+            return subprocess.CompletedProcess(command, 0, "hisat2-build version 2.2.3", "")
+        if executable == "hisat2_extract_splice_sites.py" and command[-1] == "-h":
+            return subprocess.CompletedProcess(
+                command, 0, "usage: hisat2_extract_splice_sites.py [-h] [-v] [gtf_file]\nExtract splice junctions from a GTF file\n", ""
+            )
         if executable == "hisat2_extract_splice_sites.py":
             return subprocess.CompletedProcess(command, 0, "chr1\t1\t4\t+\n", "")
         _write_hisat2_index(Path(command[-1]).parent)
@@ -757,6 +762,12 @@ def test_host_native_hisat2_preparation_records_annotation_aware_provenance(tmp_
     assert manifest["hisat2"]["version"] == "2.2.3"
     assert provenance["index_builder_version"] == "2.2.3"
     assert provenance["runtime_aligner_version"] == "2.2.3"
+    helper = provenance["builder"]["tools"]["hisat2_extract_splice_sites.py"]
+    assert helper["validation"] == "help_contract"
+    assert helper["associated_hisat2_build_version"] == "2.2.3"
+    assert "version" not in helper
+    assert ["/tools/hisat2_extract_splice_sites.py", "--version"] not in commands
+    assert ["/tools/hisat2_extract_splice_sites.py", "-h"] in commands
     assert "--ss" not in provenance["commands"]["hisat2_build"]
     assert all("docker" not in item for command in commands for item in command)
     assert dict(prepared.hisat2_arguments())["--hisat2_splice_sites"] == reference / "hisat2" / "splice_sites.txt"
@@ -777,6 +788,35 @@ def test_host_native_hisat2_preparation_rejects_every_noncanonical_version(tmp_p
         )
     assert not list(reference.glob(".rnaseq-hisat2-prepare-*"))
     assert not (reference / "hisat2" / "index").exists()
+
+
+def test_hisat2_preparation_rejects_missing_or_nonfunctional_splice_site_helper(tmp_path):
+    _root, reference = _local_fastq_project(tmp_path)
+
+    def valid_build(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 0, "hisat2-build version 2.2.3", "")
+
+    with pytest.raises(ReferencePreparationError, match="Missing required host executable 'hisat2_extract_splice_sites.py'"):
+        prepare_local_hisat2_reference(
+            reference,
+            runner=valid_build,
+            tool_resolver=lambda name: "/tools/hisat2-build" if name == "hisat2-build" else None,
+        )
+    assert not list(reference.glob(".rnaseq-hisat2-prepare-*"))
+
+    def broken_helper(command, **_kwargs):
+        executable = Path(command[0]).name
+        if executable == "hisat2-build":
+            return subprocess.CompletedProcess(command, 0, "hisat2-build version 2.2.3", "")
+        return subprocess.CompletedProcess(command, 2, "", "helper failure")
+
+    with pytest.raises(ReferencePreparationError, match="expected HISAT2 splice-site helper help contract"):
+        prepare_local_hisat2_reference(
+            reference,
+            runner=broken_helper,
+            tool_resolver=lambda name: f"/tools/{name}",
+        )
+    assert not list(reference.glob(".rnaseq-hisat2-prepare-*"))
 
 
 def test_existing_2_2_3_index_is_not_rebuilt_or_promoted_without_smoke_validation(tmp_path):
