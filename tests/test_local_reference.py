@@ -31,9 +31,11 @@ from rnaseq.references import (
     ReferenceAdoptionError,
     ReferencePreparationError,
     adopt_local_salmon_index,
+    compatible_registered_references,
     load_local_reference_root,
     prepare_local_reference,
     prepare_local_hisat2_reference,
+    register_local_reference,
 )
 from rnaseq.service import CaseRun, create_case_run, freeze_case_inputs, prepare_service_run
 from rnaseq.validators import validate_project
@@ -261,6 +263,53 @@ def test_production_acceptance_requires_reviewed_managed_reference_and_verified_
     assert report.is_valid, report.errors
     assert report.local_reference.purpose == "production"
     assert report.local_reference.source_provenance["genome_fasta"]["upstream_checksum"]["verification"] == "matched_local_asset"
+
+
+def test_machine_local_registry_deduplicates_and_resolves_by_backend(tmp_path):
+    root, reference = _local_fastq_project(tmp_path)
+    _promote_reference_for_production(root, reference)
+    registry = tmp_path / "config" / "nf-rna" / "references.yaml"
+
+    register_local_reference(reference, registry_path=registry)
+    register_local_reference(reference, registry_path=registry)
+
+    payload = yaml.safe_load(registry.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "1.0"
+    assert len(payload["references"]) == 1
+    assert "files" not in payload["references"][0]
+    assert [item.root for item in compatible_registered_references(
+        "Homo sapiens", "salmon", registry_path=registry
+    )] == [reference]
+    assert compatible_registered_references("Homo sapiens", "hisat2_featurecounts", registry_path=registry) == []
+
+    _mark_genome_only_hisat2(reference)
+    assert [item.root for item in compatible_registered_references(
+        "Homo sapiens", "hisat2_featurecounts", registry_path=registry
+    )] == [reference]
+
+    other_root, other_reference = _local_fastq_project(tmp_path / "older_release")
+    _promote_reference_for_production(other_root, other_reference)
+    other_manifest_path = other_reference / "reference_manifest.yaml"
+    other_manifest = yaml.safe_load(other_manifest_path.read_text(encoding="utf-8"))
+    other_manifest["reference"]["release"] = 115
+    other_manifest_path.write_text(yaml.safe_dump(other_manifest, sort_keys=False), encoding="utf-8")
+    register_local_reference(other_reference, registry_path=registry)
+    assert [item.release for item in compatible_registered_references(
+        "Homo sapiens", "salmon", registry_path=registry
+    )] == [116, 115]
+
+
+def test_reference_register_command_uses_xdg_registry(monkeypatch, tmp_path):
+    root, reference = _local_fastq_project(tmp_path)
+    _promote_reference_for_production(root, reference)
+    config_home = tmp_path / "config-home"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+
+    result = runner.invoke(app, ["reference", "register", str(reference)])
+
+    assert result.exit_code == 0, result.output
+    assert "Registered managed reference" in result.output
+    assert (config_home / "nf-rna" / "references.yaml").is_file()
 
 
 def test_synthetic_manifest_works_normally_but_fails_production_acceptance(tmp_path):

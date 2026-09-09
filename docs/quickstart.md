@@ -9,7 +9,7 @@ docker build -t rnaseq-control-plane:latest .
 rnaseq doctor
 ```
 
-`rnaseq new` is an interactive reviewed, scaffold-first wizard. It limits species to Human or Mouse, offers FASTQ or raw counts, Salmon or HISAT2 + featureCounts when FASTQ is selected, managed/custom reference choices, and QC-only/L1/L2 scopes. It never overwrites a populated target.
+`rnaseq new` is an interactive reviewed, scaffold-first wizard. It limits species to Human or Mouse, offers FASTQ or raw counts, Salmon or HISAT2 + featureCounts when FASTQ is selected, and QC-only/L1/L2 scopes. It automatically offers one compatible registered production managed reference after species and backend are known; otherwise the existing iGenomes, manual local, and custom reference choices remain available. It never overwrites a populated target.
 
 ```bash
 cd ~/projects/rnaseq-projects
@@ -87,6 +87,24 @@ runtime:
 ```
 
 The managed manifest must use schema 1.1 with deliberate `purpose: production`. The initial human identity contract is Ensembl 116, GRCh38.p14; assets are not downloaded by this project.
+
+### Register a reusable managed reference
+
+After preparing or adopting a valid prebuilt index, register the reference once
+on the workstation:
+
+```bash
+rnaseq reference register /absolute/reference-root
+```
+
+Registration reuses the normal manifest loader and validation; it never builds
+or copies assets. It writes a user-local pointer registry at
+`$XDG_CONFIG_HOME/nf-rna/references.yaml` (or `~/.config/nf-rna/references.yaml`)
+on Linux/WSL, and `~/Library/Application Support/nf-rna/references.yaml` on
+macOS. The registry contains root/manifest locations and display identity only;
+the reference manifest remains authoritative for checksums and backend assets.
+Re-run `register` after intentionally revising a manifest to refresh its saved
+display metadata.
 
 ## 4. Validate and plan
 

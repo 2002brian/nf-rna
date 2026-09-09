@@ -22,11 +22,15 @@ from rnaseq.planner import generate_plan
 from rnaseq.project import create_project
 from rnaseq.references import (
     LocalReferenceError,
+    LocalReference,
     ReferenceAdoptionError,
     ReferencePreparationError,
     adopt_local_salmon_index,
+    compatible_registered_references,
     prepare_local_reference,
     prepare_local_hisat2_reference,
+    reference_registry_path,
+    register_local_reference,
 )
 from rnaseq.validators import ValidationReport, validate_project
 
@@ -146,6 +150,26 @@ def prepare_reference_command(
     typer.echo(f"Prepared local reference: {reference.root}")
     typer.echo(f"Salmon index: {reference.salmon_index}")
     typer.echo("Salmon status: built")
+
+
+@reference_app.command("register")
+def register_reference_command(reference_root: Path) -> None:
+    """Validate and register one managed reference for this workstation."""
+
+    try:
+        reference = register_local_reference(reference_root)
+    except LocalReferenceError as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except (OSError, UnicodeError) as exc:
+        typer.echo(f"SYSTEM ERROR: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"Registered managed reference: {reference.root}")
+    typer.echo(
+        f"Identity: {reference.species}; {reference.provider} release {reference.release}; "
+        f"{reference.assembly}.{reference.assembly_patch}"
+    )
+    typer.echo(f"Registry: {reference_registry_path()}")
 
 
 @reference_app.command("prepare-hisat2")
@@ -301,6 +325,49 @@ def _is_interactive_terminal() -> bool:
     return sys.stdin.isatty()
 
 
+def _managed_reference_identity(reference: LocalReference) -> str:
+    return f"{reference.provider} {reference.release} / {reference.assembly}.{reference.assembly_patch}"
+
+
+def _registered_reference_choice(species: Species, backend: str) -> LocalReference | None:
+    """Offer only manifest-validated, production registered references."""
+
+    try:
+        candidates = compatible_registered_references(species.value, backend)
+    except LocalReferenceError:
+        # A malformed or stale local registry must not block the established
+        # manual-managed, custom, and iGenomes routes below.
+        return None
+    if not candidates:
+        return None
+    asset_label = "Salmon index" if backend == "salmon" else "HISAT2 index"
+    if len(candidates) == 1:
+        reference = candidates[0]
+        typer.echo("Reference\n---------")
+        typer.echo("Detected managed reference:")
+        typer.echo(f"  Species: {reference.species}")
+        typer.echo(f"  Provider: {reference.provider}")
+        typer.echo(f"  Release: {reference.release}")
+        typer.echo(f"  Assembly: {reference.assembly}.{reference.assembly_patch}")
+        typer.echo(f"  Root: {reference.root}")
+        typer.echo(f"  {asset_label}: available")
+        return reference if typer.confirm("Use this reference?", default=True) else None
+
+    typer.echo("Reference\n---------")
+    typer.echo("Multiple compatible managed references are registered:")
+    for number, reference in enumerate(candidates, start=1):
+        typer.echo(f"  {number}. {_managed_reference_identity(reference)}")
+    while True:
+        selected = typer.prompt("Choose reference number")
+        try:
+            position = int(selected)
+        except (TypeError, ValueError):
+            position = 0
+        if 1 <= position <= len(candidates):
+            return candidates[position - 1]
+        typer.echo(f"Please choose a number from 1 to {len(candidates)}.")
+
+
 def _reference_options(
     *, source: str, species: Species, method: str, local_root: Path | None,
     local_manifest: str | None, fasta: Path | None, gtf: Path | None,
@@ -392,6 +459,7 @@ def new_project(
     """Create a reviewed RNA-seq project interactively or from explicit flags."""
 
     noninteractive = any(value is not None for value in (name, destination, species, input_type, fastq_samplesheet, counts, metadata, contrasts, layout, preprocessing, method, strandedness, reference_source, reference_root, reference_manifest, reference_fasta, reference_gtf, reference_transcript_fasta, reference_salmon_index, reference_hisat2_index, preset, design_type, condition_column, covariate, pairing_column, execution_profile, cpus, memory_gb)) or scaffold or yes
+    selected_managed_reference: LocalReference | None = None
     try:
         if not noninteractive and not _is_interactive_terminal():
             raise ProjectCreationError(
@@ -413,8 +481,18 @@ def new_project(
                 if method == "hisat2_featurecounts":
                     strand_choices = strand_choices[1:]
                 strandedness = _wizard_choice("Strandedness", strand_choices, default="auto" if method == "salmon" else "unstranded")
-                reference_source = _wizard_choice("Reference", [("igenomes", "managed iGenomes convenience route (Salmon only)"), ("local", "checksum-bound managed local reference"), ("custom", "copy supported custom assets into the project")], default="igenomes" if method == "salmon" else "local")
-                if reference_source == "local":
+                selected_managed_reference = _registered_reference_choice(
+                    Species.HUMAN if species == "human" else Species.MOUSE, method
+                )
+                if selected_managed_reference is not None:
+                    reference_source = "local"
+                    reference_root = selected_managed_reference.root
+                    reference_manifest = str(
+                        selected_managed_reference.manifest_path.relative_to(selected_managed_reference.root)
+                    )
+                else:
+                    reference_source = _wizard_choice("Reference", [("igenomes", "managed iGenomes convenience route (Salmon only)"), ("local", "checksum-bound managed local reference"), ("custom", "copy supported custom assets into the project")], default="igenomes" if method == "salmon" else "local")
+                if reference_source == "local" and selected_managed_reference is None:
                     reference_root = Path(typer.prompt("Managed reference root"))
                     reference_manifest = typer.prompt("Reference manifest", default="reference_manifest.yaml")
                 elif reference_source == "custom":
@@ -507,7 +585,12 @@ def new_project(
         selected_cpus, selected_memory = cpus or 8, memory_gb or 12
         validate_local_execution_budget(selected_cpus, selected_memory, detect_local_resource_capacity())
         execution = {"profile": "local", "max_cpus": selected_cpus, "max_memory_gb": selected_memory}
-        review = {"Project": name, "Destination": destination, "Species": normalized_species.value, "Input": normalized_input.value, "Input handling": "scaffold — add data after project creation" if scaffold else "import supplied inputs", "Scope": normalized_preset.value, "Design": "not applicable for QC" if normalized_preset is Preset.QC else normalized_design.value, "Backend": normalized_method if normalized_input is InputType.FASTQ else "external raw counts", "Reference": reference.get("source"), "Execution": f"local, {selected_cpus} CPUs / {selected_memory} GiB"}
+        review_reference = (
+            _managed_reference_identity(selected_managed_reference)
+            if selected_managed_reference is not None
+            else reference.get("source")
+        )
+        review = {"Project": name, "Destination": destination, "Species": normalized_species.value, "Input": normalized_input.value, "Input handling": "scaffold — add data after project creation" if scaffold else "import supplied inputs", "Scope": normalized_preset.value, "Design": "not applicable for QC" if normalized_preset is Preset.QC else normalized_design.value, "Backend": normalized_method if normalized_input is InputType.FASTQ else "external raw counts", "Reference": review_reference, "Execution": f"local, {selected_cpus} CPUs / {selected_memory} GiB"}
         _new_summary(review)
         if not yes and not typer.confirm("Create this project?", default=True):
             if not noninteractive and typer.confirm("Revise choices?", default=True):

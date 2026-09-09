@@ -29,6 +29,7 @@ LOCAL_REFERENCE_MANIFEST_VERSION = "1.2"
 LOCAL_REFERENCE_MANIFEST_VERSIONS = frozenset(
     (LEGACY_LOCAL_REFERENCE_MANIFEST_VERSION, "1.1", LOCAL_REFERENCE_MANIFEST_VERSION)
 )
+REFERENCE_REGISTRY_SCHEMA_VERSION = "1.0"
 REFERENCE_PURPOSES = frozenset(("synthetic_test", "production"))
 SALMON_NOT_BUILT = "not_built"
 SALMON_BUILT = "built"
@@ -859,6 +860,169 @@ def load_local_reference_root(reference_root: Path | str) -> LocalReference:
         raise LocalReferenceError("Reference root must be an absolute path.")
     local_reference, _manifest = _load_local_reference_root(root.resolve(), "reference_manifest.yaml", None)
     return local_reference
+
+
+def reference_registry_path() -> Path:
+    """Return the machine-local registry path without creating it.
+
+    The registry deliberately records only locations and manifest-derived
+    identity metadata.  The manifest remains the source of truth for all
+    scientific assets and checksums when a reference is later selected.
+    """
+
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config_home:
+        return Path(xdg_config_home).expanduser() / "nf-rna" / "references.yaml"
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "nf-rna" / "references.yaml"
+    return Path.home() / ".config" / "nf-rna" / "references.yaml"
+
+
+def _resolved_registry_path(registry_path: Path | str | None) -> Path:
+    path = Path(registry_path).expanduser() if registry_path is not None else reference_registry_path()
+    return path.resolve()
+
+
+def _read_reference_registry(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    if not path.is_file():
+        raise LocalReferenceError(f"Managed-reference registry is not a file: {path}")
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise LocalReferenceError(f"Unable to parse managed-reference registry {path}: {exc}") from exc
+    payload = _require_mapping(loaded, "registry")
+    if payload.get("schema_version") != REFERENCE_REGISTRY_SCHEMA_VERSION:
+        raise LocalReferenceError(
+            "Unsupported managed-reference registry schema version: "
+            f"{payload.get('schema_version')!r}."
+        )
+    entries = payload.get("references")
+    if not isinstance(entries, list):
+        raise LocalReferenceError("Managed-reference registry references must be a list.")
+    return [_require_mapping(entry, "registry.references entry") for entry in entries]
+
+
+def _registry_entry(reference: LocalReference) -> dict[str, object]:
+    """Persist a pointer and display identity, never a second asset manifest."""
+
+    return {
+        "root": str(reference.root),
+        "manifest": str(reference.manifest_path.relative_to(reference.root)),
+        "identity": {
+            "species": reference.species,
+            "provider": reference.provider,
+            "release": reference.release,
+            "assembly": reference.assembly,
+            "assembly_patch": reference.assembly_patch,
+        },
+        "purpose": reference.purpose,
+        "manifest_sha256": reference.manifest_sha256,
+    }
+
+
+def _write_reference_registry(path: Path, entries: list[dict[str, Any]]) -> None:
+    """Atomically publish a private, user-local registry file."""
+
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    payload = {
+        "schema_version": REFERENCE_REGISTRY_SCHEMA_VERSION,
+        "references": entries,
+    }
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def register_local_reference(
+    reference_root: Path | str, *, registry_path: Path | str | None = None
+) -> LocalReference:
+    """Validate a managed reference and record it once for this workstation."""
+
+    reference = load_local_reference_root(reference_root)
+    path = _resolved_registry_path(registry_path)
+    entries = _read_reference_registry(path)
+    entry = _registry_entry(reference)
+    existing_index = next(
+        (
+            index for index, existing in enumerate(entries)
+            if existing.get("root") == entry["root"] and existing.get("manifest") == entry["manifest"]
+        ),
+        None,
+    )
+    if existing_index is None:
+        entries.append(entry)
+    else:
+        # Re-registration is also the intentional way to refresh the cached
+        # display identity after an index is prepared or a manifest is revised.
+        entries[existing_index] = entry
+    _write_reference_registry(path, entries)
+    return reference
+
+
+def registered_local_references(
+    *, registry_path: Path | str | None = None
+) -> list[LocalReference]:
+    """Load every still-valid registered reference through the manifest loader.
+
+    A moved, deleted, or now-invalid registration is ignored here so that an
+    ordinary interactive project creation can still use its manual and custom
+    reference escape hatches.  Registration itself remains strict.
+    """
+
+    entries = _read_reference_registry(_resolved_registry_path(registry_path))
+    references: list[LocalReference] = []
+    seen: set[tuple[Path, Path]] = set()
+    for entry in entries:
+        try:
+            root_value = _require_string(entry.get("root"), "registry.references.root")
+            manifest = _require_string(entry.get("manifest"), "registry.references.manifest")
+            root = Path(root_value).expanduser()
+            if not root.is_absolute():
+                raise LocalReferenceError("Managed-reference registry roots must be absolute paths.")
+            reference, _manifest = _load_local_reference_root(root.resolve(), manifest, None)
+            key = (reference.root, reference.manifest_path)
+            if key not in seen:
+                references.append(reference)
+                seen.add(key)
+        except LocalReferenceError:
+            continue
+    return references
+
+
+def compatible_registered_references(
+    species: str, backend: str, *, registry_path: Path | str | None = None
+) -> list[LocalReference]:
+    """Return deterministic, production-ready registry matches for one backend."""
+
+    if backend not in {"salmon", "hisat2_featurecounts"}:
+        raise LocalReferenceError(f"Unsupported managed-reference backend: {backend!r}.")
+    compatible = [
+        reference
+        for reference in registered_local_references(registry_path=registry_path)
+        if reference.purpose == "production"
+        and reference.species == species
+        and (
+            reference.salmon_index is not None
+            if backend == "salmon"
+            else reference.hisat2_index is not None and reference.hisat2_runtime_ready
+        )
+    ]
+    return sorted(
+        compatible,
+        key=lambda reference: (
+            reference.provider.casefold(),
+            -reference.release,
+            reference.assembly.casefold(),
+            reference.assembly_patch.casefold(),
+            str(reference.root),
+        ),
+    )
 
 
 def _run_reference_command(command: list[str], runner: Callable[..., subprocess.CompletedProcess[str]], *, cwd: Path) -> subprocess.CompletedProcess[str]:

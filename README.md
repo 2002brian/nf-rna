@@ -139,7 +139,19 @@ mamba env create -f environment.reference-builder.yml
 mamba activate nf-rna-reference-builder
 rnaseq reference prepare /absolute/reference-root --threads 4
 rnaseq reference prepare-hisat2 /absolute/reference-root --threads 4
+rnaseq reference register /absolute/reference-root
 ```
+
+`register` validates the existing manifest and records only its root and
+manifest-derived identity in the current user's machine-local registry. It
+does not download or rebuild any asset. On Linux/WSL the registry is
+`$XDG_CONFIG_HOME/nf-rna/references.yaml` (or `~/.config/nf-rna/references.yaml`);
+on macOS it is `~/Library/Application Support/nf-rna/references.yaml`.
+When interactive `rnaseq new` has exactly one registered production reference
+matching both species and backend, it shows the resolved identity and lets the
+user accept it with Enter. Multiple compatible references require an explicit
+choice; no compatible registration leaves the existing iGenomes, manual local,
+and custom routes available.
 
 FASTQ analysis and downstream analysis retain their container execution
 contracts. See [Runtime](docs/runtime.md) for the native tool/version policy,

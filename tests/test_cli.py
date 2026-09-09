@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from types import SimpleNamespace
 from pathlib import Path
 
 import yaml
@@ -171,6 +172,52 @@ def test_interactive_fastq_new_retries_only_invalid_choice_and_creates_scaffold(
     assert config["execution"] == {"profile": "local", "max_cpus": 16, "max_memory_gb": 48}
     assert (root / "input" / "fastq").is_dir()
     assert not any((root / "input" / "fastq").iterdir())
+
+
+def test_interactive_fastq_new_accepts_one_registered_managed_reference(monkeypatch, tmp_path):
+    from rnaseq.execution import LocalResourceCapacity
+
+    reference_root = tmp_path / "managed" / "human_ensembl_116"
+    selected = SimpleNamespace(
+        root=reference_root,
+        manifest_path=reference_root / "reference_manifest.yaml",
+        species="Homo sapiens",
+        provider="Ensembl",
+        release=116,
+        assembly="GRCh38",
+        assembly_patch="p14",
+    )
+    monkeypatch.setattr("rnaseq.cli._is_interactive_terminal", lambda: True)
+    monkeypatch.setattr("rnaseq.cli.detect_local_resource_capacity", lambda: LocalResourceCapacity(20, 64, 62))
+    monkeypatch.setattr("rnaseq.cli.compatible_registered_references", lambda species, backend: [selected])
+
+    result = runner.invoke(app, ["new"], input=(
+        "registered_scaffold\n"
+        f"{tmp_path}\n"
+        "human\n"
+        "fastq\n"
+        "\n"  # paired_end
+        "\n"  # raw preprocessing
+        "\n"  # salmon
+        "\n"  # auto strandedness
+        "\n"  # accept detected reference
+        "qc\n"
+        "\n"  # suggested CPUs
+        "\n"  # suggested memory
+        "y\n"
+    ))
+
+    assert result.exit_code == 0, result.output
+    assert "Detected managed reference:" in result.output
+    assert "Salmon index: available" in result.output
+    assert "Reference: Ensembl 116 / GRCh38.p14" in result.output
+    assert "managed iGenomes convenience route" not in result.output
+    config = yaml.safe_load((tmp_path / "registered_scaffold" / "project.yaml").read_text(encoding="utf-8"))
+    assert config["reference"] == {
+        "source": "local",
+        "root": str(reference_root),
+        "manifest": "reference_manifest.yaml",
+    }
 
 
 def test_interactive_raw_count_new_is_scaffold_first_and_retries_bad_integer(monkeypatch, tmp_path):

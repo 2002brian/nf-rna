@@ -29,7 +29,15 @@ mamba env create -f environment.reference-builder.yml
 mamba activate nf-rna-reference-builder
 rnaseq reference prepare /absolute/reference-root --threads 4
 rnaseq reference prepare-hisat2 /absolute/reference-root --threads 4
+rnaseq reference register /absolute/reference-root
 ```
+
+`register` performs manifest validation only; it does not prepare or rebuild
+assets. It writes a machine-local reference pointer registry used by the
+interactive `rnaseq new` wizard after species and backend selection. A
+candidate must be a production manifest and have the selected backend's fully
+validated asset; stale registrations are ignored so manual and custom routes
+remain usable.
 
 The separately pinned builder environment contains Salmon 1.10.3 and HISAT2
 2.2.1 (including `hisat2_extract_splice_sites.py`); RSEM is not required.
