@@ -7,9 +7,62 @@ from pathlib import Path
 import yaml
 from typer.testing import CliRunner
 
-from rnaseq.cli import app
+from rnaseq.cli import _wizard_completion_candidates, _wizard_tab_completion, app
 
 runner = CliRunner()
+
+
+def test_wizard_completion_candidates_match_only_canonical_prefixes():
+    assert _wizard_completion_candidates("p", ["paired_end", "single_end"]) == ["paired_end"]
+    assert _wizard_completion_candidates("s", ["paired_end", "single_end"]) == ["single_end"]
+    assert _wizard_completion_candidates("l", ["igenomes", "local", "custom"]) == ["local"]
+    assert _wizard_completion_candidates("h", ["salmon", "hisat2_featurecounts"]) == ["hisat2_featurecounts"]
+    assert _wizard_completion_candidates("paried_end", ["paired_end", "single_end"]) == []
+
+
+def test_wizard_completion_candidates_leave_ambiguous_prefix_unselected():
+    assert _wizard_completion_candidates("", ["auto", "unstranded", "forward", "reverse"]) == [
+        "auto",
+        "unstranded",
+        "forward",
+        "reverse",
+    ]
+    assert _wizard_completion_candidates("a", ["auto", "analysis"]) == ["auto", "analysis"]
+
+
+def test_wizard_tab_completion_is_temporary_and_keeps_ambiguous_candidates(monkeypatch):
+    class FakeReadline:
+        def __init__(self):
+            self.completer = original_completer
+            self.delimiters = " \t_"
+
+        def get_completer(self):
+            return self.completer
+
+        def set_completer(self, completer):
+            self.completer = completer
+
+        def get_completer_delims(self):
+            return self.delimiters
+
+        def set_completer_delims(self, delimiters):
+            self.delimiters = delimiters
+
+    def original_completer(text, state):
+        return None
+
+    fake_readline = FakeReadline()
+    monkeypatch.setattr("rnaseq.cli._is_interactive_terminal", lambda: True)
+    monkeypatch.setattr("rnaseq.cli._readline_module", lambda: fake_readline)
+
+    with _wizard_tab_completion(["auto", "analysis"]):
+        assert fake_readline.delimiters == " \t"
+        assert fake_readline.completer("a", 0) == "auto"
+        assert fake_readline.completer("a", 1) == "analysis"
+        assert fake_readline.completer("a", 2) is None
+
+    assert fake_readline.completer is original_completer
+    assert fake_readline.delimiters == " \t_"
 
 
 def digest(path: Path) -> str:

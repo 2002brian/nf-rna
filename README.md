@@ -205,7 +205,7 @@ rnaseq run . --case-id CASE-001 --profile local --yes
 
 Populate `input/` with either your FASTQs or count matrix; complete metadata with `sample_id` and every design-formula variable; and provide directional contrasts for L2 differential-expression work.
 
-The wizard supports Human and Mouse only, offers Salmon or HISAT2 + featureCounts for FASTQ, and displays a review before it writes anything. Explicit flags retain the import workflow: `--fastq-samplesheet` copies a strict FASTQ samplesheet (`sample,fastq_1,fastq_2,strandedness`) and lane files, while `--counts --metadata --contrasts` copies a raw integer count matrix and its design files. For repeatable automation, use the same choices explicitly; this example imports raw counts without prompts:
+The wizard supports Human and Mouse only, offers Salmon or HISAT2 + featureCounts for FASTQ, and displays a review before it writes anything. At choice prompts, standard readline-enabled Linux/WSL and macOS terminals can complete canonical values with Tab (for example, `h` to `hisat2_featurecounts`); ambiguous prefixes remain unresolved and terminals without readline retain the typed prompt. Path prompts deliberately remain separate typed inputs. Explicit flags retain the import workflow: `--fastq-samplesheet` copies a strict FASTQ samplesheet (`sample,fastq_1,fastq_2,strandedness`) and lane files, while `--counts --metadata --contrasts` copies a raw integer count matrix and its design files. For repeatable automation, use the same choices explicitly; this example imports raw counts without prompts:
 
 ```bash
 rnaseq new --name demo --destination projects --species human \

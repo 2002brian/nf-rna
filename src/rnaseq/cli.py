@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import csv
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -197,6 +199,69 @@ def adopt_salmon_index_command(
     typer.echo(f"Salmon index: {reference.salmon_index}")
 
 
+def _wizard_completion_candidates(prefix: str, choices: list[str]) -> list[str]:
+    """Return canonical wizard values that begin with the typed prefix.
+
+    This deliberately implements shell-style prefix matching only: it never
+    normalizes, fuzzily matches, or otherwise changes a user's input.
+    """
+
+    return [value for value in choices if value.startswith(prefix)]
+
+
+def _readline_module() -> Any | None:
+    """Load optional readline support without making it a CLI dependency."""
+
+    try:
+        import readline
+    except ImportError:
+        return None
+    return readline
+
+
+@contextmanager
+def _wizard_tab_completion(choices: list[str]) -> Iterator[None]:
+    """Temporarily expose canonical choice values to a terminal completer.
+
+    Python's standard GNU readline and libedit-compatible readline bindings
+    normally bind Tab to completion.  We intentionally do not alter that
+    binding because readline provides no portable way to recover a user's
+    previous binding afterwards.  The completer and its delimiters are restored
+    immediately after the prompt instead.
+    """
+
+    readline = _readline_module()
+    if readline is None or not _is_interactive_terminal():
+        yield
+        return
+
+    get_completer = getattr(readline, "get_completer", None)
+    set_completer = getattr(readline, "set_completer", None)
+    get_delimiters = getattr(readline, "get_completer_delims", None)
+    set_delimiters = getattr(readline, "set_completer_delims", None)
+    if not callable(get_completer) or not callable(set_completer):
+        yield
+        return
+
+    previous_completer = get_completer()
+    previous_delimiters = get_delimiters() if callable(get_delimiters) else None
+
+    def complete(text: str, state: int) -> str | None:
+        candidates = _wizard_completion_candidates(text, choices)
+        return candidates[state] if state < len(candidates) else None
+
+    set_completer(complete)
+    # Keep snake_case canonical values as one word for readline/libedit.
+    if previous_delimiters is not None and callable(set_delimiters):
+        set_delimiters(previous_delimiters.replace("_", ""))
+    try:
+        yield
+    finally:
+        set_completer(previous_completer)
+        if previous_delimiters is not None and callable(set_delimiters):
+            set_delimiters(previous_delimiters)
+
+
 def _wizard_choice(label: str, choices: list[tuple[str, str]], *, default: str | None = None) -> str:
     """Prompt one canonical wizard choice, retrying ordinary typing mistakes."""
 
@@ -208,7 +273,8 @@ def _wizard_choice(label: str, choices: list[tuple[str, str]], *, default: str |
         # Keep this a string prompt instead of click.Choice: click raises a
         # BadParameter exception before this interactive wizard can retry just
         # the current question.
-        selected = typer.prompt("Choose", default=default)
+        with _wizard_tab_completion(allowed):
+            selected = typer.prompt("Choose", default=default)
         if selected in allowed:
             return selected
         typer.echo(f"Invalid choice {selected!r}.")

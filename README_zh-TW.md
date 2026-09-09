@@ -190,7 +190,7 @@ rnaseq run . --case-id CASE-001 --profile local --yes
 
 請在 `input/` 放入 FASTQ 或 count matrix；在 metadata 中填入 `sample_id` 與 design formula 使用的每個 variable；若要進行 L2 differential-expression analysis，則提供具有方向性的 contrast。
 
-wizard 僅提供 Human 與 Mouse，FASTQ 可選 Salmon 或 HISAT2 + featureCounts，寫入前會顯示完整 review。明確 flags 保留 import workflow：`--fastq-samplesheet` 會複製嚴格四欄 FASTQ samplesheet（`sample,fastq_1,fastq_2,strandedness`）與 lane 檔案，`--counts --metadata --contrasts` 則會複製 raw integer count matrix 與設計檔。可重複執行的自動化使用相同選項，例如：
+wizard 僅提供 Human 與 Mouse，FASTQ 可選 Salmon 或 HISAT2 + featureCounts，寫入前會顯示完整 review。choice prompt 在啟用標準 readline 的 Linux/WSL 與 macOS terminal 可用 Tab 補全 canonical value（例如 `h` 補為 `hisat2_featurecounts`）；ambiguous prefix 不會自動選擇，沒有 readline 的 terminal 則保留原本的 typed prompt。path prompt 刻意維持獨立的 typed input。明確 flags 保留 import workflow：`--fastq-samplesheet` 會複製嚴格四欄 FASTQ samplesheet（`sample,fastq_1,fastq_2,strandedness`）與 lane 檔案，`--counts --metadata --contrasts` 則會複製 raw integer count matrix 與設計檔。可重複執行的自動化使用相同選項，例如：
 
 ```bash
 rnaseq new --name demo --destination projects --species human \
