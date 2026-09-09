@@ -171,12 +171,26 @@ rnaseq run examples/nfcore_smoke_test --case-id SMOKE-001 --profile local --yes
 ### 4. 建立自己的專案
 
 ```bash
+cd ~/projects/rnaseq-projects
+conda activate nf-rna
 rnaseq new
 ```
 
-這個互動式命令會建立 `project.yaml`、`metadata.csv`、`contrasts.csv`、`input/` 與 `planning/`。請在 `input/` 放入 FASTQ 或 count matrix；在 metadata 中填入 `sample_id` 與 design formula 使用的每個 variable；若要進行 L2 differential-expression analysis，則提供具有方向性的 contrast。
+一般互動 wizard 採 scaffold-first：它詢問 scientific 與 execution configuration、顯示 review，接著建立 `project.yaml`、`metadata.csv`、`contrasts.csv`、`input/` 與 `planning/`，不會複製資料。review 會明確說明尚未 import inputs。接著進入新專案、加入資料並完成 template：
 
-wizard 僅提供 Human 與 Mouse，FASTQ 可選 Salmon 或 HISAT2 + featureCounts，寫入前會顯示完整 review。它可匯入嚴格四欄 FASTQ samplesheet（`sample,fastq_1,fastq_2,strandedness`）並保留 lane 檔名，或複製 raw integer count matrix、metadata 與 contrasts。可重複執行的自動化使用相同選項，例如：
+```bash
+cd <new-project>
+# 將 FASTQ 放入 input/fastq/，或將 matrix 放入 input/counts.csv
+# 完成 metadata.csv 與 contrasts.csv
+rnaseq validate .
+rnaseq plan .
+rnaseq doctor .
+rnaseq run . --case-id CASE-001 --profile local --yes
+```
+
+請在 `input/` 放入 FASTQ 或 count matrix；在 metadata 中填入 `sample_id` 與 design formula 使用的每個 variable；若要進行 L2 differential-expression analysis，則提供具有方向性的 contrast。
+
+wizard 僅提供 Human 與 Mouse，FASTQ 可選 Salmon 或 HISAT2 + featureCounts，寫入前會顯示完整 review。明確 flags 保留 import workflow：`--fastq-samplesheet` 會複製嚴格四欄 FASTQ samplesheet（`sample,fastq_1,fastq_2,strandedness`）與 lane 檔案，`--counts --metadata --contrasts` 則會複製 raw integer count matrix 與設計檔。可重複執行的自動化使用相同選項，例如：
 
 ```bash
 rnaseq new --name demo --destination projects --species human \
@@ -185,7 +199,7 @@ rnaseq new --name demo --destination projects --species human \
   --preset L2 --design-type two_group --condition-column condition --yes
 ```
 
-輸入尚未備妥時可使用 `--scaffold`；建立的 project 會刻意保持 incomplete，`rnaseq validate` 會說明缺少項目。FASTQ 的 `--preset qc` 僅執行 quantification 與 technical QC，不會啟動依賴 metadata 的統計分析流程。
+一般互動式命令本來就會建立此 scaffold。`--scaffold` 仍供明確的 non-interactive template creation 使用；建立的 project 會刻意保持 incomplete，`rnaseq validate` 會說明缺少項目。FASTQ 的 `--preset qc` 僅執行 quantification 與 technical QC，不會啟動依賴 metadata 的統計分析流程。
 
 ## 執行後會得到什麼
 

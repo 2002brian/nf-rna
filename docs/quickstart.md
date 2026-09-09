@@ -9,13 +9,25 @@ docker build -t rnaseq-control-plane:latest .
 rnaseq doctor
 ```
 
-`rnaseq new` is an interactive reviewed wizard. It limits species to Human or Mouse, offers FASTQ or raw counts, Salmon or HISAT2 + featureCounts when FASTQ is selected, managed/custom reference choices, and QC-only/L1/L2 scopes. It checks imported files before writing and never overwrites a populated target.
+`rnaseq new` is an interactive reviewed, scaffold-first wizard. It limits species to Human or Mouse, offers FASTQ or raw counts, Salmon or HISAT2 + featureCounts when FASTQ is selected, managed/custom reference choices, and QC-only/L1/L2 scopes. It never overwrites a populated target.
 
 ```bash
+cd ~/projects/rnaseq-projects
+conda activate nf-rna
 rnaseq new
 ```
 
-It creates `project.yaml`, `metadata.csv`, `contrasts.csv`, `input/`, and `planning/`. Choose import mode to copy source data, or `--scaffold` for templates only; a scaffold deliberately remains invalid until real inputs and analytical metadata are supplied.
+It creates `project.yaml`, `metadata.csv`, `contrasts.csv`, `input/`, and `planning/` without importing data. Then add FASTQs beneath `input/fastq/` or a raw matrix at `input/counts.csv`, complete `metadata.csv` and `contrasts.csv`, and run:
+
+```bash
+cd <new-project>
+rnaseq validate .
+rnaseq plan .
+rnaseq doctor .
+rnaseq run . --case-id CASE-001 --profile local --yes
+```
+
+The scaffold deliberately remains invalid until real inputs and analytical metadata are supplied. Explicit `--fastq-samplesheet` or `--counts --metadata --contrasts` flags retain the strict import/copy workflow for automation; `--scaffold` remains available for fully non-interactive template creation.
 
 The exact same interface is scriptable without prompts:
 

@@ -82,6 +82,75 @@ def test_new_defaults_to_fastq_project(tmp_path):
     assert config["upstream"]["pipeline_version"] == "3.26.0"
 
 
+def test_interactive_fastq_new_retries_only_invalid_choice_and_creates_scaffold(monkeypatch, tmp_path):
+    from rnaseq.execution import LocalResourceCapacity
+
+    monkeypatch.setattr("rnaseq.cli._is_interactive_terminal", lambda: True)
+    monkeypatch.setattr("rnaseq.cli.detect_local_resource_capacity", lambda: LocalResourceCapacity(20, 64, 62))
+    result = runner.invoke(app, ["new"], input=(
+        "fastq_scaffold\n"
+        f"{tmp_path}\n"
+        "mouse\n"
+        "fastq\n"
+        "paried_end\n"
+        "\n"  # Retry the layout question and accept paired_end.
+        "\n"  # raw preprocessing
+        "\n"  # Salmon
+        "\n"  # auto strandedness
+        "\n"  # iGenomes
+        "qc\n"
+        "\n"  # suggested CPUs
+        "\n"  # suggested memory
+        "y\n"
+    ))
+
+    assert result.exit_code == 0, result.output
+    assert "Invalid choice 'paried_end'." in result.output
+    assert "Please choose one of: paired_end, single_end." in result.output
+    assert "Traceback" not in result.output
+    assert "Import existing inputs now?" not in result.output
+    assert result.output.count("Project name") == 1
+    assert "Input handling: scaffold — add data after project creation" in result.output
+    root = tmp_path / "fastq_scaffold"
+    config = yaml.safe_load((root / "project.yaml").read_text(encoding="utf-8"))
+    assert config["organism"]["species"] == "Mus musculus"
+    assert config["input"]["layout"] == "paired_end"
+    assert config["execution"] == {"profile": "local", "max_cpus": 16, "max_memory_gb": 48}
+    assert (root / "input" / "fastq").is_dir()
+    assert not any((root / "input" / "fastq").iterdir())
+
+
+def test_interactive_raw_count_new_is_scaffold_first_and_retries_bad_integer(monkeypatch, tmp_path):
+    from rnaseq.execution import LocalResourceCapacity
+
+    monkeypatch.setattr("rnaseq.cli._is_interactive_terminal", lambda: True)
+    monkeypatch.setattr("rnaseq.cli.detect_local_resource_capacity", lambda: LocalResourceCapacity(20, 64, 62))
+    result = runner.invoke(app, ["new"], input=(
+        "count_scaffold\n"
+        f"{tmp_path}\n"
+        "human\n"
+        "raw_counts\n"
+        "L2\n"
+        "two_group\n"
+        "sixteen\n"
+        "\n"
+        "\n"
+        "y\n"
+    ))
+
+    assert result.exit_code == 0, result.output
+    assert "Invalid value 'sixteen'. Please enter a positive integer." in result.output
+    assert "Import existing inputs now?" not in result.output
+    root = tmp_path / "count_scaffold"
+    assert (root / "input").is_dir()
+    assert not (root / "input" / "counts.csv").exists()
+    assert (root / "metadata.csv").is_file()
+    assert (root / "contrasts.csv").is_file()
+    validation = runner.invoke(app, ["validate", str(root)])
+    assert validation.exit_code == 1
+    assert "Count matrix not found" in validation.output
+
+
 def test_new_imports_raw_counts_with_metadata_and_contrasts(tmp_path):
     counts = tmp_path / "source_counts.csv"
     metadata = tmp_path / "source_metadata.csv"

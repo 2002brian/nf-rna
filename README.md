@@ -186,12 +186,26 @@ The bundled smoke fixture is an integration check, not a biological study and no
 ### 4. Start your own project
 
 ```bash
+cd ~/projects/rnaseq-projects
+conda activate nf-rna
 rnaseq new
 ```
 
-The interactive command creates `project.yaml`, `metadata.csv`, `contrasts.csv`, `input/`, and `planning/`. Populate `input/` with either your FASTQs or count matrix; complete metadata with `sample_id` and every design-formula variable; and provide directional contrasts for L2 differential-expression work.
+The normal interactive wizard is scaffold-first: it asks the scientific and execution configuration, shows a review, then creates `project.yaml`, `metadata.csv`, `contrasts.csv`, `input/`, and `planning/` without copying data. The review explicitly says that inputs have not been imported. Then enter the new project, add data, and complete the templates:
 
-The wizard supports Human and Mouse only, offers Salmon or HISAT2 + featureCounts for FASTQ, and displays a review before it writes anything. It can import a strict FASTQ samplesheet (`sample,fastq_1,fastq_2,strandedness`) while preserving lane files, or copy a raw integer count matrix with metadata and contrasts. For repeatable automation, use the same choices explicitly; this example imports raw counts without prompts:
+```bash
+cd <new-project>
+# add FASTQs to input/fastq/, or a matrix to input/counts.csv
+# complete metadata.csv and contrasts.csv
+rnaseq validate .
+rnaseq plan .
+rnaseq doctor .
+rnaseq run . --case-id CASE-001 --profile local --yes
+```
+
+Populate `input/` with either your FASTQs or count matrix; complete metadata with `sample_id` and every design-formula variable; and provide directional contrasts for L2 differential-expression work.
+
+The wizard supports Human and Mouse only, offers Salmon or HISAT2 + featureCounts for FASTQ, and displays a review before it writes anything. Explicit flags retain the import workflow: `--fastq-samplesheet` copies a strict FASTQ samplesheet (`sample,fastq_1,fastq_2,strandedness`) and lane files, while `--counts --metadata --contrasts` copies a raw integer count matrix and its design files. For repeatable automation, use the same choices explicitly; this example imports raw counts without prompts:
 
 ```bash
 rnaseq new --name demo --destination projects --species human \
@@ -200,7 +214,7 @@ rnaseq new --name demo --destination projects --species human \
   --preset L2 --design-type two_group --condition-column condition --yes
 ```
 
-Use `--scaffold` when source files are not ready. The resulting project is intentionally incomplete and `rnaseq validate` will say what remains. FASTQ `--preset qc` runs quantification and technical QC only; it does not start the metadata-dependent statistical workflow.
+The ordinary interactive command already creates this scaffold. `--scaffold` remains available for explicit non-interactive template creation. The resulting project is intentionally incomplete and `rnaseq validate` will say what remains. FASTQ `--preset qc` runs quantification and technical QC only; it does not start the metadata-dependent statistical workflow.
 
 ## What you get
 

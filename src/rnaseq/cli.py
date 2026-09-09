@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import click
 import typer
 
 from rnaseq.errors import ExecutionPreflightError, ProjectCreationError, UpstreamExecutionError
@@ -199,12 +198,41 @@ def adopt_salmon_index_command(
 
 
 def _wizard_choice(label: str, choices: list[tuple[str, str]], *, default: str | None = None) -> str:
-    """Prompt with visible descriptions while retaining scriptable enum values."""
+    """Prompt one canonical wizard choice, retrying ordinary typing mistakes."""
 
     typer.echo(label)
     for value, description in choices:
         typer.echo(f"  {value}: {description}")
-    return typer.prompt("Choose", type=click.Choice([value for value, _ in choices], case_sensitive=True), default=default)
+    allowed = [value for value, _ in choices]
+    while True:
+        # Keep this a string prompt instead of click.Choice: click raises a
+        # BadParameter exception before this interactive wizard can retry just
+        # the current question.
+        selected = typer.prompt("Choose", default=default)
+        if selected in allowed:
+            return selected
+        typer.echo(f"Invalid choice {selected!r}.")
+        typer.echo("Please choose one of: " + ", ".join(allowed) + ".")
+
+
+def _wizard_positive_integer(label: str, *, default: int) -> int:
+    """Prompt one positive integer without exposing a conversion traceback."""
+
+    while True:
+        raw = typer.prompt(label, default=str(default))
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+        typer.echo(f"Invalid value {raw!r}. Please enter a positive integer.")
+
+
+def _is_interactive_terminal() -> bool:
+    """Keep the TTY gate explicit and testable without changing CLI semantics."""
+
+    return sys.stdin.isatty()
 
 
 def _reference_options(
@@ -299,7 +327,7 @@ def new_project(
 
     noninteractive = any(value is not None for value in (name, destination, species, input_type, fastq_samplesheet, counts, metadata, contrasts, layout, preprocessing, method, strandedness, reference_source, reference_root, reference_manifest, reference_fasta, reference_gtf, reference_transcript_fasta, reference_salmon_index, reference_hisat2_index, preset, design_type, condition_column, covariate, pairing_column, execution_profile, cpus, memory_gb)) or scaffold or yes
     try:
-        if not noninteractive and not sys.stdin.isatty():
+        if not noninteractive and not _is_interactive_terminal():
             raise ProjectCreationError(
                 "rnaseq new needs an interactive terminal, or explicit non-interactive flags (use --scaffold for templates)."
             )
@@ -308,20 +336,17 @@ def new_project(
             destination = Path(typer.prompt("Destination directory", default="."))
             species = _wizard_choice("Species", [("human", "Homo sapiens"), ("mouse", "Mus musculus")], default="human")
             input_type = _wizard_choice("Input type", [("fastq", "Reads requiring upstream processing"), ("raw_counts", "Integer gene-level raw-count matrix")], default="fastq")
-            importing = typer.confirm("Import existing inputs now?", default=False)
-            scaffold = not importing
+            # Ordinary interactive creation is deliberately scaffold-first.
+            # Importing is an explicit, reproducible flags-only operation.
+            scaffold = True
             if input_type == "fastq":
-                if importing:
-                    fastq_samplesheet = Path(typer.prompt("FASTQ samplesheet path"))
-                else:
-                    layout = _wizard_choice("Sequencing layout", [("paired_end", "R1 and R2 per lane"), ("single_end", "R1 only")], default="paired_end")
+                layout = _wizard_choice("Sequencing layout", [("paired_end", "R1 and R2 per lane"), ("single_end", "R1 only")], default="paired_end")
                 preprocessing = _wizard_choice("FASTQ preprocessing", [("raw", "Run adapter/quality trimming"), ("pretrimmed", "Keep supplied reads; skip trimming")], default="raw")
                 method = _wizard_choice("Quantification backend", [("salmon", "nf-core/rnaseq pseudoalignment (default)"), ("hisat2_featurecounts", "HISAT2 alignment plus gene-level featureCounts")], default="salmon")
-                if not importing:
-                    strand_choices = [("auto", "infer with Salmon"), ("unstranded", "no stranded protocol"), ("forward", "forward stranded"), ("reverse", "reverse stranded")]
-                    if method == "hisat2_featurecounts":
-                        strand_choices = strand_choices[1:]
-                    strandedness = _wizard_choice("Strandedness", strand_choices, default="auto" if method == "salmon" else "unstranded")
+                strand_choices = [("auto", "infer with Salmon"), ("unstranded", "no stranded protocol"), ("forward", "forward stranded"), ("reverse", "reverse stranded")]
+                if method == "hisat2_featurecounts":
+                    strand_choices = strand_choices[1:]
+                strandedness = _wizard_choice("Strandedness", strand_choices, default="auto" if method == "salmon" else "unstranded")
                 reference_source = _wizard_choice("Reference", [("igenomes", "managed iGenomes convenience route (Salmon only)"), ("local", "checksum-bound managed local reference"), ("custom", "copy supported custom assets into the project")], default="igenomes" if method == "salmon" else "local")
                 if reference_source == "local":
                     reference_root = Path(typer.prompt("Managed reference root"))
@@ -331,13 +356,6 @@ def new_project(
                     reference_gtf = Path(typer.prompt("Custom annotation GTF"))
                     if method == "hisat2_featurecounts":
                         reference_hisat2_index = Path(typer.prompt("Prepared HISAT2 index directory (blank if not built)", default="")) if typer.confirm("Is a HISAT2 index already prepared?", default=False) else None
-            else:
-                if importing:
-                    counts = Path(typer.prompt("Raw-count matrix path"))
-            if importing:
-                metadata_text = typer.prompt("Metadata CSV path (blank keeps a template)", default="")
-                contrasts_text = typer.prompt("Contrasts CSV path (blank keeps a template)", default="")
-                metadata, contrasts = (Path(metadata_text) if metadata_text else None), (Path(contrasts_text) if contrasts_text else None)
             if input_type == "fastq":
                 preset = _wizard_choice("Analysis scope", [("qc", "Quantification + technical QC only"), ("L1", "Expression-level QC and exploratory analysis"), ("L2", "L1 plus differential expression and enrichment")], default="L1")
             else:
@@ -361,8 +379,8 @@ def new_project(
             typer.echo("\nLocal execution resources\n-------------------------")
             typer.echo(f"Detected: {capacity.logical_cpus or 'unavailable'} logical CPUs / {capacity.available_memory_gib or capacity.total_memory_gib or 'unavailable'} GiB memory")
             typer.echo(f"Suggested: {suggested_cpus} CPUs / {suggested_memory} GiB memory")
-            cpus = typer.prompt("CPU limit", default=suggested_cpus, type=int)
-            memory_gb = typer.prompt("Memory limit in GiB", default=suggested_memory, type=int)
+            cpus = _wizard_positive_integer("CPU limit", default=suggested_cpus)
+            memory_gb = _wizard_positive_integer("Memory limit in GiB", default=suggested_memory)
             execution_profile = "local"
 
         if preset is not None and preset.lower() == "qc" and design_type is None:
@@ -423,7 +441,7 @@ def new_project(
         selected_cpus, selected_memory = cpus or 8, memory_gb or 12
         validate_local_execution_budget(selected_cpus, selected_memory, detect_local_resource_capacity())
         execution = {"profile": "local", "max_cpus": selected_cpus, "max_memory_gb": selected_memory}
-        review = {"Project": name, "Destination": destination, "Species": normalized_species.value, "Input": normalized_input.value, "Scope": normalized_preset.value, "Design": "not applicable for QC" if normalized_preset is Preset.QC else normalized_design.value, "Backend": normalized_method if normalized_input is InputType.FASTQ else "external raw counts", "Reference": reference.get("source"), "Execution": f"local, {selected_cpus} CPUs / {selected_memory} GiB", "Mode": "scaffold (incomplete)" if scaffold else "import"}
+        review = {"Project": name, "Destination": destination, "Species": normalized_species.value, "Input": normalized_input.value, "Input handling": "scaffold — add data after project creation" if scaffold else "import supplied inputs", "Scope": normalized_preset.value, "Design": "not applicable for QC" if normalized_preset is Preset.QC else normalized_design.value, "Backend": normalized_method if normalized_input is InputType.FASTQ else "external raw counts", "Reference": reference.get("source"), "Execution": f"local, {selected_cpus} CPUs / {selected_memory} GiB"}
         _new_summary(review)
         if not yes and not typer.confirm("Create this project?", default=True):
             if not noninteractive and typer.confirm("Revise choices?", default=True):
