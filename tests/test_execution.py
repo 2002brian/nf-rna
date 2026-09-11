@@ -18,6 +18,7 @@ from rnaseq.execution import (
     RESOURCE_CONTRACTS,
     RuntimeCheck,
     RuntimeSnapshot,
+    ResourceContract,
     LocalResourceCapacity,
     build_nextflow_command,
     classify_execution_failure,
@@ -36,6 +37,8 @@ from rnaseq.execution import (
     validate_local_execution_budget,
     resolve_execution_workspace,
     runtime_resource_checks,
+    effective_resource_budget,
+    validate_effective_resource_budget,
 )
 from rnaseq.planner import generate_plan
 from rnaseq.validators import validate_project
@@ -174,7 +177,7 @@ def test_successful_mocked_execution_freezes_state_and_handoff(monkeypatch, tmp_
     assert "skip_trimming" not in runtime_params
     resource_config = (result.run_dir / "frozen" / "local.nextflow.config").read_text()
     assert "memory: '12.GB'" in resource_config
-    assert "SALMON_QUANT" in resource_config and "maxForks = 1" in resource_config
+    assert "SALMON_QUANT" not in resource_config and "maxForks" not in resource_config
     assert handoff["gene_level_counts"]["format"] == "TSV"
     assert handoff["gene_level_counts"]["identifier_column"] == "gene_id"
     assert sorted(handoff["salmon"]["quant_sf"]) == ["C1", "C2", "T1", "T2"]
@@ -244,7 +247,7 @@ def test_execution_root_override_is_local_and_portable(monkeypatch, tmp_path):
     assert workspace.work_dir == workspace.root / "work"
 
 
-def test_container_runtime_probe_requires_python_r_and_r_packages(monkeypatch):
+def test_container_runtime_probe_requires_procps_python_r_and_r_packages(monkeypatch):
     calls: list[list[str]] = []
 
     def successful(arguments):
@@ -259,9 +262,12 @@ def test_container_runtime_probe_requires_python_r_and_r_packages(monkeypatch):
     probe = calls[1]
     assert probe[:6] == ["docker", "run", "--rm", "rnaseq-control-plane:latest", "sh", "-c"]
     assert "--entrypoint" not in probe
+    # Docker image ENV is the task runtime contract; a login shell can replace
+    # PATH via profile startup files and is deliberately not representative.
     assert "-lc" not in probe
-    assert "for executable in python Rscript" in probe[-1]
+    assert "for executable in ps python Rscript" in probe[-1]
     assert "command -v \"$executable\"" in probe[-1]
+    assert "ps --version" in probe[-1]
     assert "DESeq2" in probe[-1] and "org.Mm.eg.db" in probe[-1]
     assert "python -m rnaseq.workflow_support report --help" in probe[-1]
     assert "--enrichment" in probe[-1]
@@ -342,8 +348,8 @@ def test_doctor_distinguishes_missing_nextflow_and_docker_from_architecture_warn
     assert by_name["Docker"].verdict == "FAIL"
     assert by_name["Docker runtime"].verdict == "FAIL"
     assert by_name["Control-plane image architecture"].verdict == "WARN"
-    assert by_name["Selected local ceiling"].verdict == "WARN"
-    assert "cannot be confirmed" in by_name["Selected local ceiling"].detail
+    assert by_name["Effective local budget"].verdict == "WARN"
+    assert "unavailable" in by_name["Effective local budget"].detail
     assert "architecture=arm64" in by_name["Host runtime"].detail
 
 
@@ -356,7 +362,8 @@ def test_runtime_doctor_warns_for_amd64_image_on_arm64_and_low_docker_memory():
     by_name = {item.name: item for item in checks}
     assert by_name["Control-plane image architecture"].verdict == "WARN"
     assert "Rosetta" in by_name["Control-plane image architecture"].detail
-    assert by_name["Selected local ceiling"].verdict == "WARN"
+    assert by_name["Effective local budget"].verdict == "WARN"
+    assert "8 CPUs/8 GiB" in by_name["Effective local budget"].detail
 
 
 def test_project_doctor_surfaces_a_missing_adopted_reference_error(monkeypatch, tmp_path):
@@ -381,12 +388,11 @@ def test_runtime_failure_classification_is_actionable_and_does_not_change_resour
     assert RESOURCE_CONTRACTS["MEDIUM"].memory_gib == 8
 
 
-def test_rendered_resource_contract_bounds_salmon_concurrency_without_touching_nfcore_params(tmp_path):
+def test_rendered_resource_contract_uses_only_the_aggregate_ceiling(tmp_path):
     rendered = render_local_resource_config()
-    assert "SMALL" in rendered and "MEDIUM" in rendered and "LARGE=8/12 GiB" in rendered
     assert "executor { cpus = 8; memory = '12.GB' }" in rendered
     assert "resourceLimits = [cpus: 8, memory: '12.GB', time: '12.h']" in rendered
-    assert "SALMON_QUANT" in rendered and "maxForks = 1" in rendered
+    assert "withLabel" not in rendered and "withName" not in rendered and "maxForks" not in rendered
     assert "skip_alignment" not in rendered and "skip_trimming" not in rendered
 
 
@@ -396,9 +402,42 @@ def test_local_resource_suggestion_and_validation_are_conservative():
     validate_local_execution_budget(16, 48, capacity)
     with pytest.raises(ExecutionPreflightError, match="positive"):
         validate_local_execution_budget(0, 48, capacity)
-    with pytest.raises(ExecutionPreflightError, match="exceeds detected host"):
-        validate_local_execution_budget(21, 48, capacity)
+    validate_local_execution_budget(21, 48, capacity)
     assert suggested_local_resources(LocalResourceCapacity(None, None, None)) == (8, 12)
+
+
+def test_effective_budget_clamps_desktop_runtime_but_not_native_linux_docker():
+    requested = ResourceContract("PROJECT_LOCAL", 24, 48, 12)
+    desktop = effective_resource_budget(RuntimeSnapshot(
+        "Darwin", "arm64", 20, 64 * 1024**3, "arm64", 16 * 1024**3, "test", "arm64", 10
+    ), requested)
+    assert (desktop.effective_cpus, desktop.effective_memory_gib) == (10, 16)
+    assert desktop.runtime_ceiling_applies is True and desktop.clamped is True
+
+    linux = effective_resource_budget(RuntimeSnapshot(
+        "Linux", "amd64", 20, 64 * 1024**3, "amd64", 8 * 1024**3, "test", "amd64", 4
+    ), requested)
+    assert (linux.effective_cpus, linux.effective_memory_gib) == (20, 48)
+    assert linux.runtime_ceiling_applies is False
+
+
+def test_effective_budget_keeps_smaller_project_budget_and_handles_missing_runtime_detection():
+    project = ResourceContract("PROJECT_LOCAL", 8, 12, 12)
+    resources = effective_resource_budget(RuntimeSnapshot(
+        "Darwin", "arm64", 24, 96 * 1024**3, "arm64", None, "test", "arm64", None
+    ), project)
+    assert (resources.effective_cpus, resources.effective_memory_gib) == (8, 12)
+    assert resources.clamped is False
+    assert len(resources.warnings) == 2
+    validate_effective_resource_budget(resources)
+
+
+def test_effective_budget_fails_when_largest_process_cannot_fit():
+    resources = effective_resource_budget(RuntimeSnapshot(
+        "Darwin", "arm64", 12, 24 * 1024**3, "arm64", 10 * 1024**3, "test", "arm64", 12
+    ), ResourceContract("PROJECT_LOCAL", 16, 32, 12))
+    with pytest.raises(ExecutionPreflightError, match="at least 8 CPUs/12 GiB"):
+        validate_effective_resource_budget(resources)
 
 
 def test_host_resource_detection_uses_linux_procfs_and_darwin_sysctl_without_procps(monkeypatch):

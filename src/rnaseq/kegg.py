@@ -110,7 +110,11 @@ def _report(mode: KeggMode, summary: dict[str, Any], adapter: KeggResourceAdapte
         else:
             rank = contrast.get("ranking", {})
             lines.append(f"- Ranked genes: {rank.get('final_ranked_genes', 0)}; positive={rank.get('positive_stats', 0)}; negative={rank.get('negative_stats', 0)}")
-            lines.append(f"- Pathways: all={contrast.get('all_terms', 0)}; significant={contrast.get('significant_terms', 0)}")
+            annotation_qc = rank.get("annotation_qc", {})
+            lines.append(f"- Annotation mapping QC: {annotation_qc.get('status', 'not available')} (warning threshold={annotation_qc.get('warning_threshold', 'not available')}; blocking threshold={annotation_qc.get('blocking_threshold', 'not available')})")
+            if annotation_qc.get("status") == "WARNING":
+                lines.append(f"- Annotation mapping warning: {annotation_qc.get('reason', 'not available')}")
+            lines.append(f"- Pathways: evaluated={contrast.get('evaluated_terms', contrast.get('all_terms', 0))}; significant={contrast.get('significant_terms', 0)}")
         lines.append("")
     return "\n".join(lines)
 
@@ -174,7 +178,19 @@ def execute_kegg(prepared: PreparedKegg) -> KeggResult:
         "retrieval": summary.get("resource"),
         "clusterProfiler_version": summary.get("clusterProfiler_version"),
         "r_version": summary.get("r_version"),
+        "annotation_database": summary.get("annotation_database"),
+        "annotation_database_version": summary.get("annotation_database_version"),
+        "annotation_qc_status": summary.get("annotation_qc_status"),
         "annotation": prepared.annotation.model_dump(),
+        "clusterprofiler_calculation_pvalue_cutoff": 1 if prepared.mode == "gsea" else None,
+        "nf_rna_significance_policy": (
+            "finite p.adjust <= configured padj_cutoff and finite pvalue <= configured pvalue_cutoff"
+            if prepared.mode == "gsea" else None
+        ),
+        "all_terms_semantics": (
+            "terms successfully evaluated and returned by gseKEGG under configured structural gene-set constraints before nf-rna significance filtering"
+            if prepared.mode == "gsea" else None
+        ),
         "mapping_policy": "local AnnotationDbi Entrez mapping; one-to-many retained; duplicate KEGG targets deduplicated deterministically",
         "warning": "KEGG results may vary when the external KEGG resource changes.",
         "contrasts": summary.get("contrasts", []),

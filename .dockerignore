@@ -5,6 +5,7 @@
 !Dockerfile
 !.dockerignore
 !environment.yml
+!environment.docker.yml
 !pyproject.toml
 !README.md
 !src/

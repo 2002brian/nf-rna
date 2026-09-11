@@ -28,7 +28,9 @@ annotation:
   input_id_type: ENTREZID
   target_id_type: ENTREZID
   gene_symbol_output: true
-  minimum_mapping_rate: 0.70
+  mapping_warning_rate: 0.70
+  # Preranked GSEA blocks only below this threshold; 0.50–0.70 is a warning.
+  minimum_mapping_rate: 0.50
   minimum_mapped_foreground: 5
   enrichment:
     go:

@@ -1,0 +1,4 @@
+gene_id,P01_Primary,P01_Metastasis,P02_Primary,P02_Metastasis,P03_Primary,P03_Metastasis
+GeneA,10,20,11,24,9,19
+GeneB,30,15,28,14,32,16
+GeneC,5,9,6,12,4,8

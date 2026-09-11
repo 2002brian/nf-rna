@@ -1,0 +1,7 @@
+sample_id,patient,condition
+P01_Primary,P01,Primary
+P01_Metastasis,P01,Metastasis
+P02_Primary,P02,Primary
+P02_Metastasis,P02,Metastasis
+P03_Primary,P03,Primary
+P03_Metastasis,P03,Metastasis

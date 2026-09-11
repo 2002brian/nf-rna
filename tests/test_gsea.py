@@ -39,6 +39,24 @@ def test_gsea_config_rejects_invalid_gene_set_bounds(project_factory):
     assert any("max_gs_size must be >=" in issue.message for issue in report.errors)
 
 
+def test_annotation_mapping_thresholds_validate_and_legacy_projects_migrate(project_factory):
+    invalid = base_config()
+    invalid["annotation"] = _annotation()
+    invalid["annotation"]["mapping_warning_rate"] = 0.50
+    invalid["annotation"]["minimum_mapping_rate"] = 0.70
+    report = validate_project(project_factory(config=invalid))
+    assert any("minimum_mapping_rate must be <=" in issue.message for issue in report.errors)
+
+    legacy = base_config()
+    legacy["annotation"] = _annotation()
+    legacy["annotation"]["minimum_mapping_rate"] = 0.70
+    migrated = validate_project(project_factory(config=legacy))
+    assert migrated.is_valid, migrated.errors
+    assert migrated.config is not None
+    assert migrated.config.annotation.mapping_warning_rate == 0.70
+    assert migrated.config.annotation.minimum_mapping_rate == 0.50
+
+
 def test_gsea_blocked_state_is_separate_from_l2(monkeypatch, project_factory):
     config = base_config()
     config["annotation"] = _annotation()
@@ -79,7 +97,7 @@ def test_gsea_rank_backend_uses_finite_stats_and_deterministic_ties(tmp_path):
         pytest.skip("Rscript unavailable")
     all_genes = tmp_path / "all_genes.tsv"
     all_genes.write_text(
-        "gene_id\tstat\n11287\t3\n11298\t3\n11303\t-2\nunknown\t7\n11304\tNA\n",
+        "gene_id\tstat\tpadj\tlog2FoldChange\n11287\t3\t1\t0.01\n11298\t3\t0.99\t0.01\n11303\t-2\t0.8\t-0.02\nunknown\t7\t1\t0\n11304\tNA\t0.001\t8\n",
         encoding="utf-8",
     )
     output = tmp_path / "gsea"
@@ -87,7 +105,7 @@ def test_gsea_rank_backend_uses_finite_stats_and_deterministic_ties(tmp_path):
         "output_dir": str(output),
         "orgdb_package": "org.Mm.eg.db",
         "annotation": {
-            "input_id_type": "ENTREZID", "minimum_mapping_rate": 0.70,
+            "input_id_type": "ENTREZID", "target_id_type": "ENTREZID", "mapping_warning_rate": 0.70, "minimum_mapping_rate": 0.50,
             "enrichment": {"gsea": {"minimum_ranked_genes": 4, "min_gs_size": 10, "max_gs_size": 500, "pvalue_cutoff": 0.05, "padj_cutoff": 0.05, "p_adjust_method": "BH", "seed": 1}},
         },
         "contrasts": [{"contrast_id": "test", "all_genes": str(all_genes)}],
@@ -108,12 +126,56 @@ def test_gsea_rank_backend_uses_finite_stats_and_deterministic_ties(tmp_path):
     assert ranked[2].split("\t")[1] == "11298"
 
 
+@pytest.mark.parametrize(
+    ("mapping_rate", "status"),
+    ((0.80, "PASS"), (0.697, "WARNING"), (0.55, "WARNING"), (0.49, "BLOCKED")),
+)
+def test_go_and_kegg_share_dual_threshold_mapping_qc(mapping_rate, status):
+    import subprocess
+
+    r_root = Path(__file__).parents[1] / "src" / "rnaseq" / "r"
+    code = (
+        f'source("{r_root / "annotation_mapping_qc.R"}"); '
+        f'qc <- annotation_mapping_qc({mapping_rate}, list(mapping_warning_rate=0.70, minimum_mapping_rate=0.50)); '
+        f'stopifnot(identical(qc$status, "{status}")); '
+        'stopifnot(identical(qc$warning_threshold, 0.70), identical(qc$blocking_threshold, 0.50))'
+    )
+    result = subprocess.run(["Rscript", "-e", code], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+    for name in ("gsea_analysis.R", "kegg_analysis.R"):
+        script = (r_root / name).read_text(encoding="utf-8")
+        assert 'source(file.path(dirname(normalizePath(script_file)), "annotation_mapping_qc.R"))' in script
+        assert "mapping_qc" in script
+
+
+def test_go_and_kegg_calculate_all_evaluated_terms_then_share_nf_rna_filtering():
+    import subprocess
+
+    r_root = Path(__file__).parents[1] / "src" / "rnaseq" / "r"
+    code = f'''source("{r_root / "gsea_term_filtering.R"}")
+empty <- data.frame(ID=character(), Description=character(), setSize=integer(), enrichmentScore=numeric(), NES=numeric(), pvalue=numeric(), p.adjust=numeric(), qvalue=numeric(), rank=integer(), leading_edge=character(), core_enrichment=character(), stringsAsFactors=FALSE)
+raw <- data.frame(ID=sprintf("TERM:%03d", 1:100), Description="fixture", setSize=10L, enrichmentScore=1, NES=c(rep(1, 10), rep(-1, 10), rep(1, 80)), pvalue=c(rep(0.01, 20), rep(0.50, 80)), p.adjust=c(rep(0.01, 20), rep(0.20, 80)), qvalue=0.1, rank=1:100, leading_edge="tags", core_enrichment="1", stringsAsFactors=FALSE)
+out <- gsea_term_tables(raw, empty, pvalue_cutoff=0.05, padj_cutoff=0.05)
+stopifnot(nrow(out$terms) == 100L, nrow(out$significant) == 20L, nrow(out$positive) == 10L, nrow(out$negative) == 10L, any(out$terms$p.adjust > 0.05), !any(out$significant$p.adjust > 0.05))
+'''
+    result = subprocess.run(["Rscript", "-e", code], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+    for name, call in (("gsea_analysis.R", "gseGO("), ("kegg_analysis.R", "gseKEGG(")):
+        script = (r_root / name).read_text(encoding="utf-8")
+        assert 'source(file.path(dirname(normalizePath(script_file)), "gsea_term_filtering.R"))' in script
+        assert "pvalueCutoff=1" in script
+        assert call in script
+        assert "gsea_term_tables" in script
+
+
 def test_gsea_backend_processes_ontologies_sequentially_with_bounded_lifecycle():
     script = (Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "gsea_analysis.R").read_text()
     helper = (Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "gsea_core_members.R").read_text()
     assert 'for (ontology in c("BP", "MF", "CC"))' in script
     assert 'lapply(c("BP", "MF", "CC"), function(x) run_ontology' not in script
-    assert "rm(result, raw, terms, significant, positive, negative, top, p, core_audit)" in script
+    assert "rm(result, raw, terms, significant, positive, negative, top, p, core_audit, filtered)" in script
     assert "gc(verbose=FALSE)" in script
     assert 'write_gsea_core_members' in script
     assert 'append=TRUE' in helper  # core members are streamed, not accumulated in a global rows list
@@ -122,9 +184,10 @@ def test_gsea_backend_processes_ontologies_sequentially_with_bounded_lifecycle()
 
 def test_gsea_backend_retains_na_pathways_but_excludes_them_from_nes_subsets():
     text = (Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "gsea_analysis.R").read_text()
+    filtering = (Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "gsea_term_filtering.R").read_text()
     assert "na_pathways=sum(is.na(terms$pvalue) | is.na(terms$p.adjust) | is.na(terms$NES))" in text
-    assert "!is.na(significant$NES) & significant$NES > 0" in text
-    assert "!is.na(significant$NES) & significant$NES < 0" in text
+    assert "!is.na(significant$NES) & significant$NES > 0" in filtering
+    assert "!is.na(significant$NES) & significant$NES < 0" in filtering
 
 
 def test_gsea_core_members_have_exact_cardinality_and_no_na_expansion(tmp_path):

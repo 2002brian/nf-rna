@@ -37,7 +37,7 @@ class Species(str, Enum):
 class DesignType(str, Enum):
     TWO_GROUP = "two_group"
     MULTI_GROUP = "multi_group"
-    PAIRED = "paired"
+    PAIRED_TWO_GROUP = "paired_two_group"
 
 
 class InputType(str, Enum):
@@ -99,18 +99,34 @@ class InputConfig(StrictModel):
 class DesignConfig(StrictModel):
     type: DesignType
     formula: StrictStr
-    pairing_column: StrictStr | None = None
+    pair_id: StrictStr | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_interim_paired_contract(cls, value: object) -> object:
+        """Read projects written by the short-lived pre-M5A paired spelling."""
+
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        if normalized.get("type") == "paired":
+            normalized["type"] = DesignType.PAIRED_TWO_GROUP.value
+        if "pairing_column" in normalized:
+            if "pair_id" in normalized and normalized["pair_id"] != normalized["pairing_column"]:
+                raise ValueError("design.pair_id and legacy design.pairing_column disagree.")
+            normalized["pair_id"] = normalized.pop("pairing_column")
+        return normalized
 
     @model_validator(mode="after")
     def validate_pairing_contract(self) -> "DesignConfig":
-        if self.type is DesignType.PAIRED:
-            if self.pairing_column is None or not self.pairing_column.strip():
+        if self.type is DesignType.PAIRED_TWO_GROUP:
+            if self.pair_id is None or not self.pair_id.strip():
                 raise ValueError(
-                    "design.pairing_column is required for a paired biological design; "
+                    "design.pair_id is required for a paired_two_group biological design; "
                     "it is independent of paired-end sequencing layout."
                 )
-        elif self.pairing_column is not None:
-            raise ValueError("design.pairing_column is supported only when design.type is paired.")
+        elif self.pair_id is not None:
+            raise ValueError("design.pair_id is supported only when design.type is paired_two_group.")
         return self
 
 
@@ -158,8 +174,14 @@ class KeggOraConfig(StrictModel):
 
 
 class KeggGseaConfig(StrictModel):
+    """Configured nf-rna significance thresholds for KEGG preranked GSEA.
+
+    clusterProfiler calculation intentionally uses ``pvalueCutoff=1`` so
+    nf-rna can retain every evaluated term before applying these thresholds.
+    """
+
     minimum_ranked_genes: int = Field(default=50, ge=1)
-    pvalue_cutoff: float = Field(default=1.0, ge=0.0, le=1.0)
+    pvalue_cutoff: float = Field(default=0.05, ge=0.0, le=1.0)
     padj_cutoff: float = Field(default=0.05, ge=0.0, le=1.0)
     p_adjust_method: Literal["BH"] = "BH"
     min_gs_size: int = Field(default=10, ge=1)
@@ -188,15 +210,52 @@ class EnrichmentConfig(StrictModel):
 
 
 class AnnotationConfig(StrictModel):
-    """Deliberately narrow, offline-only identifier contract for M4B-1."""
+    """Identifier and annotation-QC contract for optional preranked GSEA."""
 
     organism: Literal["Homo sapiens", "Mus musculus"]
     input_id_type: Literal["ENSEMBL", "ENTREZID", "SYMBOL"]
     target_id_type: Literal["ENTREZID"] = "ENTREZID"
     gene_symbol_output: bool = True
-    minimum_mapping_rate: float = Field(default=0.70, ge=0.0, le=1.0)
+    # ``minimum_mapping_rate`` was the only (blocking) guardrail in schema
+    # 1.0/1.1 projects.  It now deliberately names the fail-closed threshold;
+    # a distinct warning threshold permits an auditable, non-blocking warning.
+    mapping_warning_rate: float = Field(default=0.70, ge=0.0, le=1.0)
+    minimum_mapping_rate: float = Field(default=0.50, ge=0.0, le=1.0)
     minimum_mapped_foreground: int = Field(default=5, ge=1)
     enrichment: EnrichmentConfig = Field(default_factory=EnrichmentConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_mapping_threshold(cls, value: object) -> object:
+        """Treat a lone legacy threshold as the old warning-level contract.
+
+        Existing projects expressed only one threshold. Preserve it as their
+        warning threshold while applying the documented 0.50 blocking default
+        where that does not make a historically permissive project stricter.
+        New configurations can set both fields explicitly.
+        """
+
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        if "mapping_warning_rate" not in migrated and "minimum_mapping_rate" in migrated:
+            legacy_threshold = migrated["minimum_mapping_rate"]
+            migrated["mapping_warning_rate"] = legacy_threshold
+            try:
+                # Do not make a historically more-permissive project stricter
+                # merely by loading it under the dual-threshold contract.
+                migrated["minimum_mapping_rate"] = min(0.50, float(legacy_threshold))
+            except (TypeError, ValueError):
+                migrated["minimum_mapping_rate"] = 0.50
+        return migrated
+
+    @model_validator(mode="after")
+    def validate_mapping_thresholds(self) -> "AnnotationConfig":
+        if self.minimum_mapping_rate > self.mapping_warning_rate:
+            raise ValueError(
+                "annotation.minimum_mapping_rate must be <= annotation.mapping_warning_rate."
+            )
+        return self
 
 
 PUBLIC_ENRICHMENT_METHOD = "gsea"
@@ -382,11 +441,11 @@ class ProjectConfig(StrictModel):
             raise ValueError("raw_counts projects require upstream.engine: external.")
         if self.annotation is not None and self.annotation.organism != self.organism.species.value:
             raise ValueError("annotation.organism must match organism.species.")
-        if self.design.type is DesignType.PAIRED:
-            assert self.design.pairing_column is not None
+        if self.design.type is DesignType.PAIRED_TWO_GROUP:
+            assert self.design.pair_id is not None
             variables = tuple(re.findall(r"[A-Za-z_][A-Za-z0-9_.]*", self.design.formula.removeprefix("~")))
-            if self.design.pairing_column not in variables:
-                raise ValueError("design.pairing_column must be present in design.formula.")
+            if self.design.pair_id not in variables:
+                raise ValueError("design.pair_id must be present in design.formula.")
         if self.reference.acceptance == "production":
             if self.input.type is not InputType.FASTQ:
                 raise ValueError("reference.acceptance: production is supported only for FASTQ projects.")

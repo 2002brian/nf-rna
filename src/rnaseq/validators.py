@@ -93,6 +93,36 @@ class ContrastsSummary:
     contrasts: tuple[ContrastDefinition, ...]
 
 
+@dataclass(frozen=True)
+class PairMembership:
+    pair_id: str
+    numerator_sample_id: str
+    denominator_sample_id: str
+
+
+@dataclass(frozen=True)
+class PairingContrastSummary:
+    contrast_id: str
+    factor: str
+    numerator: str
+    denominator: str
+    complete_pairs: int
+    samples_in_complete_pairs: int
+    incomplete_pairs: tuple[str, ...]
+    duplicate_numerator_pairs: tuple[str, ...]
+    duplicate_denominator_pairs: tuple[str, ...]
+    membership: tuple[PairMembership, ...]
+
+
+@dataclass(frozen=True)
+class PairingSummary:
+    pair_id_column: str
+    total_samples: int
+    unique_pair_ids: int
+    blank_pair_id_samples: tuple[str, ...]
+    contrasts: tuple[PairingContrastSummary, ...]
+
+
 @dataclass
 class ValidationReport:
     project_dir: Path
@@ -103,6 +133,7 @@ class ValidationReport:
     local_reference: LocalReference | None = None
     metadata: MetadataSummary | None = None
     contrasts: ContrastsSummary | None = None
+    pairing: PairingSummary | None = None
     groups: OrderedDict[str, OrderedDict[str, int]] = field(default_factory=OrderedDict)
     issues: list[ValidationIssue] = field(default_factory=list)
 
@@ -640,43 +671,126 @@ def _build_groups_and_validate_design(report: ValidationReport) -> None:
                 "invalid_multi_group_design",
                 f"multi_group design requires at least 3 levels for {factor}; found {level_count}.",
             )
-        elif design_type is DesignType.PAIRED and level_count != 2:
+        elif design_type is DesignType.PAIRED_TWO_GROUP and level_count != 2:
             report.error(
                 "invalid_paired_levels",
-                f"paired design requires exactly 2 levels for {factor}; found {level_count}.",
+                f"paired_two_group design requires exactly 2 levels for {factor}; found {level_count}.",
             )
 
-    if design_type is not DesignType.PAIRED:
+    if design_type is not DesignType.PAIRED_TWO_GROUP:
         return
-    pairing_variable = report.config.design.pairing_column
+    pairing_variable = report.config.design.pair_id
     if pairing_variable is None:
         # ProjectConfig normally catches this first; retain a validator-level
         # diagnostic for callers constructing reports manually.
-        report.error("missing_pairing_variable", "Paired design requires explicit design.pairing_column.")
+        report.error("missing_pairing_variable", "paired_two_group design requires explicit design.pair_id.")
         return
     if pairing_variable not in metadata.columns:
         return
 
-    for factor in factors:
-        if factor not in metadata.columns:
+    blank_samples = tuple(
+        record["sample_id"] for record in metadata.rows if not record[pairing_variable].strip()
+    )
+    for sample_id in blank_samples:
+        report.error(
+            "blank_pair_id",
+            f"Sample {sample_id!r} has a blank value in pairing column {pairing_variable!r}.",
+        )
+
+    summaries: list[PairingContrastSummary] = []
+    for contrast in report.contrasts.contrasts:
+        if contrast.factor not in metadata.columns:
             continue
-        contrast_levels = {
-            level
-            for contrast in report.contrasts.contrasts
-            if contrast.factor == factor
-            for level in (contrast.numerator, contrast.denominator)
-        }
-        by_subject: dict[str, list[str]] = {}
+        if pairing_variable == contrast.factor:
+            report.error(
+                "pair_id_is_contrast_factor",
+                f"design.pair_id {pairing_variable!r} cannot also be contrast factor "
+                f"{contrast.factor!r} for {contrast.contrast_id}.",
+            )
+            continue
+        by_pair: dict[str, list[dict[str, str]]] = {}
         for record in metadata.rows:
-            by_subject.setdefault(record[pairing_variable], []).append(record[factor])
-        for subject in sorted(by_subject):
-            observed = by_subject[subject]
-            if len(observed) != 2 or set(observed) != contrast_levels or len(set(observed)) != 2:
+            pair_value = record[pairing_variable]
+            if pair_value.strip():
+                by_pair.setdefault(pair_value, []).append(record)
+        complete: list[PairMembership] = []
+        incomplete: list[str] = []
+        duplicate_numerator: list[str] = []
+        duplicate_denominator: list[str] = []
+        for pair_value in sorted(by_pair):
+            records = by_pair[pair_value]
+            numerator_samples = sorted(
+                record["sample_id"] for record in records
+                if record[contrast.factor] == contrast.numerator
+            )
+            denominator_samples = sorted(
+                record["sample_id"] for record in records
+                if record[contrast.factor] == contrast.denominator
+            )
+            if len(numerator_samples) > 1:
+                duplicate_numerator.append(pair_value)
                 report.error(
-                    "incomplete_pair",
-                    f"Subject {subject!r} must have exactly one sample from each {factor} level; "
-                    f"observed: {', '.join(observed)}",
+                    "duplicate_pair_numerator",
+                    f"Pair {pair_value!r} contains {len(numerator_samples)} {contrast.numerator} "
+                    f"samples for contrast {contrast.contrast_id}; exactly one is required.",
                 )
+            if len(denominator_samples) > 1:
+                duplicate_denominator.append(pair_value)
+                report.error(
+                    "duplicate_pair_denominator",
+                    f"Pair {pair_value!r} contains {len(denominator_samples)} {contrast.denominator} "
+                    f"samples for contrast {contrast.contrast_id}; exactly one is required.",
+                )
+            if len(numerator_samples) == 1 and not denominator_samples:
+                incomplete.append(pair_value)
+                report.error(
+                    "pair_missing_denominator",
+                    f"Pair {pair_value!r} contains {contrast.numerator} but no {contrast.denominator} "
+                    f"sample for contrast {contrast.contrast_id}.",
+                )
+            elif len(denominator_samples) == 1 and not numerator_samples:
+                incomplete.append(pair_value)
+                report.error(
+                    "pair_missing_numerator",
+                    f"Pair {pair_value!r} contains {contrast.denominator} but no {contrast.numerator} "
+                    f"sample for contrast {contrast.contrast_id}.",
+                )
+            elif len(numerator_samples) == 1 and len(denominator_samples) == 1:
+                complete.append(PairMembership(pair_value, numerator_samples[0], denominator_samples[0]))
+            elif not numerator_samples and not denominator_samples:
+                incomplete.append(pair_value)
+                report.error(
+                    "unsupported_pair_structure",
+                    f"Pair {pair_value!r} has no usable sample for either level in contrast "
+                    f"{contrast.contrast_id}.",
+                )
+        if report.config.project.preset is Preset.L2 and len(complete) < 2:
+            report.error(
+                "insufficient_complete_pairs",
+                f"Contrast {contrast.contrast_id} has {len(complete)} complete biological pair(s); "
+                "paired L2 inference requires at least 2.",
+            )
+        summaries.append(
+            PairingContrastSummary(
+                contrast.contrast_id,
+                contrast.factor,
+                contrast.numerator,
+                contrast.denominator,
+                len(complete),
+                len(complete) * 2,
+                tuple(sorted(set(incomplete))),
+                tuple(duplicate_numerator),
+                tuple(duplicate_denominator),
+                tuple(complete),
+            )
+        )
+    report.pairing = PairingSummary(
+        pairing_variable,
+        len(metadata.rows),
+        len({record[pairing_variable] for record in metadata.rows if record[pairing_variable].strip()}),
+        blank_samples,
+        tuple(summaries),
+    )
 
 
 def _numeric_column(values: list[str]) -> list[float] | None:
@@ -727,8 +841,8 @@ def _validate_model_matrix(report: ValidationReport) -> None:
     if any(variable not in report.metadata.columns for variable in report.formula_variables):
         return
     categorical = {contrast.factor for contrast in report.contrasts.contrasts}
-    if report.config.design.pairing_column:
-        categorical.add(report.config.design.pairing_column)
+    if report.config.design.pair_id:
+        categorical.add(report.config.design.pair_id)
     columns: list[tuple[str, list[float]]] = [("(Intercept)", [1.0] * len(report.metadata.rows))]
     for variable in report.formula_variables:
         values = [record[variable] for record in report.metadata.rows]
@@ -746,8 +860,8 @@ def _validate_model_matrix(report: ValidationReport) -> None:
         baseline = levels[0]
         for level in levels[1:]:
             columns.append((f"{variable}[{level}]", [1.0 if value == level else 0.0 for value in values]))
-        if variable == report.config.design.pairing_column and not baseline:
-            report.error("invalid_pairing_value", "design.pairing_column contains a blank block identifier.")
+        if variable == report.config.design.pair_id and not baseline:
+            report.error("invalid_pairing_value", "design.pair_id contains a blank block identifier.")
             return
     matrix = [[column[row] for _name, column in columns] for row in range(len(report.metadata.rows))]
     rank = _matrix_rank(matrix)

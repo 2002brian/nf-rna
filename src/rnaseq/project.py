@@ -145,9 +145,12 @@ def _project_yaml(
     reference: dict[str, object] | None = None,
     execution: dict[str, object] | None = None,
     formula: str | None = None,
-    pairing_column: str | None = None,
+    pair_id: str | None = None,
 ) -> str:
-    formula = formula or ("~ subject_id + condition" if design_type is DesignType.PAIRED else "~ condition")
+    formula = formula or (
+        f"~ {pair_id or 'patient'} + condition"
+        if design_type is DesignType.PAIRED_TWO_GROUP else "~ condition"
+    )
     content = {
         "schema_version": SUPPORTED_SCHEMA_VERSION,
         "project": {
@@ -163,7 +166,7 @@ def _project_yaml(
         "design": {
             "type": design_type.value,
             "formula": formula,
-            **({"pairing_column": pairing_column or "subject_id"} if design_type is DesignType.PAIRED else {}),
+            **({"pair_id": pair_id or "patient"} if design_type is DesignType.PAIRED_TWO_GROUP else {}),
         },
         "metadata_file": "metadata.csv",
         "contrasts_file": "contrasts.csv",
@@ -290,10 +293,15 @@ def create_project(
     contrasts_file: Path | str | None = None,
     scaffold: bool = False,
     formula: str | None = None,
-    pairing_column: str | None = None,
+    pair_id: str | None = None,
     execution: dict[str, object] | None = None,
 ) -> Path:
     """Create a new project atomically and return its final path."""
+
+    if design_type is DesignType.PAIRED_TWO_GROUP and (pair_id is None or not pair_id.strip()):
+        raise ProjectCreationError(
+            "paired_two_group project creation requires an explicit biological pair_id column."
+        )
 
     try:
         ProjectInfo(id=project_name, pipeline="bulk_rnaseq", preset=preset)
@@ -348,10 +356,14 @@ def create_project(
             (staging / "input" / "fastq").mkdir()
         (staging / "planning").mkdir()
         metadata_template = (
-            "metadata_paired.csv" if design_type is DesignType.PAIRED else "metadata.csv"
+            "metadata_paired.csv" if design_type is DesignType.PAIRED_TWO_GROUP else "metadata.csv"
         )
         if source_metadata is not None:
             _copy_file(source_metadata, staging / "metadata.csv")
+        elif design_type is DesignType.PAIRED_TWO_GROUP:
+            (staging / "metadata.csv").write_text(
+                f"sample_id,{pair_id or 'patient'},condition\n", encoding="utf-8", newline="\n"
+            )
         else:
             (staging / "metadata.csv").write_text(_template_text(metadata_template), encoding="utf-8", newline="\n")
         if source_contrasts is not None:
@@ -376,7 +388,7 @@ def create_project(
             _project_yaml(
                 project_name, species, preset, design_type, input_type, layout,
                 preprocessing, strandedness, quantification_method,
-                resolved_reference, execution, formula, pairing_column,
+                resolved_reference, execution, formula, pair_id,
             ),
             encoding="utf-8",
             newline="\n",

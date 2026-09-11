@@ -3,6 +3,8 @@ if (length(args) != 2 || args[[1]] != "--config") stop("usage: gsea_analysis.R -
 script_arg <- commandArgs(trailingOnly = FALSE)
 script_file <- sub("^--file=", "", script_arg[grep("^--file=", script_arg)][[1]])
 source(file.path(dirname(normalizePath(script_file)), "gsea_core_members.R"))
+source(file.path(dirname(normalizePath(script_file)), "annotation_mapping_qc.R"))
+source(file.path(dirname(normalizePath(script_file)), "gsea_term_filtering.R"))
 suppressPackageStartupMessages({ library(jsonlite); library(AnnotationDbi); library(clusterProfiler); library(ggplot2) })
 
 cfg <- fromJSON(args[[2]], simplifyVector = FALSE)
@@ -54,28 +56,20 @@ map_ranked_sources <- function(source, stat) {
 
 run_ontology <- function(gene_list, ranked_mapping, ontology, root) {
   directory <- file.path(root, ontology); dir.create(directory, recursive=TRUE, showWarnings=FALSE)
-  result <- raw <- terms <- significant <- positive <- negative <- top <- p <- core_audit <- NULL
-  on.exit({ rm(result, raw, terms, significant, positive, negative, top, p, core_audit); gc(verbose=FALSE) }, add=TRUE)
+  result <- raw <- terms <- significant <- positive <- negative <- top <- p <- core_audit <- filtered <- NULL
+  on.exit({ rm(result, raw, terms, significant, positive, negative, top, p, core_audit, filtered); gc(verbose=FALSE) }, add=TRUE)
   tryCatch({
     set.seed(as.integer(gsea_cfg$seed))
     result <- suppressMessages(gseGO(
       geneList=gene_list, OrgDb=orgdb, keyType="ENTREZID", ont=ontology,
       minGSSize=as.integer(gsea_cfg$min_gs_size), maxGSSize=as.integer(gsea_cfg$max_gs_size),
-      pvalueCutoff=as.numeric(gsea_cfg$pvalue_cutoff), pAdjustMethod=gsea_cfg$p_adjust_method,
+      pvalueCutoff=1, pAdjustMethod=gsea_cfg$p_adjust_method,
       eps=0, verbose=FALSE, seed=TRUE
     ))
     raw <- if (is.null(result)) data.frame() else as.data.frame(result)
-    wanted <- names(empty_terms())
-    if (nrow(raw) == 0) {
-      terms <- empty_terms()
-    } else {
-      for (name in setdiff(wanted, names(raw))) raw[[name]] <- NA
-      terms <- raw[, wanted, drop=FALSE]
-      terms <- terms[order(terms$p.adjust, terms$ID), , drop=FALSE]
-    }
-    significant <- terms[!is.na(terms$p.adjust) & terms$p.adjust <= as.numeric(gsea_cfg$padj_cutoff) & !is.na(terms$pvalue) & terms$pvalue <= as.numeric(gsea_cfg$pvalue_cutoff), , drop=FALSE]
-    positive <- significant[!is.na(significant$NES) & significant$NES > 0, , drop=FALSE]
-    negative <- significant[!is.na(significant$NES) & significant$NES < 0, , drop=FALSE]
+    filtered <- gsea_term_tables(raw, empty_terms(), gsea_cfg$pvalue_cutoff, gsea_cfg$padj_cutoff)
+    terms <- filtered$terms; significant <- filtered$significant
+    positive <- filtered$positive; negative <- filtered$negative
     write_table(terms, file.path(directory, "all_terms.tsv"))
     write_table(significant, file.path(directory, "significant.tsv"))
     write_table(positive, file.path(directory, "positive_enrichment.tsv"))
@@ -90,11 +84,11 @@ run_ontology <- function(gene_list, ranked_mapping, ontology, root) {
     ggsave(file.path(directory, "dotplot.tiff"), p, width=7, height=5, dpi=300, compression="lzw")
       rm(plot_terms)
     }
-    summary <- list(status=if (nrow(significant) == 0) "NO_SIGNIFICANT_TERMS" else "SUCCESS", all_terms=nrow(terms), significant_terms=nrow(significant), positive_terms=nrow(positive), negative_terms=nrow(negative), na_pathways=sum(is.na(terms$pvalue) | is.na(terms$p.adjust) | is.na(terms$NES)), core_member_rows=core_audit$rows)
-    rm(result, raw, terms, significant, positive, negative, top, p, core_audit)
+    summary <- list(status=if (nrow(significant) == 0) "NO_SIGNIFICANT_TERMS" else "SUCCESS", evaluated_terms=nrow(terms), all_terms=nrow(terms), significant_terms=nrow(significant), positive_terms=nrow(positive), negative_terms=nrow(negative), p_adjust_method=gsea_cfg$p_adjust_method, configured_pvalue_cutoff=as.numeric(gsea_cfg$pvalue_cutoff), configured_padj_cutoff=as.numeric(gsea_cfg$padj_cutoff), calculation_pvalue_cutoff=1, min_gs_size=as.integer(gsea_cfg$min_gs_size), max_gs_size=as.integer(gsea_cfg$max_gs_size), na_pathways=sum(is.na(terms$pvalue) | is.na(terms$p.adjust) | is.na(terms$NES)), core_member_rows=core_audit$rows)
+    rm(result, raw, terms, significant, positive, negative, top, p, core_audit, filtered)
     gc(verbose=FALSE)
     summary
-  }, error=function(error) list(status="FAILED", reason=conditionMessage(error), all_terms=0, significant_terms=0, positive_terms=0, negative_terms=0, na_pathways=0))
+  }, error=function(error) list(status="FAILED", reason=conditionMessage(error), evaluated_terms=0, all_terms=0, significant_terms=0, positive_terms=0, negative_terms=0, p_adjust_method=gsea_cfg$p_adjust_method, configured_pvalue_cutoff=as.numeric(gsea_cfg$pvalue_cutoff), configured_padj_cutoff=as.numeric(gsea_cfg$padj_cutoff), calculation_pvalue_cutoff=1, min_gs_size=as.integer(gsea_cfg$min_gs_size), max_gs_size=as.integer(gsea_cfg$max_gs_size), na_pathways=0))
 }
 
 contrast_summaries <- list()
@@ -114,6 +108,7 @@ for (contrast in cfg$contrasts) {
   mapped_sources <- unique(mapping$original_gene_id[!is.na(mapping$mapped_entrez_id)])
   source_count <- sum(finite)
   mapping_rate <- if (source_count == 0) 0 else length(mapped_sources) / source_count
+  mapping_qc <- annotation_mapping_qc(mapping_rate, cfg$annotation)
   ranking <- list(
     all_genes_rows=nrow(source_table), finite_stat_source_genes=source_count,
     nonfinite_or_missing_stat_source_genes=nrow(source_table)-source_count,
@@ -121,10 +116,10 @@ for (contrast in cfg$contrasts) {
     mapping_rate=mapping_rate, one_to_many_source_ids=length(unique(mapping$original_gene_id[mapping$mapping_status == "ONE_TO_MANY"])),
     duplicate_target_ids=sum(table(mapping$mapped_entrez_id[!is.na(mapping$mapped_entrez_id)]) > 1),
     duplicate_target_rows_collapsed=sum(mapping$rank_status == "COLLAPSED_DUPLICATE_TARGET"),
-    final_ranked_genes=nrow(ranked), positive_stats=sum(ranked$stat > 0), negative_stats=sum(ranked$stat < 0), zero_stats=sum(ranked$stat == 0), stat_ties=sum(duplicated(ranked$stat)), tie_handling="DESeq2 stat is unmodified; ties are ordered by ascending Entrez ID before fgsea"
+    final_ranked_genes=nrow(ranked), positive_stats=sum(ranked$stat > 0), negative_stats=sum(ranked$stat < 0), zero_stats=sum(ranked$stat == 0), stat_ties=sum(duplicated(ranked$stat)), tie_handling="DESeq2 stat is unmodified; ties are ordered by ascending Entrez ID before fgsea", annotation_qc=mapping_qc
   )
   rank_reason <- NULL
-  if (mapping_rate < cfg$annotation$minimum_mapping_rate) rank_reason <- paste0("GO preranked GSEA blocked: mapped ", sprintf("%.1f%%", 100*mapping_rate), " of finite tested genes; required minimum is ", sprintf("%.1f%%", 100*cfg$annotation$minimum_mapping_rate), ".")
+  if (mapping_qc$status == "BLOCKED") rank_reason <- paste0("GO preranked GSEA blocked: ", mapping_qc$reason)
   if (is.null(rank_reason) && nrow(ranked) < as.integer(gsea_cfg$minimum_ranked_genes)) rank_reason <- paste0("GO preranked GSEA blocked: ", nrow(ranked), " unique ranked Entrez genes; minimum is ", as.integer(gsea_cfg$minimum_ranked_genes), ".")
   if (!is.null(rank_reason)) {
     write(toJSON(c(ranking, list(status="BLOCKED", reason=rank_reason)), auto_unbox=TRUE, pretty=TRUE), file.path(root, "gsea_ranking_summary.json"))
@@ -149,5 +144,6 @@ for (contrast in cfg$contrasts) {
   rm(ranked_mapping)
 }
 overall <- if (any(vapply(contrast_summaries, function(x) x$status == "FAILED", logical(1)))) "FAILED" else if (length(blocked_reasons) > 0) "BLOCKED" else if (all(vapply(contrast_summaries, function(x) x$status == "NO_SIGNIFICANT_TERMS", logical(1)))) "NO_SIGNIFICANT_TERMS" else "SUCCESS"
-summary <- list(status=overall, reason=if (length(blocked_reasons)>0) paste(blocked_reasons, collapse=" ") else NULL, annotation_database=cfg$orgdb_package, annotation_database_version=as.character(packageVersion(cfg$orgdb_package)), clusterProfiler_version=as.character(packageVersion("clusterProfiler")), contrasts=contrast_summaries)
+annotation_contract <- list(input_id_type=cfg$annotation$input_id_type, target_id_type=cfg$annotation$target_id_type, warning_threshold=as.numeric(cfg$annotation$mapping_warning_rate), blocking_threshold=as.numeric(cfg$annotation$minimum_mapping_rate))
+summary <- list(status=overall, reason=if (length(blocked_reasons)>0) paste(blocked_reasons, collapse=" ") else NULL, annotation_qc_status=annotation_qc_status(contrast_summaries), annotation=annotation_contract, annotation_database=cfg$orgdb_package, annotation_database_version=as.character(packageVersion(cfg$orgdb_package)), clusterProfiler_version=as.character(packageVersion("clusterProfiler")), contrasts=contrast_summaries)
 write(toJSON(summary, auto_unbox=TRUE, pretty=TRUE, null="null"), file.path(cfg$output_dir, "gsea_backend_summary.json"))

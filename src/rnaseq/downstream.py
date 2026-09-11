@@ -21,7 +21,7 @@ import yaml
 
 from rnaseq.errors import DownstreamExecutionError
 from rnaseq.execution import RuntimeCheck
-from rnaseq.models import InputType
+from rnaseq.models import InputType, ProjectConfig
 from rnaseq.references import sha256_file
 from rnaseq.validators import ValidationReport
 
@@ -144,7 +144,11 @@ def prepare_l1(report: ValidationReport, *, run_id: str | None) -> PreparedL1:
         return PreparedL1(
             report.project_dir, report.project_dir / "downstream" / "l1", "raw_counts",
             report.counts.sample_ids, report.loaded.metadata_path, config.design.formula,
-            {"source_type": "raw_counts", "counts": str(report.counts.path.resolve())},
+            {
+                "source_type": "raw_counts",
+                "counts": str(report.counts.path.resolve()),
+                "pair_id": config.design.pair_id,
+            },
         )
     if not run_id:
         raise DownstreamExecutionError("FASTQ L1 analysis requires explicit --run-id; a latest run is never selected implicitly.")
@@ -196,13 +200,22 @@ def prepare_l1(report: ValidationReport, *, run_id: str | None) -> PreparedL1:
         raise DownstreamExecutionError("Selected run has no frozen metadata.csv.")
     # A run is immutable: downstream uses its frozen project formula and metadata.
     frozen_project = _read_yaml(run_dir / "frozen" / "project.yaml", "frozen project configuration")
-    formula = frozen_project.get("design", {}).get("formula") if isinstance(frozen_project.get("design"), dict) else None
-    if not isinstance(formula, str):
-        raise DownstreamExecutionError("Selected run frozen project configuration has no design.formula.")
+    try:
+        frozen_config = ProjectConfig.model_validate(frozen_project)
+    except Exception as exc:
+        raise DownstreamExecutionError(f"Selected run frozen project configuration is invalid: {exc}") from exc
+    formula = frozen_config.design.formula
     return PreparedL1(
         report.project_dir, run_dir / "downstream" / "l1", "salmon_tximport", tuple(sorted(samples)),
         frozen_metadata, formula,
-        {"source_type": "salmon_tximport", "run_id": run_id, "quant_sf": quant_paths, "tx2gene": str(tx2gene), "tx2gene_mapping": mapping_metadata},
+        {
+            "source_type": "salmon_tximport",
+            "run_id": run_id,
+            "quant_sf": quant_paths,
+            "tx2gene": str(tx2gene),
+            "tx2gene_mapping": mapping_metadata,
+            "pair_id": frozen_config.design.pair_id,
+        },
     )
 
 

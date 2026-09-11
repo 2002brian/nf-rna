@@ -100,7 +100,28 @@ def render_validation_report(report: ValidationReport) -> str:
             for level, count in levels.items():
                 lines.append(f"{level:<20} n={count}")
     if config is not None:
-        lines.extend(["Design", "------", config.design.formula])
+        lines.extend(["Design", "------", f"Type: {config.design.type.value}"])
+        if config.design.pair_id is not None:
+            lines.append(f"Pairing variable: {config.design.pair_id}")
+        lines.append(f"DESeq2 formula: {config.design.formula}")
+    if report.pairing is not None:
+        lines.extend(
+            [
+                f"Total samples: {report.pairing.total_samples}",
+                f"Unique pair IDs: {report.pairing.unique_pair_ids}",
+            ]
+        )
+        for summary in report.pairing.contrasts:
+            lines.extend(
+                [
+                    f"Comparison: {summary.numerator} vs {summary.denominator} ({summary.contrast_id})",
+                    f"Complete pairs: {summary.complete_pairs}",
+                    f"Samples in comparison: {summary.samples_in_complete_pairs}",
+                    f"Incomplete pairs: {len(summary.incomplete_pairs)}",
+                    "Duplicated/invalid pair structures: "
+                    f"{len(set(summary.duplicate_numerator_pairs) | set(summary.duplicate_denominator_pairs))}",
+                ]
+            )
     if report.contrasts is not None and report.contrasts.contrasts:
         lines.extend(["Contrasts", "---------"])
         for contrast in report.contrasts.contrasts:
@@ -233,6 +254,38 @@ def _wizard_completion_candidates(prefix: str, choices: list[str]) -> list[str]:
     return [value for value in choices if value.startswith(prefix)]
 
 
+def _wizard_prompt_completer(choices: list[str]) -> Any | None:
+    """Build the terminal completer used by the live wizard prompt."""
+
+    try:
+        from prompt_toolkit.completion import WordCompleter
+    except ImportError:
+        return None
+    return WordCompleter(choices, sentence=True, match_middle=False)
+
+
+def _prompt_toolkit_choice_prompt(choices: list[str], default: str | None) -> str | None:
+    """Read one value with completion active while the user edits the line."""
+
+    # Click's test/non-TTY streams must keep the established plain prompt path.
+    if not sys.stdin.isatty():
+        return None
+    completer = _wizard_prompt_completer(choices)
+    if completer is None:
+        return None
+    try:
+        from prompt_toolkit import prompt
+    except ImportError:
+        return None
+    selected = prompt(
+        f"Choose [{default}]: " if default is not None else "Choose: ",
+        completer=completer,
+        complete_while_typing=False,
+        default="",
+    )
+    return default if selected == "" and default is not None else selected
+
+
 def _readline_module() -> Any | None:
     """Load optional readline support without making it a CLI dependency."""
 
@@ -297,8 +350,10 @@ def _wizard_choice(label: str, choices: list[tuple[str, str]], *, default: str |
         # Keep this a string prompt instead of click.Choice: click raises a
         # BadParameter exception before this interactive wizard can retry just
         # the current question.
-        with _wizard_tab_completion(allowed):
-            selected = typer.prompt("Choose", default=default)
+        selected = _prompt_toolkit_choice_prompt(allowed, default) if _is_interactive_terminal() else None
+        if selected is None:
+            with _wizard_tab_completion(allowed):
+                selected = typer.prompt("Choose", default=default)
         if selected in allowed:
             return selected
         typer.echo(f"Invalid choice {selected!r}.")
@@ -446,10 +501,10 @@ def new_project(
     reference_salmon_index: Path | None = typer.Option(None, "--reference-salmon-index", help="Optional custom Salmon index."),
     reference_hisat2_index: Path | None = typer.Option(None, "--reference-hisat2-index", help="Optional prepared custom HISAT2 index."),
     preset: str | None = typer.Option(None, "--preset", help="qc, L1, or L2."),
-    design_type: str | None = typer.Option(None, "--design-type", help="two_group, multi_group, or paired."),
+    design_type: str | None = typer.Option(None, "--design-type", help="two_group, paired_two_group, or multi_group."),
     condition_column: str | None = typer.Option(None, "--condition-column", help="Imported metadata factor used for contrasts and the design formula."),
     covariate: list[str] | None = typer.Option(None, "--covariate", help="Additional imported metadata field; repeat as needed."),
-    pairing_column: str | None = typer.Option(None, "--pairing-column", help="Imported metadata field for paired designs."),
+    pair_id: str | None = typer.Option(None, "--pair-id", "--pairing-column", help="Imported metadata column identifying biological pairs."),
     execution_profile: str | None = typer.Option(None, "--execution-profile", help="Only local is supported."),
     cpus: int | None = typer.Option(None, "--cpus", help="Total local Nextflow CPU ceiling, not per-task CPUs."),
     memory_gb: int | None = typer.Option(None, "--memory-gb", help="Total local Nextflow memory ceiling in GiB, not per-task memory."),
@@ -458,7 +513,7 @@ def new_project(
 ) -> None:
     """Create a reviewed RNA-seq project interactively or from explicit flags."""
 
-    noninteractive = any(value is not None for value in (name, destination, species, input_type, fastq_samplesheet, counts, metadata, contrasts, layout, preprocessing, method, strandedness, reference_source, reference_root, reference_manifest, reference_fasta, reference_gtf, reference_transcript_fasta, reference_salmon_index, reference_hisat2_index, preset, design_type, condition_column, covariate, pairing_column, execution_profile, cpus, memory_gb)) or scaffold or yes
+    noninteractive = any(value is not None for value in (name, destination, species, input_type, fastq_samplesheet, counts, metadata, contrasts, layout, preprocessing, method, strandedness, reference_source, reference_root, reference_manifest, reference_fasta, reference_gtf, reference_transcript_fasta, reference_salmon_index, reference_hisat2_index, preset, design_type, condition_column, covariate, pair_id, execution_profile, cpus, memory_gb)) or scaffold or yes
     selected_managed_reference: LocalReference | None = None
     try:
         if not noninteractive and not _is_interactive_terminal():
@@ -504,7 +559,9 @@ def new_project(
                 preset = _wizard_choice("Analysis scope", [("qc", "Quantification + technical QC only"), ("L1", "Expression-level QC and exploratory analysis"), ("L2", "L1 plus differential expression and enrichment")], default="L1")
             else:
                 preset = _wizard_choice("Analysis scope", [("L1", "Expression-level QC and exploratory analysis"), ("L2", "L1 plus differential expression and enrichment")], default="L2")
-            design_type = "two_group" if preset == "qc" else _wizard_choice("Experimental design", [("two_group", "One two-level condition"), ("multi_group", "At least three condition levels"), ("paired", "Paired subject and condition design")], default="two_group")
+            design_type = "two_group" if preset == "qc" else _wizard_choice("Experimental design", [("two_group", "Unpaired two-level condition"), ("paired_two_group", "Biologically paired two-level condition"), ("multi_group", "At least three condition levels")], default="two_group")
+            if design_type == "paired_two_group" and metadata is None:
+                pair_id = typer.prompt("Pairing metadata column", default="patient")
             if preset != "qc" and metadata is not None:
                 fields_by_level, fields = _metadata_fields(metadata)
                 typer.echo("Imported metadata fields: " + "; ".join(f"{field}=[{', '.join(fields_by_level[field])}]" for field in fields))
@@ -513,11 +570,11 @@ def new_project(
                 covariate = []
                 if remaining and typer.confirm("Add a covariate to the design?", default=False):
                     covariate.append(_wizard_choice("Covariate", [(field, f"levels: {', '.join(fields_by_level[field]) or 'none'}") for field in remaining], default=remaining[0]))
-                if design_type == "paired":
+                if design_type == "paired_two_group":
                     candidates = [field for field in fields if field != condition_column]
                     if not candidates:
                         raise ProjectCreationError("Paired design needs a pairing field besides the condition field.")
-                    pairing_column = _wizard_choice("Pairing field", [(field, f"levels: {', '.join(fields_by_level[field]) or 'none'}") for field in candidates], default=candidates[0])
+                    pair_id = _wizard_choice("Pairing metadata column", [(field, f"levels: {', '.join(fields_by_level[field]) or 'none'}") for field in candidates], default=candidates[0])
             capacity = detect_local_resource_capacity()
             suggested_cpus, suggested_memory = suggested_local_resources(capacity)
             typer.echo("\nLocal execution resources\n-------------------------")
@@ -538,16 +595,20 @@ def new_project(
             raise ProjectCreationError("--species must be human or mouse.")
         normalized_input = InputType(input_type)
         normalized_preset = Preset.QC if preset.lower() == "qc" else Preset(preset)
-        normalized_design = DesignType(design_type)
+        # Keep the interim CLI spelling readable while all newly written
+        # projects use the M5A contract name.
+        normalized_design = DesignType("paired_two_group" if design_type == "paired" else design_type)
+        if normalized_design is DesignType.PAIRED_TWO_GROUP and (pair_id is None or not pair_id.strip()):
+            raise ProjectCreationError("paired_two_group requires an explicit --pair-id metadata column.")
         formula: str | None = None
         if normalized_preset is not Preset.QC and metadata is not None and condition_column is not None:
             fields_by_level, available_fields = _metadata_fields(metadata)
             selected_covariates = covariate or []
             required_fields = [*selected_covariates, condition_column]
-            if normalized_design is DesignType.PAIRED:
-                if pairing_column is None:
-                    raise ProjectCreationError("Paired imported design requires --pairing-column.")
-                required_fields.insert(0, pairing_column)
+            if normalized_design is DesignType.PAIRED_TWO_GROUP:
+                if pair_id is None:
+                    raise ProjectCreationError("paired_two_group imported design requires --pair-id.")
+                required_fields.insert(0, pair_id)
             missing_fields = [field for field in required_fields if field not in available_fields]
             if missing_fields:
                 raise ProjectCreationError("Selected design field(s) are not in imported metadata: " + ", ".join(missing_fields))
@@ -603,13 +664,13 @@ def new_project(
                     reference_source=None, reference_root=None, reference_manifest=None,
                     reference_fasta=None, reference_gtf=None, reference_transcript_fasta=None,
                     reference_salmon_index=None, reference_hisat2_index=None, preset=None,
-                    design_type=None, condition_column=None, covariate=None, pairing_column=None,
+                    design_type=None, condition_column=None, covariate=None, pair_id=None,
                     execution_profile=None, cpus=None, memory_gb=None,
                     scaffold=False, yes=False,
                 )
             typer.echo("Project creation cancelled; no project was written.")
             return
-        target = create_project(project_name=name, destination=destination, species=normalized_species, preset=normalized_preset, design_type=normalized_design, input_type=normalized_input, layout=normalized_layout, preprocessing=normalized_preprocessing, strandedness=normalized_strand, quantification_method=normalized_method, reference=reference, fastq_samplesheet=fastq_samplesheet, counts_file=counts, metadata_file=metadata, contrasts_file=contrasts, scaffold=scaffold, formula=formula, pairing_column=pairing_column, execution=execution)
+        target = create_project(project_name=name, destination=destination, species=normalized_species, preset=normalized_preset, design_type=normalized_design, input_type=normalized_input, layout=normalized_layout, preprocessing=normalized_preprocessing, strandedness=normalized_strand, quantification_method=normalized_method, reference=reference, fastq_samplesheet=fastq_samplesheet, counts_file=counts, metadata_file=metadata, contrasts_file=contrasts, scaffold=scaffold, formula=formula, pair_id=pair_id, execution=execution)
     except (ValueError, ProjectCreationError) as exc:
         typer.echo(f"ERROR: {exc}", err=True)
         raise typer.Exit(code=1) from exc

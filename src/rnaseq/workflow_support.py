@@ -24,27 +24,44 @@ SOURCE_IMPORT_LABELS = {
 
 
 REPORT_STYLES = """<style>
-figure { max-width: 100%; margin: 1rem 0; }
+*, *::before, *::after { box-sizing: border-box; }
+figure.report-figure-container {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin: 1rem 0;
+  overflow: visible;
+}
 img.report-figure {
   display: block;
   max-width: 100%;
   width: auto;
   height: auto;
   object-fit: contain;
+  margin-inline: auto;
+}
+@media print {
+  figure.report-figure-container, img.report-figure {
+    max-width: 100% !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
 }
 </style>"""
 
 
 _ENRICHMENT_REQUIRED_PATHS = {
     "gsea-go": (
-        "annotation.organism", "annotation.input_id_type", "annotation.minimum_mapping_rate",
+        "annotation.organism", "annotation.input_id_type", "annotation.target_id_type",
+        "annotation.mapping_warning_rate", "annotation.minimum_mapping_rate",
         "annotation.enrichment.gsea.minimum_ranked_genes", "annotation.enrichment.gsea.min_gs_size",
         "annotation.enrichment.gsea.max_gs_size", "annotation.enrichment.gsea.pvalue_cutoff",
         "annotation.enrichment.gsea.padj_cutoff", "annotation.enrichment.gsea.p_adjust_method",
         "annotation.enrichment.gsea.seed",
     ),
     "gsea-kegg": (
-        "annotation.organism", "annotation.input_id_type", "annotation.minimum_mapping_rate",
+        "annotation.organism", "annotation.input_id_type", "annotation.target_id_type",
+        "annotation.mapping_warning_rate", "annotation.minimum_mapping_rate",
         "annotation.enrichment.kegg.resource_provider", "annotation.enrichment.kegg.gsea.minimum_ranked_genes",
         "annotation.enrichment.kegg.gsea.pvalue_cutoff", "annotation.enrichment.kegg.gsea.padj_cutoff",
         "annotation.enrichment.kegg.gsea.p_adjust_method", "annotation.enrichment.kegg.gsea.min_gs_size",
@@ -107,12 +124,12 @@ def _samples(inputs: Path) -> list[str]:
     samples = manifest.get("samples")
     if not isinstance(samples, list) or not samples or not all(isinstance(item, str) and item for item in samples):
         raise ValueError("staged execution inputs has no valid sample list")
-    if samples != sorted(samples) or len(set(samples)) != len(samples):
-        raise ValueError("staged execution inputs sample list must be sorted and unique")
+    if len(set(samples)) != len(samples):
+        raise ValueError("staged execution inputs sample list must be unique")
     metadata = _staged_file(inputs_root, manifest.get("metadata"), "metadata")
     with metadata.open(encoding="utf-8", newline="") as handle:
         observed = [row.get("sample_id") for row in csv.DictReader(handle)]
-    if sorted(observed) != samples or len(set(observed)) != len(observed):
+    if observed != samples or len(set(observed)) != len(observed):
         raise ValueError("staged metadata sample IDs disagree with staged execution inputs sample list")
     return list(samples)
 
@@ -173,7 +190,7 @@ def l1_config(contract_path: Path, inputs: Path, output: Path) -> dict[str, Any]
         **_source_config(contract, inputs),
         "metadata": str(_staged_file(root, manifest.get("metadata"), "metadata")),
         "formula": project["design"]["formula"],
-        "pairing_column": project["design"].get("pairing_column"),
+        "pair_id": project["design"].get("pair_id", project["design"].get("pairing_column")),
         "samples": _samples(inputs),
         "output_dir": str(output),
         "filter": FILTER,
@@ -188,7 +205,7 @@ def l2_config(contract_path: Path, inputs: Path, l1: Path, output: Path) -> dict
         **_source_config(contract, inputs),
         "metadata": str(_staged_file(root, manifest.get("metadata"), "metadata")),
         "formula": project["design"]["formula"],
-        "pairing_column": project["design"].get("pairing_column"),
+        "pair_id": project["design"].get("pair_id", project["design"].get("pairing_column")),
         "samples": _samples(inputs),
         "output_dir": str(output),
         "filter": FILTER,
@@ -213,7 +230,7 @@ def _image_html(path: Path, caption: str) -> str:
         return f"<p>{escape(caption)}: not produced.</p>"
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return (
-        f"<figure><figcaption>{escape(caption)}</figcaption>"
+        f"<figure class='report-figure-container'><figcaption>{escape(caption)}</figcaption>"
         f"<img class='report-figure' alt='{escape(path.name)}' "
         f"src='data:image/png;base64,{encoded}'></figure>"
     )
@@ -285,7 +302,36 @@ def _value(mapping: dict[str, Any], name: str) -> str:
 def _require_usable_gsea_summary(summary: dict[str, Any], label: str) -> None:
     status = summary.get("status")
     if status not in {"SUCCESS", "NO_SIGNIFICANT_TERMS"}:
-        raise ValueError(f"final report cannot claim enabled {label} completed: backend status is {status!r}")
+        reason = summary.get("reason")
+        detail = f" Reason: {reason}" if reason else ""
+        raise ValueError(
+            f"final report cannot claim enabled {label} completed: backend status is {status!r}.{detail}"
+        )
+
+
+def _annotation_qc_report_lines(ranking: dict[str, Any]) -> list[str]:
+    """Render annotation QC without treating a warning as a failed backend."""
+
+    qc = ranking.get("annotation_qc")
+    if not isinstance(qc, dict):
+        return ["<li>Annotation mapping QC: not available (legacy backend summary).</li>"]
+    status = escape(str(qc.get("status", "not available")))
+    warning = _value(qc, "warning_threshold")
+    blocking = _value(qc, "blocking_threshold")
+    reason = escape(str(qc.get("reason", "not available")))
+    lines = [
+        "<li>Annotation mapping QC: "
+        f"<strong>{status}</strong>; warning threshold: {warning}; blocking threshold: {blocking}.</li>"
+    ]
+    if qc.get("status") == "WARNING":
+        lines.append(f"<li><strong>Annotation mapping warning:</strong> {reason}</li>")
+    return lines
+
+
+def _evaluated_terms(summary: dict[str, Any]) -> str:
+    """Prefer the explicit GSEA calculation count, with legacy fallback."""
+
+    return _value(summary, "evaluated_terms") if "evaluated_terms" in summary else _value(summary, "all_terms")
 
 
 def _report_l1_only(
@@ -445,10 +491,24 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
         _require_usable_gsea_summary(kegg_summary, "KEGG GSEA")
         go_by_contrast = {str(item.get("contrast_id")): item for item in go_summary.get("contrasts", []) if isinstance(item, dict)}
         kegg_by_contrast = {str(item.get("contrast_id")): item for item in kegg_summary.get("contrasts", []) if isinstance(item, dict)}
+        annotation = go_summary.get("annotation", {})
+        if not isinstance(annotation, dict):
+            annotation = {}
+        if annotation and go_summary.get("annotation_database") and go_summary.get("annotation_database_version"):
+            annotation_html = (
+                "<p>Annotation contract: "
+                f"{escape(str(annotation.get('input_id_type', 'not available')))} to "
+                f"{escape(str(annotation.get('target_id_type', 'not available')))}; database "
+                f"{escape(str(go_summary['annotation_database']))} "
+                f"{escape(str(go_summary['annotation_database_version']))}.</p>"
+            )
+        else:
+            annotation_html = "<p>Annotation contract: not available (legacy backend summary).</p>"
         sections.extend([
             "<h2>L2 — preranked GSEA</h2>",
             "<p>Enrichment method: GSEA. Gene-set resources: GO BP, GO MF, GO CC, KEGG.</p>",
             "<p>GSEA uses the unmodified DESeq2 statistic-ranked gene list; no DEG, adjusted-p-value, p-value, or fold-change prefilter is applied.</p>",
+            annotation_html,
         ])
         for contrast in contrasts:
             contrast_id = contrast["contrast_id"]
@@ -469,7 +529,8 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
                 f"<li>Mapping rate: {_value(ranking, 'mapping_rate')}</li>"
                 f"<li>Final ranked genes: {_value(ranking, 'final_ranked_genes')}</li>"
                 f"<li>Positive / negative statistics: {_value(ranking, 'positive_stats')} / {_value(ranking, 'negative_stats')}</li>"
-                f"<li>Tie handling: {escape(str(ranking.get('tie_handling', 'not available')))}</li>"
+                f"<li>Tie handling: {escape(str(ranking.get('tie_handling', 'not available')))}</li>",
+                *_annotation_qc_report_lines(ranking),
                 "</ul>",
                 f"<h3>GO GSEA: {escape(contrast_id)}</h3>",
             ])
@@ -488,7 +549,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
                 sections.extend([
                     f"<h4>{ontology}</h4>",
                     "<ul>"
-                    f"<li>Returned terms: {_value(outcome, 'all_terms')}</li>"
+                    f"<li>Evaluated terms: {_evaluated_terms(outcome)}</li>"
                     f"<li>Significant terms: {_value(outcome, 'significant_terms')}</li>"
                     f"<li>Positive / negative terms: {_value(outcome, 'positive_terms')} / {_value(outcome, 'negative_terms')}</li>"
                     f"<li>Client tables: <code>tables/l2/enrichment/gsea_go/{escape(contrast_id)}/{ontology}/</code></li>"
@@ -502,7 +563,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
             sections.extend([
                 f"<h3>KEGG GSEA: {escape(contrast_id)}</h3>",
                 "<ul>"
-                f"<li>Returned pathways: {_value(kegg_item, 'all_terms')}</li>"
+                f"<li>Evaluated pathways: {_evaluated_terms(kegg_item)}</li>"
                 f"<li>Significant pathways: {_value(kegg_item, 'significant_terms')}</li>"
                 f"<li>Positive / negative pathways: {_value(kegg_item, 'positive_terms')} / {_value(kegg_item, 'negative_terms')}</li>"
                 f"<li>Resource provider: {escape(str(kegg_summary.get('resource', {}).get('provider', 'not available')))}</li>"

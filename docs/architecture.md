@@ -42,6 +42,8 @@ The project preset is frozen as `analysis_level` in the downstream contract. Tha
 
 The graph does not infer L2 from the presence of contrasts, condition metadata, or an installed R module.
 
+`paired_two_group` is a specialization of the existing additive-design path, not a separate analysis pipeline. Its explicit `pair_id` column, formula, contrast-specific pair membership, complete-pair counts, and analyzed-sample counts are validated before execution and frozen into the input manifest and downstream contract. L1, the single DESeq2 L2 fit, explicit contrast extraction, and optional preranked GSEA then follow the same graph as unpaired projects.
+
 ## FASTQ boundary
 
 For `upstream.quantification.method: salmon`, the control plane invokes pinned nf-core/rnaseq 3.26.0 with Salmon pseudoalignment and a frozen params file. Its stable downstream handoff contains validated `quant.sf` and tx2gene material needed by tximport. For `hisat2_featurecounts`, a first-party Nextflow graph performs lane alignment, per-sample BAM merge/index, featureCounts and deterministic matrix assembly; it hands off a staged canonical integer matrix to `DESeqDataSetFromMatrix`. The downstream workflow receives a narrow task-staged bundle rather than arbitrary host paths from provenance.

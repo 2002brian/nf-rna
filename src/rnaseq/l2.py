@@ -99,17 +99,21 @@ def _guard_replicates(config: ProjectConfig, metadata_rows: tuple[dict[str, str]
                 f"Current contrast {contrast.contrast_id}: {contrast.denominator} n={len(denominator_rows)}, "
                 f"{contrast.numerator} n={len(numerator_rows)}. L1 QC remains available; L2 inference was not executed."
             )
-        if config.design.type is DesignType.PAIRED:
-            if "subject_id" not in metadata_rows[0]:
-                raise DownstreamExecutionError("Paired L2 inference requires metadata.subject_id.")
-            pairs: dict[str, set[str]] = {}
+        if config.design.type is DesignType.PAIRED_TWO_GROUP:
+            pair_id = config.design.pair_id
+            if pair_id is None or pair_id not in metadata_rows[0]:
+                raise DownstreamExecutionError("Paired L2 inference requires the declared design.pair_id metadata column.")
+            pairs: dict[str, list[str]] = {}
             for row in metadata_rows:
                 if row[contrast.factor] in (contrast.numerator, contrast.denominator):
-                    pairs.setdefault(row["subject_id"], set()).add(row[contrast.factor])
-            incomplete = sorted(subject for subject, levels in pairs.items() if levels != {contrast.numerator, contrast.denominator})
+                    pairs.setdefault(row[pair_id], []).append(row[contrast.factor])
+            incomplete = sorted(
+                pair for pair, levels in pairs.items()
+                if sorted(levels) != sorted([contrast.numerator, contrast.denominator])
+            )
             if incomplete or len(pairs) < 2:
                 detail = ", ".join(incomplete) if incomplete else "fewer than two complete pairs"
-                raise DownstreamExecutionError(f"Paired L2 inference requires at least two complete pairs; invalid subjects: {detail}")
+                raise DownstreamExecutionError(f"Paired L2 inference requires at least two complete pairs; invalid pair IDs: {detail}")
 
 
 def prepare_l2(report: ValidationReport, *, run_id: str | None) -> PreparedL2:
@@ -207,10 +211,40 @@ def _overall_report(summaries: list[dict[str, Any]]) -> str:
 
 def _provenance(prepared: PreparedL2, l1_summary: dict[str, Any]) -> dict[str, Any]:
     thresholds = prepared.config.thresholds
+    pairing: dict[str, Any] | None = None
+    if prepared.config.design.type is DesignType.PAIRED_TWO_GROUP:
+        pair_id = prepared.config.design.pair_id
+        assert pair_id is not None
+        contrast_stats = []
+        for contrast in prepared.contrasts:
+            grouped: dict[str, list[str]] = {}
+            for row in prepared.metadata_rows:
+                grouped.setdefault(row[pair_id], []).append(row[contrast.factor])
+            complete = sum(
+                sorted(levels) == sorted([contrast.numerator, contrast.denominator])
+                for levels in grouped.values()
+            )
+            contrast_stats.append(
+                {
+                    "contrast_id": contrast.contrast_id,
+                    "complete_pairs": complete,
+                    "analyzed_samples": complete * 2,
+                }
+            )
+        pairing = {
+            "pair_id": pair_id,
+            "unique_pair_ids": len({row[pair_id] for row in prepared.metadata_rows}),
+            "contrasts": contrast_stats,
+        }
     return {
         "pipeline": {"version": PIPELINE_VERSION, "analysis_level": "L2"},
         "input": prepared.l1.config,
-        "design": {"type": prepared.config.design.type.value, "formula": prepared.config.design.formula},
+        "design": {
+            "type": prepared.config.design.type.value,
+            "formula": prepared.config.design.formula,
+            **({"pair_id": prepared.config.design.pair_id} if prepared.config.design.pair_id else {}),
+            **({"pairing": pairing} if pairing is not None else {}),
+        },
         "contrasts": [{"contrast_id": item.contrast_id, "factor": item.factor, "numerator": item.numerator, "denominator": item.denominator} for item in prepared.contrasts],
         "filtering": L1_FILTER,
         "deseq2": {"model_fit_count": 1, "independent_filtering": True, "multiple_testing_method": "Benjamini-Hochberg (DESeq2 default)"},
@@ -233,6 +267,7 @@ def execute_l2(prepared: PreparedL2) -> L2Result:
     _state(state_path, status="RUNNING", started_at=started, completed_at=None)
     config = {
         **prepared.l1.config, "metadata": str(prepared.l1.metadata_path.resolve()), "formula": prepared.config.design.formula,
+        "pair_id": prepared.config.design.pair_id,
         "samples": list(prepared.l1.sample_ids), "output_dir": str(output.resolve()), "filter": L1_FILTER,
         "thresholds": {"padj": prepared.config.thresholds.padj, "abs_log2fc": prepared.config.thresholds.abs_log2fc},
         "contrasts": [{"contrast_id": item.contrast_id, "factor": item.factor, "numerator": item.numerator, "denominator": item.denominator} for item in prepared.contrasts],

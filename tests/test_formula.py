@@ -77,21 +77,21 @@ C3,C
     assert report.is_valid
 
 
-def test_paired_design_uses_explicit_pairing_column_first(project_factory):
+def test_paired_design_uses_explicit_pair_id_first(project_factory):
     config = deepcopy(base_config())
-    config["design"] = {"type": "paired", "formula": "~ subject + condition", "pairing_column": "subject"}
+    config["design"] = {"type": "paired_two_group", "formula": "~ subject + condition", "pair_id": "subject"}
     counts = "gene_id,S1C,S1T,S2C,S2T\nGeneA,1,2,3,4\n"
     metadata = "sample_id,subject,condition\nS1C,S1,C\nS1T,S1,T\nS2C,S2,C\nS2T,S2,T\n"
     contrasts = "contrast_id,factor,numerator,denominator\nT_vs_C,condition,T,C\n"
     report = validate_project(project_factory(config=config, counts=counts, metadata=metadata, contrasts=contrasts))
     assert report.is_valid
-    assert report.config.design.pairing_column == "subject"
+    assert report.config.design.pair_id == "subject"
 
 
 def test_paired_design_pairing_identity_is_independent_of_covariate_order(project_factory):
     config = deepcopy(base_config())
     config["design"] = {
-        "type": "paired", "formula": "~ batch + subject + condition", "pairing_column": "subject",
+        "type": "paired_two_group", "formula": "~ batch + subject + condition", "pair_id": "subject",
     }
     counts = "gene_id,S1C,S1T,S2C,S2T\nGeneA,1,2,3,4\n"
     metadata = (
@@ -101,7 +101,7 @@ def test_paired_design_pairing_identity_is_independent_of_covariate_order(projec
     contrasts = "contrast_id,factor,numerator,denominator\nT_vs_C,condition,T,C\n"
     report = validate_project(project_factory(config=config, counts=counts, metadata=metadata, contrasts=contrasts))
     assert report.is_valid
-    assert report.config.design.pairing_column == "subject"
+    assert report.config.design.pair_id == "subject"
 
 
 @pytest.mark.parametrize(
@@ -113,19 +113,22 @@ def test_paired_design_pairing_identity_is_independent_of_covariate_order(projec
 )
 def test_paired_design_rejects_missing_or_duplicate_pair_condition(project_factory, metadata):
     config = deepcopy(base_config())
-    config["design"] = {"type": "paired", "formula": "~ subject + condition", "pairing_column": "subject"}
+    config["design"] = {"type": "paired_two_group", "formula": "~ subject + condition", "pair_id": "subject"}
     samples = [line.split(",", 1)[0] for line in metadata.splitlines()[1:]]
     counts = "gene_id," + ",".join(samples) + "\nGeneA," + ",".join("1" for _ in samples) + "\n"
     contrasts = "contrast_id,factor,numerator,denominator\nT_vs_C,condition,T,C\n"
     report = validate_project(project_factory(config=config, counts=counts, metadata=metadata, contrasts=contrasts))
     assert not report.is_valid
-    assert "incomplete_pair" in codes(report)
+    assert {
+        "pair_missing_numerator", "pair_missing_denominator",
+        "duplicate_pair_numerator", "duplicate_pair_denominator",
+    } & codes(report)
 
 
 def test_rank_deficient_additive_design_is_rejected_actionably(project_factory):
     config = deepcopy(base_config())
     config["design"] = {
-        "type": "paired", "formula": "~ subject + batch + condition", "pairing_column": "subject",
+        "type": "paired_two_group", "formula": "~ subject + batch + condition", "pair_id": "subject",
     }
     counts = "gene_id,S1C,S1T,S2C,S2T\nGeneA,1,2,3,4\n"
     metadata = (
@@ -141,4 +144,4 @@ def test_rank_deficient_additive_design_is_rejected_actionably(project_factory):
 def test_valid_unpaired_design_remains_valid(project_factory):
     report = validate_project(project_factory())
     assert report.is_valid
-    assert report.config.design.pairing_column is None
+    assert report.config.design.pair_id is None

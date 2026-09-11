@@ -1,0 +1,6 @@
+name: rnaseq
+channels:
+  - conda-forge
+dependencies:
+  # Linux-only runtime support required by Nextflow task metric collection.
+  - procps-ng

@@ -34,8 +34,8 @@ stats_for <- function(ids) {
 tested_stats <- stats_for(source_ids)
 strip_targets <- function(value) { value$targets <- NULL; value }
 mapping_summary <- list(tested = strip_targets(tested_stats))
-if (tested_stats$mapping_rate < cfg$annotation$minimum_mapping_rate) {
-  reason <- paste0("GO enrichment blocked. Mapped ", sprintf("%.1f%%", 100 * tested_stats$mapping_rate), " of tested genes. Required minimum: ", sprintf("%.1f%%", 100 * cfg$annotation$minimum_mapping_rate), ". Review annotation organism and input identifier type.")
+if (tested_stats$mapping_rate < cfg$annotation$mapping_warning_rate) {
+  reason <- paste0("GO enrichment blocked. Mapped ", sprintf("%.1f%%", 100 * tested_stats$mapping_rate), " of tested genes. Required minimum: ", sprintf("%.1f%%", 100 * cfg$annotation$mapping_warning_rate), ". Review annotation organism and input identifier type.")
   summary <- list(status = "BLOCKED", reason = reason, mapping = mapping_summary, annotation_database = cfg$orgdb_package, annotation_database_version = as.character(packageVersion(cfg$orgdb_package)), clusterProfiler_version = as.character(packageVersion("clusterProfiler")), contrasts = list())
   write(toJSON(summary, auto_unbox = TRUE, pretty = TRUE), file.path(cfg$output_dir, "go_backend_summary.json")); quit(status = 0)
 }

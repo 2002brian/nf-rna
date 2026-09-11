@@ -85,7 +85,7 @@ def _mapping_report(summary: dict[str, Any], annotation: AnnotationConfig) -> st
         f"- Tested genes: {tested['source_genes']}", f"- Mapped source genes: {tested['mapped_source_genes']}",
         f"- Unique mapped target genes: {tested['unique_target_genes']}", f"- Unmapped source genes: {tested['unmapped_source_genes']}",
         f"- One-to-many source IDs: {tested['one_to_many_source_ids']}", f"- Duplicate target IDs: {tested['duplicate_target_ids']}",
-        f"- Mapping rate: {tested['mapping_rate']:.1%}", f"- Required minimum mapping rate: {annotation.minimum_mapping_rate:.1%}", "",
+        f"- Mapping rate: {tested['mapping_rate']:.1%}", f"- Required minimum mapping rate: {annotation.mapping_warning_rate:.1%}", "",
         "", "## Contrast foregrounds", "",
     ]
     for contrast in summary.get("contrasts", []):
@@ -169,7 +169,7 @@ def execute_go(prepared: PreparedGo) -> GoResult:
         "annotation_database_version": summary.get("annotation_database_version"),
         "clusterProfiler_version": summary.get("clusterProfiler_version"),
         "mapping_policy": "retain all valid Entrez targets for one-to-many source IDs; deduplicate targets before ORA",
-        "mapping_rate_guardrail": prepared.annotation.minimum_mapping_rate,
+        "mapping_rate_guardrail": prepared.annotation.mapping_warning_rate,
         "minimum_mapped_foreground": prepared.annotation.minimum_mapped_foreground,
         "universe": summary["mapping"]["tested"],
         "thresholds": prepared.annotation.enrichment.go.model_dump(),

@@ -72,7 +72,7 @@ input:
 
 `pretrimmed` is appropriate only when the reads were already adapter/quality trimmed; it causes nf-core trimming to be skipped. Use `raw` otherwise. Configure an execution-ready iGenomes or managed local reference; do not commit a real reference root, index, or FASTQs.
 
-For a biological paired/repeated design, declare the block explicitly, for example `design: {type: paired, formula: "~ subject_id + condition", pairing_column: subject_id}`. This is unrelated to `input.layout: paired_end`.
+For a biological paired two-group design, declare the block explicitly, for example `design: {type: paired_two_group, formula: "~ patient + condition", pair_id: patient}`. Each pair must contain exactly one sample at each requested contrast level, and L2 requires at least two complete pairs. This is unrelated to `input.layout: paired_end`; biological pairing is never inferred.
 
 For a final production-intended run, use a reviewed managed reference and immutable runtime selection:
 

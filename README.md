@@ -108,7 +108,31 @@ gene-count matrix + metadata + contrasts → nf-rna → L1/L2
 
 The raw-count route accepts a non-negative integral count matrix with `gene_id`, extensible metadata, and explicit directional contrasts. It is useful when quantification was performed elsewhere and you need validated QC, DESeq2, optional GSEA, reporting, and provenance without rerunning read processing.
 
-Biological pairing is explicit: paired designs store `design.pairing_column`, validate one observation per requested condition in every block, and reject a rank-deficient additive model matrix before execution. This setting is independent of paired-end versus single-end FASTQ layout. Reports identify the actual import route as Salmon/tximport, featureCounts raw counts, or imported raw counts.
+Biological pairing is explicit: `design.type: paired_two_group` stores `design.pair_id`, validates exactly one numerator and one denominator observation in every pair for each contrast, requires at least two complete biological pairs for L2, and rejects a rank-deficient additive model matrix before execution. nf-rna never infers pairing from sample names, row order, or FASTQ layout and never silently drops incomplete pairs. This is independent of paired-end versus single-end sequencing. Reports identify the actual import route as Salmon/tximport, featureCounts raw counts, or imported raw counts.
+
+Minimal paired contract:
+
+```yaml
+design:
+  type: paired_two_group
+  formula: "~ patient + condition"
+  pair_id: patient
+```
+
+```csv
+sample_id,patient,condition
+P01_Primary,P01,Primary
+P01_Metastasis,P01,Metastasis
+P02_Primary,P02,Primary
+P02_Metastasis,P02,Metastasis
+```
+
+```csv
+contrast_id,factor,numerator,denominator
+Metastasis_vs_Primary,condition,Metastasis,Primary
+```
+
+DESeq2 fits one model using the declared formula (`~ patient + condition`) and extracts the existing explicit contrast (`condition`, `Metastasis`, `Primary`). It does not fit per-patient objects or calculate pair differences manually. See `examples/paired_two_group`.
 
 Production reference acceptance is opt-in with `reference.acceptance: production`. It accepts only a schema-1.1 managed local manifest deliberately marked `purpose: production`, with verified asset hashes and a complete selected-backend index bound to the same FASTA/GTF identities. Legacy and synthetic manifests still work in standard mode but are never silently promoted. The first documented human identity is Ensembl release 116, GRCh38.p14; no reference is downloaded in this repository.
 
@@ -126,7 +150,7 @@ conda activate nf-rna
 docker build -t rnaseq-control-plane:latest .
 ```
 
-Python 3.11+ is required. The shared `environment.yml` is portable across Linux/WSL and Apple Silicon macOS; it deliberately contains no Linux-only `procps-ng` dependency. Install Nextflow before using the FASTQ route, and ensure Docker Desktop or another compatible Docker daemon is running. `latest` is permitted only for explicitly non-production development. Set `runtime.control_plane_image` to a digest or versioned tag for production acceptance; `rnaseq doctor PROJECT` reports both requested and observed identity.
+Python 3.11+ is required. The shared `environment.yml` is portable across Linux/WSL and Apple Silicon macOS; it deliberately contains no Linux-only `procps-ng` dependency. The Docker build applies `environment.docker.yml`, which installs GNU/procps `ps` for Nextflow task metrics and verifies it during the image build. Install Nextflow before using the FASTQ route, and ensure Docker Desktop or another compatible Docker daemon is running. `latest` is permitted only for explicitly non-production development. Set `runtime.control_plane_image` to a digest or versioned tag for production acceptance; `rnaseq doctor PROJECT` reports both requested and observed identity.
 
 Prebuilt Salmon and HISAT2 indexes are first-class managed-reference inputs:
 declare their root-relative path/prefix, version, strategy, and matching source
@@ -177,7 +201,7 @@ genome reference.
 rnaseq doctor
 ```
 
-`rnaseq doctor` reports non-mutating prerequisite checks for the local runtime; with a project path it also evaluates project and reference readiness. It reports host and Docker CPU/RAM, the selected local ceiling, and free space at the Nextflow work location. A warning means Docker exposes less than the requested 8 CPUs or 12 GiB.
+`rnaseq doctor` reports non-mutating prerequisite checks for the local runtime; with a project path it also evaluates project and reference readiness. It reports host capacity, Docker capacity, the requested project budget, and the effective local budget. Docker Desktop/WSL allocations participate in the effective ceiling; native Linux uses the host ceiling. Execution fails before launch only when the effective budget cannot satisfy the largest 8 CPU / 12 GiB local process contract.
 
 Execution is currently local-only. Workstation/HPC and SLURM profiles are intentionally deferred and are not claimed by version 0.5.1.
 

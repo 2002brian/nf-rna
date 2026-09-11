@@ -106,7 +106,31 @@ gene-count matrix + metadata + contrasts → nf-rna → L1/L2
 
 raw-count route 接受第一欄為 `gene_id` 的非負整數 count matrix、可擴充的 metadata，以及明確具有方向性的 contrast。若 quantification 已由其他 workflow 完成，但仍需要經驗證的 QC、DESeq2、選用的 GSEA、report 與 provenance，而不想重新處理 reads，此路徑最合適。
 
-生物學 pairing 必須明確設定：paired design 會保存 `design.pairing_column`，驗證每個 block 對 requested condition 各有一個 observation，並在 execution 前拒絕 rank-deficient additive model matrix。這與 FASTQ 的 paired-end／single-end layout 無關。Report 會依實際來源標示 Salmon/tximport、featureCounts raw counts 或 imported raw counts。
+生物學 pairing 必須明確設定：`design.type: paired_two_group` 會保存 `design.pair_id`，針對每個 contrast 驗證每個 pair 恰好各有一個 numerator 與 denominator observation，L2 至少需要兩個完整 biological pairs，並在 execution 前拒絕 rank-deficient additive model matrix。nf-rna 不會從 sample name、metadata row order 或 FASTQ layout 推測 pairing，也不會默默排除不完整的 pair。這與 FASTQ 的 paired-end／single-end sequencing layout 無關。Report 會依實際來源標示 Salmon/tximport、featureCounts raw counts 或 imported raw counts。
+
+最小 paired contract：
+
+```yaml
+design:
+  type: paired_two_group
+  formula: "~ patient + condition"
+  pair_id: patient
+```
+
+```csv
+sample_id,patient,condition
+P01_Primary,P01,Primary
+P01_Metastasis,P01,Metastasis
+P02_Primary,P02,Primary
+P02_Metastasis,P02,Metastasis
+```
+
+```csv
+contrast_id,factor,numerator,denominator
+Metastasis_vs_Primary,condition,Metastasis,Primary
+```
+
+DESeq2 以宣告的 formula（`~ patient + condition`）建立單一 model，再用既有 explicit contrast（`condition`, `Metastasis`, `Primary`）取出結果；不會為每位 patient 建立獨立物件，也不會手動計算 pair difference。完整範例見 `examples/paired_two_group`。
 
 Production reference acceptance 以 `reference.acceptance: production` 明確啟用，只接受 schema 1.1、經人工指定 `purpose: production` 的 managed local manifest；所有 asset hash 必須通過驗證，所選 backend index 也必須完整並綁定相同 FASTA/GTF identity。Legacy 與 synthetic manifest 在 standard mode 仍可使用，但不會被靜默升級為 production。第一個文件化的人類 identity 為 Ensembl release 116、GRCh38.p14；像 Mouse GRCm39 這類沒有 patch release 的 assembly 應使用 `assembly_patch: null` 或省略該欄位，顯示為 `GRCm39`。本 repository 不下載 reference。
 
@@ -124,7 +148,7 @@ conda activate nf-rna
 docker build -t rnaseq-control-plane:latest .
 ```
 
-需要 Python 3.11 以上版本。共用的 `environment.yml` 支援 Linux/WSL 與 Apple Silicon macOS，並刻意不含 Linux-only 的 `procps-ng`。使用 FASTQ route 前，請安裝 Nextflow，並確認 Docker Desktop 或其他相容的 Docker daemon 已啟動。`latest` 僅可用於明確的 non-production 開發模式；production acceptance 必須將 `runtime.control_plane_image` 設為 digest 或 versioned tag，`rnaseq doctor PROJECT` 會同時報告 requested 與 observed identity。
+需要 Python 3.11 以上版本。共用的 `environment.yml` 支援 Linux/WSL 與 Apple Silicon macOS，並刻意不含 Linux-only 的 `procps-ng`。Docker build 會另外套用 `environment.docker.yml`，安裝 Nextflow task metrics 所需的 GNU/procps `ps`，並在 image build 時驗證。使用 FASTQ route 前，請安裝 Nextflow，並確認 Docker Desktop 或其他相容的 Docker daemon 已啟動。`latest` 僅可用於明確的 non-production 開發模式；production acceptance 必須將 `runtime.control_plane_image` 設為 digest 或 versioned tag，`rnaseq doctor PROJECT` 會同時報告 requested 與 observed identity。
 
 Prebuilt Salmon 與 HISAT2 index 是一級 managed-reference 輸入：請在
 `reference_manifest.yaml` 宣告 root-relative path/prefix、version、strategy 與相符的 source checksum。下列 builders 僅在需要由 nf-rna 建立新 index 時使用；它們是 host-native、不使用 Docker，也不需要 RSEM：
@@ -150,7 +174,7 @@ production Human Ensembl 116/GRCh38.p14 的 genome-only HISAT2 bundle 會在 run
 rnaseq doctor
 ```
 
-`rnaseq doctor` 會以不變更系統狀態的方式檢查 local runtime prerequisite；提供專案路徑時，也會評估 project 與 reference readiness。它會報告 host 與 Docker 的 CPU/RAM、選定的 local ceiling，以及 Nextflow work location 的可用空間；Docker 少於要求的 8 CPU 或 12 GiB 時會提出警告。
+`rnaseq doctor` 會以不變更系統狀態的方式檢查 local runtime prerequisite；提供專案路徑時，也會評估 project 與 reference readiness。它會分別報告 host、Docker、project requested budget 與 effective local budget。Docker Desktop／WSL allocation 會參與 effective ceiling；native Linux 則使用 host ceiling。只有 effective budget 無法容納最大的 8 CPU／12 GiB local process contract 時，execution 才會在啟動前失敗。
 
 目前僅支援 local execution；workstation/HPC 與 SLURM profile 明確延後，0.5.1 不宣稱支援。
 

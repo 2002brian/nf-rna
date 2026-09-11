@@ -7,9 +7,9 @@ metadata <- read.csv(cfg$metadata, check.names = FALSE, stringsAsFactors = FALSE
 rownames(metadata) <- metadata$sample_id
 samples <- unlist(cfg$samples, use.names = FALSE)
 metadata <- metadata[samples, , drop = FALSE]
-if (!is.null(cfg$pairing_column)) {
-  if (!(cfg$pairing_column %in% colnames(metadata))) stop("configured pairing_column is absent from metadata")
-  metadata[[cfg$pairing_column]] <- factor(metadata[[cfg$pairing_column]])
+if (!is.null(cfg$pair_id)) {
+  if (!(cfg$pair_id %in% colnames(metadata))) stop("configured pair_id is absent from metadata")
+  metadata[[cfg$pair_id]] <- factor(metadata[[cfg$pair_id]])
 }
 for (factor_name in unique(vapply(cfg$contrasts, function(item) item$factor, character(1)))) {
   if (!(factor_name %in% colnames(metadata))) stop(paste("contrast factor is absent from metadata:", factor_name))

@@ -8,18 +8,19 @@ from pathlib import Path
 import pytest
 
 from rnaseq.workflow_support import _ENRICHMENT_REQUIRED_PATHS
+from rnaseq.execution import ResourceContract, render_local_resource_config
 
 
 ROOT = Path(__file__).parents[1]
 WORKFLOW = ROOT / "workflow"
 
 
-def test_downstream_workflow_serializes_only_the_two_internal_gsea_backends():
+def test_downstream_workflow_allows_independent_gsea_backends_to_share_the_budget():
     text = (WORKFLOW / "main.nf").read_text(encoding="utf-8")
     match = re.search(r"process ENRICHMENT_ANALYSIS \{(?P<body>.*?)^\}", text, flags=re.DOTALL | re.MULTILINE)
     assert match is not None
     body = match.group("body")
-    assert re.search(r"^\s*maxForks\s+1\s*$", body, flags=re.MULTILINE)
+    assert "maxForks" not in body
     assert 'publishDir "${params.outdir}/l2", mode: \'copy\', overwrite: false' in body
     assert "publishDir params.outdir, mode: 'copy', overwrite: false" not in body
     assert "tuple val(module), path('enrichment/*')" in body
@@ -85,16 +86,37 @@ def test_all_downstream_processes_use_the_doctor_checked_runtime_image():
     assert "rnaseq-downstream:latest" not in config
 
 
-def test_downstream_resource_contracts_are_explicit_and_keep_gsea_serialized():
+def test_downstream_resource_contracts_are_explicit_without_artificial_serialization():
     config = (WORKFLOW / "nextflow.config").read_text(encoding="utf-8")
     assert "executor {\n  cpus = 8\n  memory = '12 GB'\n}" in config
     assert "resourceLimits = [cpus: 8, memory: '12 GB', time: '12 h']" in config
     for process in ("L1_ANALYSIS", "L2_ANALYSIS", "ENRICHMENT_ANALYSIS", "TECHNICAL_REPORT", "TECHNICAL_REPORT_L1"):
         assert f"withName: {process}" in config
-    assert "withName: L1_ANALYSIS { cpus = 1; memory = '2 GB'; time = '2 h'; maxForks = 1 }" in config
-    assert "withName: ENRICHMENT_ANALYSIS { cpus = 4; memory = '8 GB'; time = '8 h'; maxForks = 1 }" in config
+    assert "withName: L1_ANALYSIS { cpus = 1; memory = '2 GB'; time = '2 h' }" in config
+    assert "withName: ENRICHMENT_ANALYSIS { cpus = 4; memory = '8 GB'; time = '8 h' }" in config
+    assert "maxForks" not in config
     main = (WORKFLOW / "main.nf").read_text(encoding="utf-8")
-    assert re.search(r"process ENRICHMENT_ANALYSIS \{(?P<body>.*?)maxForks 1", main, flags=re.DOTALL)
+    assert not re.search(r"process ENRICHMENT_ANALYSIS \{(?P<body>.*?)maxForks", main, flags=re.DOTALL)
+
+
+def test_sample_level_hisat2_workflow_has_no_fixed_parallelism_cap():
+    text = (WORKFLOW / "hisat2_featurecounts.nf").read_text(encoding="utf-8")
+    assert "maxForks" not in text
+
+
+def test_frozen_effective_budget_overrides_only_aggregate_nextflow_limits(tmp_path):
+    if shutil.which("nextflow") is None:
+        pytest.skip("Nextflow unavailable")
+    frozen = tmp_path / "effective.config"
+    frozen.write_text(render_local_resource_config(ResourceContract("EFFECTIVE_LOCAL", 16, 32, 12)), encoding="utf-8")
+    result = subprocess.run(
+        ["nextflow", "-c", str(frozen), "config", "-profile", "local", str(WORKFLOW)],
+        cwd=ROOT, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "cpus = 16" in result.stdout and "memory = '32.GB'" in result.stdout
+    assert "withName:ENRICHMENT_ANALYSIS" in result.stdout and "cpus = 4" in result.stdout
+    assert "maxForks" not in result.stdout
 
 
 def test_downstream_workflow_uses_the_frozen_analysis_level_to_gate_l2_and_gsea():

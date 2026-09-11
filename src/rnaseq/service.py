@@ -30,6 +30,7 @@ from rnaseq.execution import (
     CONTAINER_PROFILE,
     LOCAL_PROFILE,
     PreparedRun,
+    EffectiveResourceBudget,
     ExecutionWorkspace,
     _validate_custom_reference_files,
     build_nextflow_command,
@@ -42,6 +43,7 @@ from rnaseq.execution import (
     generate_handoff_manifest,
     generate_hisat2_featurecounts_handoff,
     inspect_container_image,
+    effective_resource_budget,
     resolved_upstream_implementation,
     nfcore_runtime_params,
     prepare_execution_workspace,
@@ -51,10 +53,15 @@ from rnaseq.execution import (
     require_fresh_plan,
     resolve_execution_workspace,
     runtime_snapshot,
+    validate_effective_resource_budget,
+    validate_local_execution_budget,
+    detect_local_resource_capacity,
+    ResourceContract,
+    LOCAL_RESOURCE_CEILING,
 )
 from rnaseq.models import FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, production_enrichment_backends
 from rnaseq.hisat2_featurecounts import FASTP_IMAGE, FASTP_VERSION, FASTQC_IMAGE, FASTQC_VERSION, HISAT2_IMAGE, HISAT2_VERSION, MULTIQC_IMAGE, MULTIQC_VERSION, SAMTOOLS_IMAGE, SAMTOOLS_VERSION, SUBREAD_IMAGE, SUBREAD_VERSION
-from rnaseq.planner import render_manifest
+from rnaseq.planner import pairing_contract, render_manifest
 from rnaseq.validators import ValidationReport
 
 CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -237,7 +244,7 @@ def _frozen_sample_ids(metadata: Path) -> tuple[str, ...]:
     samples = [row.get("sample_id") for row in rows]
     if not samples or any(not isinstance(sample, str) or not sample for sample in samples) or len(set(samples)) != len(samples):
         raise UpstreamExecutionError("Frozen metadata must contain unique, nonblank sample_id values for downstream staging.")
-    return tuple(sorted(samples))
+    return tuple(samples)
 
 
 def resolve_downstream_inputs(run: CaseRun) -> ResolvedDownstreamInputs:
@@ -518,7 +525,10 @@ def _staged_fastq_samplesheet(report: ValidationReport, fastq_root: Path) -> str
     return text.getvalue()
 
 
-def freeze_case_inputs(report: ValidationReport, run: CaseRun, *, profile: str, command: list[str]) -> FrozenInputs:
+def freeze_case_inputs(
+    report: ValidationReport, run: CaseRun, *, profile: str, command: list[str],
+    resources: EffectiveResourceBudget | None = None,
+) -> FrozenInputs:
     """Copy every mutable analysis input into the run before any compute starts."""
 
     assert report.loaded is not None and report.config is not None
@@ -600,7 +610,12 @@ def freeze_case_inputs(report: ValidationReport, run: CaseRun, *, profile: str, 
         # This single path-free config is passed to Salmon, HISAT2/featureCounts,
         # and the first-party downstream workflow for every local FASTQ run.
         runtime = frozen / "nfcore.local.config"
-        _write_text(runtime, render_local_resource_config(project_execution_budget(report.config)))
+        resolved = resources or effective_resource_budget(
+            runtime_snapshot(report.config.runtime.control_plane_image), project_execution_budget(report.config)
+        )
+        _write_text(runtime, render_local_resource_config(ResourceContract(
+            "EFFECTIVE_LOCAL", resolved.effective_cpus, resolved.effective_memory_gib, LOCAL_RESOURCE_CEILING.time_hours
+        )))
 
     execution = {
         "case_id": run.case_id,
@@ -654,6 +669,11 @@ def freeze_case_inputs(report: ValidationReport, run: CaseRun, *, profile: str, 
         # Downstream tasks must never infer L2 from contrasts or metadata.
         "analysis_level": report.config.project.preset.value,
         "analysis": report.config.analysis.model_dump(mode="json") if report.config.analysis else {"enrichment": []},
+        "design": {
+            "type": report.config.design.type.value,
+            "formula": report.config.design.formula,
+            **({"pair_id": report.config.design.pair_id, "pairing": pairing_contract(report)} if report.config.design.pair_id else {}),
+        },
         # This is the immutable, normalized enrichment input for downstream
         # tasks.  Do not make those tasks re-read mutable project.yaml.
         "annotation": report.config.annotation.model_dump(mode="json") if report.config.annotation else None,
@@ -672,6 +692,7 @@ def _update_contract(contract_path: Path, mutate: dict[str, Any]) -> None:
 
 def _provenance(
     report: ValidationReport, run: CaseRun, *, profile: str, command: list[str], workspace: ExecutionWorkspace,
+    resources: EffectiveResourceBudget | None = None,
 ) -> dict[str, Any]:
     git_commit: str | None = None
     try:
@@ -684,6 +705,7 @@ def _provenance(
     nextflow = check_nextflow()
     requested_image = report.config.runtime.control_plane_image if report.config else CONTROL_PLANE_IMAGE
     runtime = runtime_snapshot(requested_image)
+    resolved_resources = resources or effective_resource_budget(runtime, project_execution_budget(report.config))
     method = report.config.upstream.quantification.method if report.config and report.config.upstream.quantification else None
     def tool_identity(version: str, image: str) -> dict[str, object]:
         return {"version": version, **inspect_container_image(image)}
@@ -723,11 +745,7 @@ def _provenance(
         "container_image": control_plane,
         "production_intended": bool(report.config and report.config.reference.acceptance == "production"),
         "runtime_resources": {
-            "selected_local_ceiling": {
-                "cpus": report.config.execution.max_cpus,
-                "memory_gib": report.config.execution.max_memory_gb,
-                "one_project_at_a_time": True,
-            },
+            **resolved_resources.as_dict(),
             "host_os": runtime.host_os,
             "host_architecture": runtime.host_architecture,
             "logical_cpus": runtime.logical_cpus,
@@ -748,6 +766,11 @@ def _provenance(
         "execution_launch_dir": str(workspace.launch_dir),
         "execution_work_dir": str(workspace.work_dir),
         "input_manifest_sha256": _sha256(run.run_dir / "frozen" / "input_manifest.yaml"),
+        "design": {
+            "type": report.config.design.type.value,
+            "formula": report.config.design.formula,
+            **({"pair_id": report.config.design.pair_id, "pairing": pairing_contract(report)} if report.config.design.pair_id else {}),
+        } if report.config is not None else None,
         "frozen_project_sha256": _sha256(run.run_dir / "frozen" / "project.yaml"),
         "reference": (
             report.local_reference.provenance()
@@ -1103,11 +1126,18 @@ def sanitize_completed_delivery(run_dir: Path) -> Path:
     return delivery
 
 
-def prepare_service_run(report: ValidationReport, *, profile: str) -> None:
+def prepare_service_run(report: ValidationReport, *, profile: str) -> EffectiveResourceBudget:
     if profile != LOCAL_PROFILE:
         raise ExecutionPreflightError("Only '--profile local' is implemented; server profiles are configuration placeholders.")
     if not report.is_valid or report.config is None:
         raise ExecutionPreflightError("Execution is blocked because validation failed.")
+    validate_local_execution_budget(
+        report.config.execution.max_cpus, report.config.execution.max_memory_gb, detect_local_resource_capacity()
+    )
+    resources = effective_resource_budget(
+        runtime_snapshot(report.config.runtime.control_plane_image), project_execution_budget(report.config)
+    )
+    validate_effective_resource_budget(resources)
     require_fresh_plan(report)
     if report.config.input.type is InputType.FASTQ:
         if not report.execution_ready:
@@ -1129,6 +1159,7 @@ def prepare_service_run(report: ValidationReport, *, profile: str) -> None:
                 "Production-intended execution requires an observed immutable control-plane image ID/digest; "
                 f"Docker could not establish one for {requested_image}."
             )
+    return resources
 
 
 def reuse_upstream_if_compatible(run: CaseRun, frozen: FrozenInputs, reference: str) -> str:
@@ -1165,17 +1196,17 @@ def execute_service_run(
 ) -> CaseRun:
     """Run the complete service lifecycle; final success requires downstream completion."""
 
-    prepare_service_run(report, profile=profile)
+    resources = prepare_service_run(report, profile=profile)
     run = create_case_run(report, case_id)
     command = ["rnaseq", "run", str(report.project_dir), "--case-id", case_id, "--profile", profile]
     if reuse_upstream:
         command.extend(["--reuse-upstream", reuse_upstream])
     try:
         workspace = resolve_execution_workspace(run.case_id, run.run_id)
-        frozen = freeze_case_inputs(report, run, profile=profile, command=command)
+        frozen = freeze_case_inputs(report, run, profile=profile, command=command, resources=resources)
         _write_yaml(
             run.run_dir / "provenance" / "run_provenance.yaml",
-            _provenance(report, run, profile=profile, command=command, workspace=workspace),
+            _provenance(report, run, profile=profile, command=command, workspace=workspace, resources=resources),
         )
         prepare_execution_workspace(workspace)
         _write_state(run, "RUNNING", phase="freeze", command=command)

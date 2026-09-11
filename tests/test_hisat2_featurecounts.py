@@ -68,14 +68,15 @@ def test_runtime_splice_argument_is_strategy_gated_in_the_hisat2_workflow():
 
 def test_hisat2_workflow_binds_supported_tool_threads_and_local_resources():
     text = (Path(__file__).parents[1] / "workflow" / "hisat2_featurecounts.nf").read_text(encoding="utf-8")
-    for process, cpus, memory, forks in (
-        ("FASTP_PREPARE", 4, "6 GB", 1), ("HISAT2_ALIGN", 4, "6 GB", 1),
-        ("SORT_LANE_BAM", 4, "6 GB", 2), ("MERGE_AND_INDEX", 4, "6 GB", 2),
-        ("PREPARE_COUNT_BAM", 2, "3 GB", 2), ("FEATURECOUNTS", 4, "6 GB", 2),
-        ("ASSEMBLE_COUNTS", 1, "2 GB", 1), ("MULTIQC", 1, "2 GB", 1),
+    for process, cpus, memory in (
+        ("FASTP_PREPARE", 4, "6 GB"), ("HISAT2_ALIGN", 4, "6 GB"),
+        ("SORT_LANE_BAM", 4, "6 GB"), ("MERGE_AND_INDEX", 4, "6 GB"),
+        ("PREPARE_COUNT_BAM", 2, "3 GB"), ("FEATURECOUNTS", 4, "6 GB"),
+        ("ASSEMBLE_COUNTS", 1, "2 GB"), ("MULTIQC", 1, "2 GB"),
     ):
         section = text.split(f"process {process} {{", 1)[1].split("\nprocess ", 1)[0]
-        assert f"cpus {cpus}" in section and f"memory '{memory}'" in section and f"maxForks {forks}" in section
+        assert f"cpus {cpus}" in section and f"memory '{memory}'" in section
+        assert "maxForks" not in section
     assert "fastp --thread ${task.cpus}" in text
     assert "hisat2 -p ${task.cpus}" in text
     assert "samtools sort -@ ${task.cpus}" in text

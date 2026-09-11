@@ -6,6 +6,7 @@ import csv
 import hashlib
 import os
 import tempfile
+from dataclasses import asdict
 from io import StringIO
 from pathlib import Path
 
@@ -103,6 +104,14 @@ def _contrast_lines(report: ValidationReport) -> list[str]:
     return lines
 
 
+def pairing_contract(report: ValidationReport) -> dict[str, object] | None:
+    """Return the deterministic, path-free paired-design analysis contract."""
+
+    if report.pairing is None:
+        return None
+    return asdict(report.pairing)
+
+
 def render_analysis_plan(report: ValidationReport) -> str:
     _require_valid_report(report)
     config = report.config
@@ -136,6 +145,20 @@ def render_analysis_plan(report: ValidationReport) -> str:
         "", "## Contrasts", "",
         ])
         lines.extend(_contrast_lines(report))
+        if report.pairing is not None:
+            lines.extend([
+                "## Biological pairing", "",
+                f"- Pairing variable: `{report.pairing.pair_id_column}`",
+                f"- Total samples: {report.pairing.total_samples}",
+                f"- Unique pair IDs: {report.pairing.unique_pair_ids}",
+            ])
+            for summary in report.pairing.contrasts:
+                lines.extend([
+                    f"- `{summary.contrast_id}` complete pairs: {summary.complete_pairs}",
+                    f"- `{summary.contrast_id}` samples in complete pairs: {summary.samples_in_complete_pairs}",
+                    f"- `{summary.contrast_id}` incomplete pairs: {len(summary.incomplete_pairs)}",
+                ])
+            lines.append("")
     if config.input.type is InputType.FASTQ:
         reference = config.reference
         assert reference is not None
@@ -267,7 +290,11 @@ def render_manifest(report: ValidationReport) -> str:
         "metadata": ({"file": config.metadata_file, "sha256": sha256_file(metadata.path), "design_variables": list(report.formula_variables)} if metadata is not None else None),
         "contrasts": ({"file": config.contrasts_file, "sha256": sha256_file(contrasts.path), "definitions": [item.__dict__ for item in contrasts.contrasts]} if contrasts is not None else None),
         "organism": {"species": config.organism.species.value},
-        "design": {"type": config.design.type.value, "formula": config.design.formula},
+        "design": {
+            "type": config.design.type.value,
+            "formula": config.design.formula,
+            **({"pair_id": config.design.pair_id, "pairing": pairing_contract(report)} if config.design.pair_id else {}),
+        },
         "planned_downstream": {
             "preset": config.project.preset.value,
             "enrichment": list(config.analysis.enrichment) if config.analysis is not None else [],
@@ -356,11 +383,28 @@ def _atomic_write(path: Path, content: str) -> None:
 
 
 def generate_plan(report: ValidationReport) -> tuple[Path, ...]:
-    """Write deterministic planning files for a valid project."""
+    """Write deterministic inputs plus an explicit local-runtime observation."""
 
     _require_valid_report(report)
     planning_dir = report.project_dir / "planning"
     files = {planning_dir / "analysis_plan.md": render_analysis_plan(report), planning_dir / "manifest.preview.yaml": render_manifest(report)}
+    assert report.config is not None
+    # Keep machine-specific observations out of the deterministic manifest.
+    # The dedicated resource plan is intentionally refreshed by every plan run.
+    from rnaseq.execution import effective_resource_budget, project_execution_budget, runtime_snapshot
+    snapshot = runtime_snapshot(report.config.runtime.control_plane_image)
+    resources = effective_resource_budget(snapshot, project_execution_budget(report.config))
+    resource_plan = {
+        "schema_version": "1.0",
+        "observation": "current local runtime; refreshed by rnaseq plan",
+        **resources.as_dict(),
+        "scheduling": {
+            "policy": "Nextflow local executor aggregate CPU/memory accounting",
+            "independent_ready_tasks": "may run concurrently while their summed requests fit the effective budget",
+            "process_requests": "preserved; the project ceiling is not assigned to every task",
+        },
+    }
+    files[planning_dir / "resource_plan.yaml"] = yaml.safe_dump(resource_plan, sort_keys=False, allow_unicode=True)
     if report.config is not None and report.config.input.type is InputType.FASTQ:
         files[planning_dir / "samplesheet.csv"] = render_samplesheet(report)
         files[planning_dir / "upstream_run.preview.yaml"] = render_upstream_preview(report)

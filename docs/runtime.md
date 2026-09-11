@@ -4,7 +4,8 @@
 
 - Python 3.11+ and the supplied Conda environment. The shared environment is
   portable across Linux/WSL and macOS arm64; it has no Linux-only `procps-ng`
-  dependency.
+  dependency. The Linux-image-only `environment.docker.yml` overlay supplies
+  GNU/procps `ps`, which Nextflow requires for task metrics.
 - Docker Desktop or a compatible running Docker daemon.
 - Nextflow for FASTQ execution.
 - A first-party control-plane image selected by `runtime.control_plane_image`.
@@ -16,6 +17,17 @@ conda activate nf-rna
 docker build -t rnaseq-control-plane:latest .
 rnaseq doctor
 ```
+
+The image runtime is intentionally verified with a non-login shell, matching
+the environment Nextflow task containers inherit:
+
+```bash
+docker run --rm rnaseq-control-plane:latest \
+  sh -c 'command -v ps && ps --version'
+```
+
+Do not use `sh -lc` for this check: login-shell startup files may replace the
+image `PATH` and do not represent Nextflow task execution.
 
 ## Managed-reference builder (host-native)
 
@@ -161,13 +173,16 @@ preference, not a biological or statistical setting. The interactive wizard
 detects host CPU/memory on Linux/WSL and macOS, reserves approximately 20%, and
 rounds memory conservatively; a 20-CPU / 64-GiB machine normally suggests 16
 CPUs / 48 GiB. Existing projects without this section retain 8 CPUs / 12 GiB.
-`rnaseq doctor PROJECT` compares the requested ceiling with host and Docker
-capacity on the machine actually running the project. Each run freezes the
-effective local Nextflow configuration for upstream and downstream workflows.
+`rnaseq doctor PROJECT` reports host capacity, container-runtime capacity, the
+requested project budget, and the effective budget on the machine actually
+running the project. Docker Desktop and WSL allocations constrain the effective
+budget; native Linux uses the host ceiling rather than double-counting Docker's
+repeated host values. Each run freezes that effective local Nextflow
+configuration for upstream and downstream workflows.
 
 The ceiling is total executor capacity, not a per-task request. HISAT2,
-Salmon, featureCounts, process directives and `maxForks` keep their own
-declared limits. Reference preparation remains independent: use its explicit
+Salmon, featureCounts, and other process directives keep their own declared
+requests. Reference preparation remains independent: use its explicit
 `--threads` option.
 
 The default local contracts are intentionally conservative:
@@ -178,7 +193,7 @@ The default local contracts are intentionally conservative:
 | MEDIUM | 4 | 8 GiB | 8 h |
 | LARGE | 8 | 12 GiB | 12 h |
 
-The global local ceiling is 8 CPUs, 12 GiB, and 12 hours, with one project run at a time. Salmon and HISAT2 alignment each use `maxForks 1`; BAM sorting/processing and featureCounts use `maxForks 2`; cohort aggregation, MultiQC, L1/L2, enrichment, and reporting use `maxForks 1`. The first-party HISAT2 workflow binds fastp, HISAT2, supported SAMtools operations, and featureCounts threads to `task.cpus`. Each FASTQ run freezes one path-free local Nextflow configuration and its SHA-256, and supplies it to nf-core Salmon, HISAT2/featureCounts, and downstream. These are scheduling bounds only and do not alter quantification, filtering, DESeq2, thresholds, rankings, or GSEA calculations.
+The default project ceiling is 8 CPUs, 12 GiB, and 12 hours. The frozen config sets Nextflow's aggregate local executor ceiling and `resourceLimits`, while preserving nf-core labels and first-party per-process requests. Independent sample-level and enrichment tasks may run concurrently when their summed requests fit that ceiling; dependency edges still sequence dependent stages. The first-party HISAT2 workflow binds fastp, HISAT2, supported SAMtools operations, and featureCounts threads to `task.cpus`. Each FASTQ run freezes one path-free local Nextflow configuration and its SHA-256, and supplies it to nf-core Salmon, HISAT2/featureCounts, and downstream. These are scheduling bounds only and do not alter quantification, filtering, DESeq2, thresholds, rankings, or GSEA calculations.
 
 ## Filesystem layout
 

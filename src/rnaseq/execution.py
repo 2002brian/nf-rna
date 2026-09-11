@@ -117,11 +117,9 @@ def validate_local_execution_budget(cpus: int, memory_gb: int, capacity: LocalRe
         raise ExecutionPreflightError("Execution CPU and memory limits must be positive integers.")
     if cpus < LOCAL_RESOURCE_CEILING.cpus or memory_gb < LOCAL_RESOURCE_CEILING.memory_gib:
         raise ExecutionPreflightError("Execution budget must be at least 8 CPUs and 12 GiB to satisfy enabled local process contracts.")
-    if capacity.logical_cpus is not None and cpus > capacity.logical_cpus:
-        raise ExecutionPreflightError(f"Requested {cpus} CPUs exceeds detected host capacity of {capacity.logical_cpus}.")
-    memory_capacity = min(capacity.total_memory_gib or memory_gb, capacity.available_memory_gib or memory_gb)
-    if capacity.total_memory_gib is not None and memory_gb > memory_capacity:
-        raise ExecutionPreflightError(f"Requested {memory_gb} GiB exceeds detected available memory of {memory_capacity} GiB.")
+    # A project budget is a user-selected upper bound, not a claim about this
+    # machine.  Runtime preflight computes and records a visible effective
+    # budget instead of rejecting portable project configuration here.
 
 
 def project_execution_budget(config: Any) -> ResourceContract:
@@ -142,10 +140,40 @@ class RuntimeSnapshot:
 
 
 @dataclass(frozen=True)
+class EffectiveResourceBudget:
+    requested_cpus: int
+    requested_memory_gib: int
+    host_cpus: int | None
+    host_memory_gib: int | None
+    runtime_cpus: int | None
+    runtime_memory_gib: int | None
+    runtime_ceiling_applies: bool
+    effective_cpus: int
+    effective_memory_gib: int
+    clamped: bool
+    warnings: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "requested": {"cpus": self.requested_cpus, "memory_gib": self.requested_memory_gib},
+            "host": {"cpus": self.host_cpus, "memory_gib": self.host_memory_gib},
+            "container_runtime": {
+                "cpus": self.runtime_cpus,
+                "memory_gib": self.runtime_memory_gib,
+                "ceiling_applies": self.runtime_ceiling_applies,
+            },
+            "effective": {"cpus": self.effective_cpus, "memory_gib": self.effective_memory_gib},
+            "clamped": self.clamped,
+            "warnings": list(self.warnings),
+        }
+
+
+@dataclass(frozen=True)
 class PreparedRun:
     report: ValidationReport
     nextflow_version: str
     container_runtime: str
+    resource_budget: EffectiveResourceBudget | None = None
 
 
 @dataclass(frozen=True)
@@ -337,8 +365,16 @@ def runtime_snapshot(image: str = CONTROL_PLANE_IMAGE) -> RuntimeSnapshot:
                     image_architecture = _normalise_architecture(str(image_payload.get("Architecture") or ""))
     except (FileNotFoundError, json.JSONDecodeError, TypeError):
         pass
+    host_os = platform.system() or "unknown"
+    if host_os.lower() == "linux":
+        try:
+            release_identity = f"{platform.release()} {Path('/proc/version').read_text(encoding='utf-8')}".lower()
+            if "microsoft" in release_identity or "wsl" in release_identity:
+                host_os = "Linux/WSL"
+        except OSError:
+            pass
     return RuntimeSnapshot(
-        host_os=platform.system() or "unknown",
+        host_os=host_os,
         host_architecture=host_architecture,
         logical_cpus=os.cpu_count(),
         host_memory_bytes=_host_memory_bytes(),
@@ -348,6 +384,72 @@ def runtime_snapshot(image: str = CONTROL_PLANE_IMAGE) -> RuntimeSnapshot:
         control_plane_image_architecture=image_architecture,
         docker_cpus=docker_cpus,
     )
+
+
+def effective_resource_budget(snapshot: RuntimeSnapshot, budget: ResourceContract) -> EffectiveResourceBudget:
+    """Resolve the portable project ceiling against this execution runtime.
+
+    Docker Desktop and WSL expose a VM/container ceiling distinct from the host.
+    Native Linux Docker shares the host scheduler, so Docker's repeated host
+    values are recorded but are not treated as another independent limit.
+    """
+
+    host_memory = snapshot.host_memory_bytes // 1024**3 if snapshot.host_memory_bytes else None
+    runtime_memory = snapshot.docker_memory_bytes // 1024**3 if snapshot.docker_memory_bytes else None
+    host_os = snapshot.host_os.lower()
+    runtime_applies = "darwin" in host_os or "windows" in host_os or "wsl" in host_os
+    cpu_limits = [budget.cpus]
+    memory_limits = [budget.memory_gib]
+    warnings: list[str] = []
+    if snapshot.logical_cpus is not None:
+        cpu_limits.append(snapshot.logical_cpus)
+    else:
+        warnings.append("Host CPU capacity is unavailable; it could not constrain the project budget.")
+    if host_memory is not None:
+        memory_limits.append(host_memory)
+    else:
+        warnings.append("Host memory capacity is unavailable; it could not constrain the project budget.")
+    if runtime_applies:
+        if snapshot.docker_cpus is not None:
+            cpu_limits.append(snapshot.docker_cpus)
+        else:
+            warnings.append("Container-runtime CPU capacity is unavailable; it could not constrain the project budget.")
+        if runtime_memory is not None:
+            memory_limits.append(runtime_memory)
+        else:
+            warnings.append("Container-runtime memory capacity is unavailable; it could not constrain the project budget.")
+    effective_cpus = min(cpu_limits)
+    effective_memory = min(memory_limits)
+    clamped = effective_cpus < budget.cpus or effective_memory < budget.memory_gib
+    if clamped:
+        warnings.append(
+            f"Project budget {budget.cpus} CPUs/{budget.memory_gib} GiB was clamped to "
+            f"{effective_cpus} CPUs/{effective_memory} GiB for this run."
+        )
+    return EffectiveResourceBudget(
+        requested_cpus=budget.cpus,
+        requested_memory_gib=budget.memory_gib,
+        host_cpus=snapshot.logical_cpus,
+        host_memory_gib=host_memory,
+        runtime_cpus=getattr(snapshot, "docker_cpus", None),
+        runtime_memory_gib=runtime_memory,
+        runtime_ceiling_applies=runtime_applies,
+        effective_cpus=effective_cpus,
+        effective_memory_gib=effective_memory,
+        clamped=clamped,
+        warnings=tuple(warnings),
+    )
+
+
+def validate_effective_resource_budget(resources: EffectiveResourceBudget) -> None:
+    """Require enough effective capacity for the largest enabled local task."""
+
+    if resources.effective_cpus < LOCAL_RESOURCE_CEILING.cpus or resources.effective_memory_gib < LOCAL_RESOURCE_CEILING.memory_gib:
+        raise ExecutionPreflightError(
+            "Effective local capacity is "
+            f"{resources.effective_cpus} CPUs/{resources.effective_memory_gib} GiB, but enabled local "
+            "process contracts require at least 8 CPUs/12 GiB. Increase host/Docker capacity or use another runtime."
+        )
 
 
 def downstream_docker_user_mapping(
@@ -418,43 +520,32 @@ def runtime_resource_checks(snapshot: RuntimeSnapshot, budget: ResourceContract 
         checks.append(RuntimeCheck("Control-plane image architecture", "FOUND", "amd64 image on arm64 host; Docker/Rosetta emulation may reduce throughput.", "WARN"))
     else:
         checks.append(RuntimeCheck("Control-plane image architecture", "FOUND", f"image={snapshot.control_plane_image_architecture}; host={snapshot.host_architecture}"))
-    required_memory = budget.memory_gib * 1024 ** 3
-    requested = f"{budget.cpus} CPUs / {_gib(required_memory)}"
-    unavailable = snapshot.docker_memory_bytes is None or snapshot.docker_cpus is None
-    exceeds = (
-        (snapshot.docker_memory_bytes is not None and snapshot.docker_memory_bytes < required_memory)
-        or (snapshot.docker_cpus is not None and snapshot.docker_cpus < budget.cpus)
-    )
-    if unavailable:
-        checks.append(RuntimeCheck("Selected local ceiling", "NOT FOUND", f"Requested local ceiling is {requested}; Docker CPU or memory allocation is unavailable, so capacity cannot be confirmed.", "WARN"))
-    elif exceeds:
-        checks.append(RuntimeCheck("Selected local ceiling", "NOT FOUND", f"Requested local ceiling is {requested}; Docker exposes {snapshot.docker_cpus} CPUs / {_gib(snapshot.docker_memory_bytes)}. Reduce the requested profile or increase Docker allocation.", "WARN"))
-    else:
-        checks.append(RuntimeCheck("Selected local ceiling", "FOUND", f"Requested aggregate ceiling={budget.cpus} CPUs/{budget.memory_gib} GiB; per-process declarations and maxForks remain in effect; one project at a time."))
+    resources = effective_resource_budget(snapshot, budget)
+    checks.append(RuntimeCheck(
+        "Project resource budget", "FOUND",
+        f"requested aggregate ceiling={resources.requested_cpus} CPUs/{resources.requested_memory_gib} GiB.",
+    ))
+    level = "WARN" if resources.warnings or resources.effective_cpus < 8 or resources.effective_memory_gib < 12 else None
+    checks.append(RuntimeCheck(
+        "Effective local budget", "NOT FOUND" if level else "FOUND",
+        f"effective aggregate ceiling={resources.effective_cpus} CPUs/{resources.effective_memory_gib} GiB; "
+        f"container-runtime ceiling applies={resources.runtime_ceiling_applies}; "
+        + (" ".join(resources.warnings) if resources.warnings else "independent ready tasks may run concurrently within this ceiling."),
+        level,
+    ))
     checks.append(RuntimeCheck("nf-core upstream image architecture", "FOUND", "nf-core/rnaseq resolves process images dynamically; inspect the frozen Nextflow trace for per-process image architecture.", "WARN"))
     return tuple(checks)
 
 
 def render_local_resource_config(budget: ResourceContract = LOCAL_RESOURCE_CEILING) -> str:
-    """Render the frozen, auditable local nf-core resource policy."""
+    """Render only the aggregate local ceiling, preserving process requests."""
 
-    small, medium, large = (RESOURCE_CONTRACTS[name] for name in ("SMALL", "MEDIUM", "LARGE"))
     return (
-        f"// Local research resource contract: SMALL=1/2 GiB, MEDIUM=4/8 GiB, LARGE=8/12 GiB; aggregate ceiling={budget.cpus} CPUs/{budget.memory_gib} GiB; one project at a time.\n"
-        "// The local executor treats these as the aggregate per-run budget.\n"
+        f"// Effective aggregate local ceiling={budget.cpus} CPUs/{budget.memory_gib} GiB.\n"
+        "// Nextflow schedules independent ready tasks within this shared budget; process-specific requests remain intact.\n"
         f"executor {{ cpus = {budget.cpus}; memory = '{budget.memory_gib}.GB' }}\n"
         "process {\n"
         f"  resourceLimits = [cpus: {budget.cpus}, memory: '{budget.memory_gib}.GB', time: '{budget.time_hours}.h']\n"
-        f"  withLabel:process_low {{ cpus = {small.cpus}; memory = '{small.memory_gib}.GB'; time = '{small.time_hours}.h' }}\n"
-        f"  withLabel:process_medium {{ cpus = {medium.cpus}; memory = '{medium.memory_gib}.GB'; time = '{medium.time_hours}.h' }}\n"
-        f"  withLabel:process_high {{ cpus = {large.cpus}; memory = '{large.memory_gib}.GB'; time = '{large.time_hours}.h' }}\n"
-        "  // One 8 GiB Salmon task at a time avoids local Docker oversubscription.\n"
-        f"  withName: '.*:SALMON_QUANT' {{ cpus = {medium.cpus}; memory = '{medium.memory_gib}.GB'; time = '{medium.time_hours}.h'; maxForks = 1 }}\n"
-        "  // First-party workflow process names are deliberately explicit and match its task directives.\n"
-        "  withName: '.*HISAT2_ALIGN' { maxForks = 1 }\n"
-        "  withName: '.*(SORT_LANE_BAM|MERGE_AND_INDEX|PREPARE_COUNT_BAM)' { maxForks = 2 }\n"
-        "  withName: '.*FEATURECOUNTS' { maxForks = 2 }\n"
-        "  withName: '.*(ASSEMBLE_COUNTS|MULTIQC|L1_ANALYSIS|L2_ANALYSIS|ENRICHMENT_ANALYSIS|TECHNICAL_REPORT.*)' { maxForks = 1 }\n"
         "}\n"
     )
 
@@ -528,9 +619,10 @@ def check_container_runtime(image: str = CONTROL_PLANE_IMAGE) -> RuntimeCheck:
         )
     packages = ", ".join(repr(package) for package in CONTAINER_R_PACKAGES)
     probe = (
-        "for executable in python Rscript; do "
+        "for executable in ps python Rscript; do "
         "command -v \"$executable\" >/dev/null || { echo \"missing executable: $executable\" >&2; exit 1; }; "
         "done; "
+        "ps --version >/dev/null || { echo 'GNU/procps ps is unavailable' >&2; exit 1; }; "
         f"Rscript -e \"packages <- c({packages}); missing <- packages[!vapply(packages, requireNamespace, logical(1), quietly=TRUE)]; if (length(missing)) {{ cat('missing R package(s): ', paste(missing, collapse=', '), '\\n', file=stderr()); quit(status=1) }}\"; "
         "python -m rnaseq.workflow_support report --help | grep -F -- '--enrichment' >/dev/null "
         "|| { echo 'missing report CLI option: --enrichment' >&2; exit 1; }"
@@ -738,6 +830,9 @@ def prepare_run(report: ValidationReport, profile: str) -> PreparedRun:
     validate_local_execution_budget(
         report.config.execution.max_cpus, report.config.execution.max_memory_gb, detect_local_resource_capacity()
     )
+    snapshot = runtime_snapshot(report.config.runtime.control_plane_image)
+    resources = effective_resource_budget(snapshot, project_execution_budget(report.config))
+    validate_effective_resource_budget(resources)
     _validate_custom_reference_files(report)
     require_fresh_plan(report)
     # Also prove the generated samplesheet remains renderable before any run directory exists.
@@ -753,7 +848,7 @@ def prepare_run(report: ValidationReport, profile: str) -> PreparedRun:
             "Docker is required for the verified local execution profile but is unavailable. "
             + docker.detail
         )
-    return PreparedRun(report, nextflow.detail, "docker")
+    return PreparedRun(report, nextflow.detail, "docker", resources)
 
 
 def _render_execution_samplesheet(report: ValidationReport) -> str:
@@ -862,7 +957,12 @@ def _freeze_inputs(prepared: PreparedRun, run_dir: Path) -> tuple[Path, Path, Pa
     _write_text(params_path, json.dumps(nfcore_runtime_params(report), sort_keys=True) + "\n")
     # Resource declarations are frozen separately from scientific parameters.
     runtime_config = frozen / "local.nextflow.config"
-    _write_text(runtime_config, render_local_resource_config(project_execution_budget(report.config)))
+    effective = prepared.resource_budget or effective_resource_budget(
+        runtime_snapshot(report.config.runtime.control_plane_image), project_execution_budget(report.config)
+    )
+    _write_text(runtime_config, render_local_resource_config(ResourceContract(
+        "EFFECTIVE_LOCAL", effective.effective_cpus, effective.effective_memory_gib, LOCAL_RESOURCE_CEILING.time_hours
+    )))
     return samplesheet, upstream_path, params_path, runtime_config
 
 
@@ -1154,6 +1254,7 @@ def execute_prepared_run(prepared: PreparedRun) -> RunResult:
     )
     requested_image = prepared.report.config.runtime.control_plane_image
     runtime = runtime_snapshot(requested_image)
+    resources = prepared.resource_budget or effective_resource_budget(runtime, project_execution_budget(prepared.report.config))
     source_root = Path(__file__).resolve().parents[2]
     git_commit: str | None = None
     try:
@@ -1183,11 +1284,7 @@ def execute_prepared_run(prepared: PreparedRun) -> RunResult:
         "fastq_preprocessing": prepared.report.config.input.preprocessing.value,
         "skip_trimming": prepared.report.config.input.preprocessing is FastqPreprocessing.PRETRIMMED,
         "runtime_resources": {
-            "selected_local_ceiling": {
-                "cpus": LOCAL_RESOURCE_CEILING.cpus,
-                "memory_gib": LOCAL_RESOURCE_CEILING.memory_gib,
-                "one_project_at_a_time": True,
-            },
+            **resources.as_dict(),
             "host_architecture": runtime.host_architecture,
             "docker_architecture": runtime.docker_architecture,
             "docker_memory_bytes": runtime.docker_memory_bytes,

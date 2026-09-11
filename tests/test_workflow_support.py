@@ -16,7 +16,7 @@ from conftest import base_config
 from rnaseq.planner import generate_plan
 from rnaseq.service import create_case_run, freeze_case_inputs, resolve_downstream_inputs
 from rnaseq.validators import validate_project
-from rnaseq.workflow_support import _source_import_label, enrichment_config, l1_config, report
+from rnaseq.workflow_support import _samples, _source_import_label, enrichment_config, l1_config, report
 
 
 @pytest.mark.parametrize(
@@ -40,7 +40,8 @@ def _annotation() -> dict[str, object]:
         "input_id_type": "ENSEMBL",
         "target_id_type": "ENTREZID",
         "gene_symbol_output": True,
-        "minimum_mapping_rate": 0.83,
+        "mapping_warning_rate": 0.83,
+        "minimum_mapping_rate": 0.50,
         "minimum_mapped_foreground": 7,
         "enrichment": {
             "go": {"pvalue_cutoff": 0.031, "qvalue_cutoff": 0.17, "p_adjust_method": "BH"},
@@ -159,6 +160,8 @@ def test_schema_11_freezes_complete_annotation_and_enrichment_bridge_is_determin
     image_tags = re.findall(r"<img\b[^>]*>", report_text)
     assert image_tags
     assert all("class='report-figure'" in tag and "style=" not in tag for tag in image_tags)
+    assert report_text.count("class='report-figure-container'") == len(image_tags)
+    assert "@media print" in report_text and "page-break-inside: avoid" in report_text
 
     # The bridge must not consult frozen project.yaml after run creation.
     frozen_project = Path(contract["project_config"])
@@ -189,6 +192,80 @@ def test_final_report_requires_both_enabled_gsea_backends_and_renders_multiple_c
     assert text.count("GO GSEA:") == 2
     assert text.count("KEGG GSEA:") == 2
     assert "Control_vs_Treatment" in text
+
+
+def test_final_report_renders_annotation_warning_without_failing_enabled_gsea(project_factory):
+    _contract, contract_path, l2, inputs = _frozen_contract(project_factory, schema_version="1.1")
+    l1, go_root, kegg_root = _write_report_artifacts(inputs / "contrasts.csv", l2)
+    for root, filename in ((go_root, "gsea_backend_summary.json"), (kegg_root, "gsea_kegg_backend_summary.json")):
+        path = root / filename
+        summary = json.loads(path.read_text(encoding="utf-8"))
+        summary["annotation"] = {
+            "input_id_type": "ENSEMBL",
+            "target_id_type": "ENTREZID",
+            "warning_threshold": 0.70,
+            "blocking_threshold": 0.50,
+        }
+        summary["annotation_database"] = "org.Mm.eg.db"
+        summary["annotation_database_version"] = "fixture"
+        summary["annotation_qc_status"] = "WARNING"
+        for contrast in summary["contrasts"]:
+            contrast["ranking"]["mapping_rate"] = 0.697
+            contrast["ranking"]["annotation_qc"] = {
+                "status": "WARNING",
+                "mapping_rate": 0.697,
+                "warning_threshold": 0.70,
+                "blocking_threshold": 0.50,
+                "reason": "mapping rate 69.7% is below warning threshold 70.0%; GSEA was executed.",
+            }
+        path.write_text(json.dumps(summary), encoding="utf-8")
+
+    report_dir = l2.parent / "warning-report"
+    report(contract_path, inputs, l1, l2, report_dir, [go_root, kegg_root])
+    report_text = (report_dir / "report.html").read_text(encoding="utf-8")
+    assert "Annotation mapping QC: <strong>WARNING</strong>" in report_text
+    assert "GSEA was executed." in report_text
+
+
+def test_final_report_distinguishes_evaluated_from_significant_gsea_terms(project_factory):
+    _contract, contract_path, l2, inputs = _frozen_contract(project_factory, schema_version="1.1")
+    l1, go_root, kegg_root = _write_report_artifacts(inputs / "contrasts.csv", l2)
+    for root, filename in ((go_root, "gsea_backend_summary.json"), (kegg_root, "gsea_kegg_backend_summary.json")):
+        path = root / filename
+        summary = json.loads(path.read_text(encoding="utf-8"))
+        for contrast in summary["contrasts"]:
+            contrast["evaluated_terms"] = 100
+            contrast["all_terms"] = 100
+            contrast["significant_terms"] = 20
+            if "ontologies" in contrast:
+                for outcome in contrast["ontologies"].values():
+                    outcome["evaluated_terms"] = 100
+                    outcome["all_terms"] = 100
+                    outcome["significant_terms"] = 20
+        path.write_text(json.dumps(summary), encoding="utf-8")
+
+    report_dir = l2.parent / "evaluated-terms-report"
+    report(contract_path, inputs, l1, l2, report_dir, [go_root, kegg_root])
+    report_text = (report_dir / "report.html").read_text(encoding="utf-8")
+    assert "Evaluated terms: 100" in report_text
+    assert "Evaluated pathways: 100" in report_text
+    assert "Significant terms: 20" in report_text
+    assert "Significant pathways: 20" in report_text
+
+
+def test_final_report_remains_fail_closed_for_blocked_enabled_gsea_with_reason(project_factory):
+    _contract, contract_path, l2, inputs = _frozen_contract(project_factory, schema_version="1.1")
+    l1, go_root, kegg_root = _write_report_artifacts(inputs / "contrasts.csv", l2)
+    summary_path = go_root / "gsea_backend_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary.update({
+        "status": "BLOCKED",
+        "reason": "GO preranked GSEA blocked: mapping rate 49.0% is below blocking threshold 50.0%.",
+    })
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="below blocking threshold 50.0%"):
+        report(contract_path, inputs, l1, l2, l2.parent / "blocked-report", [go_root, kegg_root])
 
 
 def test_report_cli_accepts_all_enrichment_paths_and_rejects_incomplete_or_unknown_inputs(project_factory):
@@ -336,3 +413,67 @@ def test_l1_bridge_uses_only_task_staged_execution_paths(project_factory, tmp_pa
     )
     with pytest.raises(ValueError, match="raw-count matrix escapes its task directory"):
         l1_config(task_contract, task_inputs, Path("l1"))
+
+
+def test_samples_preserves_non_alphabetical_staged_metadata_order(tmp_path):
+    inputs = tmp_path / "downstream_inputs"
+    inputs.mkdir()
+
+    samples = ["C1", "T1", "C2", "T2", "C3", "T3"]
+
+    (inputs / "metadata.csv").write_text(
+        "sample_id,condition\n"
+        "C1,Control\n"
+        "T1,Treatment\n"
+        "C2,Control\n"
+        "T2,Treatment\n"
+        "C3,Control\n"
+        "T3,Treatment\n",
+        encoding="utf-8",
+    )
+
+    (inputs / "execution_inputs.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "metadata": "metadata.csv",
+                "samples": samples,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _samples(inputs) == samples
+
+
+def test_samples_rejects_metadata_order_different_from_staged_sample_order(tmp_path):
+    inputs = tmp_path / "downstream_inputs"
+    inputs.mkdir()
+
+    samples = ["C1", "T1", "C2", "T2"]
+
+    (inputs / "metadata.csv").write_text(
+        "sample_id,condition\n"
+        "C1,Control\n"
+        "C2,Control\n"
+        "T1,Treatment\n"
+        "T2,Treatment\n",
+        encoding="utf-8",
+    )
+
+    (inputs / "execution_inputs.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "metadata": "metadata.csv",
+                "samples": samples,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="staged metadata sample IDs disagree with staged execution inputs sample list",
+    ):
+        _samples(inputs)

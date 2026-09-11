@@ -98,7 +98,6 @@ process TECHNICAL_REPORT_L1 {
 
 process ENRICHMENT_ANALYSIS {
     tag { module }
-    maxForks 1
     // Each task emits exactly one backend-specific directory.  Publishing the
     // shared parent directory would make gsea-go and gsea-kegg collide.
     publishDir "${params.outdir}/l2", mode: 'copy', overwrite: false

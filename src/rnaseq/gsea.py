@@ -79,18 +79,22 @@ def _gsea_report(summary: dict[str, Any], annotation: AnnotationConfig) -> str:
         f"- Minimum ranked genes: {annotation.enrichment.gsea.minimum_ranked_genes}",
         f"- Gene-set size: {annotation.enrichment.gsea.min_gs_size}–{annotation.enrichment.gsea.max_gs_size}",
         f"- Thresholds: pvalue <= {annotation.enrichment.gsea.pvalue_cutoff}; adjusted p <= {annotation.enrichment.gsea.padj_cutoff}; adjustment {annotation.enrichment.gsea.p_adjust_method}",
-        "- `all_terms.tsv` contains every row returned by gseGO after its configured p-value return cutoff; `significant.tsv` applies the configured p-value and adjusted-p filters to those rows.",
+        "- `all_terms.tsv` contains every structurally eligible term successfully evaluated and returned by gseGO with calculation pvalueCutoff=1; `significant.tsv` applies nf-rna's configured p-value and adjusted-p filters to those rows.",
         "- BP, MF, and CC are run separately with completed ontology objects released before the next ontology. No biological interpretation is generated.", "",
     ])
     if summary["status"] == "BLOCKED":
         lines.extend([summary.get("reason", "GSEA ranking guardrail blocked execution."), ""])
     for item in summary.get("contrasts", []):
         rank = item.get("ranking", {})
+        annotation_qc = rank.get("annotation_qc", {})
         lines.extend([
             f"## {item['contrast_id']}",
             f"- Ranked Entrez genes: {rank.get('final_ranked_genes', 0)} (positive={rank.get('positive_stats', 0)}, negative={rank.get('negative_stats', 0)}, zero={rank.get('zero_stats', 0)})",
             f"- Mapping rate: {rank.get('mapping_rate', 0):.1%}",
+            f"- Annotation mapping QC: {annotation_qc.get('status', 'not available')} (warning threshold={annotation_qc.get('warning_threshold', 'not available')}; blocking threshold={annotation_qc.get('blocking_threshold', 'not available')})",
         ])
+        if annotation_qc.get("status") == "WARNING":
+            lines.append(f"- Annotation mapping warning: {annotation_qc.get('reason', 'not available')}")
         for ontology, values in item.get("ontologies", {}).items():
             lines.append(f"- {ontology}: {values['status']}; all terms={values['all_terms']}; significant={values['significant_terms']}; NA pathways={values.get('na_pathways', 0)}")
         if item.get("failed_ontology"):
@@ -160,12 +164,15 @@ def execute_gsea(prepared: PreparedGsea) -> GseaResult:
         "annotation": prepared.annotation.model_dump(),
         "annotation_database": summary.get("annotation_database"),
         "annotation_database_version": summary.get("annotation_database_version"),
+        "annotation_qc_status": summary.get("annotation_qc_status"),
         "clusterProfiler_version": summary.get("clusterProfiler_version"),
         "mapping_policy": "one-to-many source IDs retain all valid Entrez targets; duplicate targets retain largest absolute stat, then lexical original gene ID",
         "tie_handling": "DESeq2 stat is unmodified; ties are ordered by ascending Entrez ID before fgsea.",
-        "all_terms_semantics": "all rows returned by gseGO after its configured p-value return cutoff",
         "memory_lifecycle": "BP, MF, and CC run sequentially; result objects and intermediates are released and garbage-collected after each ontology",
         "gsea_parameters": prepared.annotation.enrichment.gsea.model_dump(),
+        "clusterprofiler_calculation_pvalue_cutoff": 1,
+        "nf_rna_significance_policy": "finite p.adjust <= configured padj_cutoff and finite pvalue <= configured pvalue_cutoff",
+        "all_terms_semantics": "terms successfully evaluated and returned by gseGO under configured structural gene-set constraints before nf-rna significance filtering",
         "ontologies": ["BP", "MF", "CC"],
         "automatic_sample_removal": False,
     }

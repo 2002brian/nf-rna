@@ -87,7 +87,7 @@ def test_n_two_is_warning_not_error(project_factory):
 
 def test_strict_paired_design_passes(project_factory):
     config = deepcopy(base_config())
-    config["design"] = {"type": "paired", "formula": "~ subject_id + condition", "pairing_column": "subject_id"}
+    config["design"] = {"type": "paired_two_group", "formula": "~ subject_id + condition", "pair_id": "subject_id"}
     counts = "gene_id,S1_pre,S1_post,S2_pre,S2_post\nGeneA,1,2,3,4\n"
     metadata = "sample_id,subject_id,condition\nS1_pre,S1,Pre\nS1_post,S1,Post\nS2_pre,S2,Pre\nS2_post,S2,Post\n"
     contrasts = "contrast_id,factor,numerator,denominator\nPost_vs_Pre,condition,Post,Pre\n"
@@ -99,7 +99,7 @@ def test_strict_paired_design_passes(project_factory):
 
 def test_incomplete_pair_fails(project_factory):
     config = deepcopy(base_config())
-    config["design"] = {"type": "paired", "formula": "~ subject_id + condition", "pairing_column": "subject_id"}
+    config["design"] = {"type": "paired_two_group", "formula": "~ subject_id + condition", "pair_id": "subject_id"}
     counts = "gene_id,S1_pre,S1_post,S2_pre\nGeneA,1,2,3\n"
     metadata = "sample_id,subject_id,condition\nS1_pre,S1,Pre\nS1_post,S1,Post\nS2_pre,S2,Pre\n"
     contrasts = "contrast_id,factor,numerator,denominator\nPost_vs_Pre,condition,Post,Pre\n"
@@ -107,4 +107,4 @@ def test_incomplete_pair_fails(project_factory):
         project_factory(config=config, counts=counts, metadata=metadata, contrasts=contrasts)
     )
     assert not report.is_valid
-    assert "incomplete_pair" in codes(report)
+    assert "pair_missing_numerator" in codes(report)

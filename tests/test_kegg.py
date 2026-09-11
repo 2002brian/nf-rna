@@ -11,6 +11,7 @@ from conftest import base_config
 from rnaseq.errors import DownstreamExecutionError
 from rnaseq.kegg import KEGG_CODES, KeggResourceAdapter, execute_kegg, prepare_kegg
 from rnaseq.l2 import prepare_l2
+from rnaseq.models import KeggGseaConfig
 from rnaseq.validators import validate_project
 
 
@@ -18,7 +19,7 @@ def _annotation() -> dict[str, object]:
     return {
         "organism": "Mus musculus", "input_id_type": "ENTREZID", "target_id_type": "ENTREZID",
         "gene_symbol_output": True, "minimum_mapping_rate": 0.70, "minimum_mapped_foreground": 5,
-        "enrichment": {"kegg": {"resource_provider": "online_kegg_rest_via_clusterprofiler", "ora": {"pvalue_cutoff": 0.05, "qvalue_cutoff": 0.2, "p_adjust_method": "BH", "min_gs_size": 10, "max_gs_size": 500}, "gsea": {"minimum_ranked_genes": 50, "pvalue_cutoff": 1.0, "padj_cutoff": 0.05, "p_adjust_method": "BH", "min_gs_size": 10, "max_gs_size": 500, "seed": 1}}},
+        "enrichment": {"kegg": {"resource_provider": "online_kegg_rest_via_clusterprofiler", "ora": {"pvalue_cutoff": 0.05, "qvalue_cutoff": 0.2, "p_adjust_method": "BH", "min_gs_size": 10, "max_gs_size": 500}, "gsea": {"minimum_ranked_genes": 50, "pvalue_cutoff": 0.05, "padj_cutoff": 0.05, "p_adjust_method": "BH", "min_gs_size": 10, "max_gs_size": 500, "seed": 1}}},
     }
 
 
@@ -36,6 +37,15 @@ def _ready(root: Path) -> None:
 def test_kegg_organism_codes_are_explicit():
     assert KEGG_CODES == {"Homo sapiens": "hsa", "Mus musculus": "mmu"}
     assert KeggResourceAdapter("mmu").probe_endpoint == "https://rest.kegg.jp/list/pathway/mmu"
+
+
+def test_kegg_gsea_summary_distinguishes_significance_from_calculation_cutoffs():
+    assert KeggGseaConfig().pvalue_cutoff == 0.05
+    script = (Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "kegg_analysis.R").read_text(encoding="utf-8")
+    assert "gseKEGG(geneList=gene_list" in script and "pvalueCutoff=1" in script
+    assert "configured_pvalue_cutoff=as.numeric(cfg$annotation$enrichment$kegg$gsea$pvalue_cutoff)" in script
+    assert "configured_padj_cutoff=as.numeric(cfg$annotation$enrichment$kegg$gsea$padj_cutoff)" in script
+    assert "calculation_pvalue_cutoff=1" in script
 
 
 def test_kegg_requires_annotation_and_rejects_unsupported_organism(project_factory):

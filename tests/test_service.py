@@ -569,7 +569,8 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     assert all(len(value) == 64 for value in provenance["workflow_sha256"].values())
     assert provenance["runtime_resources"]["resource_profile"] == "M5_LOCAL_SMALL_MEDIUM_LARGE"
     assert "host_architecture" in provenance["runtime_resources"]
-    assert provenance["runtime_resources"]["selected_local_ceiling"] == {"cpus": 8, "memory_gib": 12, "one_project_at_a_time": True}
+    assert provenance["runtime_resources"]["requested"] == {"cpus": 8, "memory_gib": 12}
+    assert provenance["runtime_resources"]["effective"] == {"cpus": 8, "memory_gib": 12}
     assert provenance["frozen_local_nextflow_config"]["path"] == "frozen/nfcore.local.config"
     assert len(provenance["frozen_local_nextflow_config"]["sha256"]) == 64
     execution_manifest = yaml.safe_load((run.run_dir / "frozen" / "execution_manifest.yaml").read_text(encoding="utf-8"))
@@ -689,3 +690,43 @@ def test_upstream_reuse_requires_matching_frozen_contract(project_factory):
         (other_frozen / name).write_bytes((current / name).read_bytes())
     with pytest.raises(ExecutionPreflightError, match="incompatible"):
         reuse_upstream_if_compatible(other, frozen, "CASE-OLD/20260828-090000+0800")
+
+
+def test_raw_counts_delivery_preserves_metadata_sample_order(project_factory):
+    _root, _report, run = _frozen_run(project_factory)
+
+    metadata = run.run_dir / "frozen" / "metadata.csv"
+    counts = run.run_dir / "frozen" / "input" / "counts.csv"
+
+    # Deliberately use a valid non-alphabetical sample order.
+    expected_samples = ["C1", "T1", "C2", "T2", "C3", "T3"]
+
+    metadata.write_text(
+        "sample_id,condition\n"
+        "C1,Control\n"
+        "T1,Treatment\n"
+        "C2,Control\n"
+        "T2,Treatment\n"
+        "C3,Control\n"
+        "T3,Treatment\n",
+        encoding="utf-8",
+    )
+
+    counts.write_text(
+        "gene_id,C1,T1,C2,T2,C3,T3\n"
+        "GeneA,1,4,2,5,3,6\n",
+        encoding="utf-8",
+    )
+
+    delivery = assemble_delivery(run)
+
+    target = delivery / "counts" / "raw_counts.csv"
+    assert target.read_bytes() == counts.read_bytes()
+
+    manifest = json.loads(
+        (delivery / "counts" / "artifact_manifest.json").read_text(encoding="utf-8")
+    )
+    artifact = manifest["artifacts"][0]
+
+    assert artifact["ordered_sample_ids"] == expected_samples
+    assert artifact["columns"] == 6

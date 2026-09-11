@@ -1,0 +1,28 @@
+schema_version: "1.2"
+project:
+  id: paired_two_group_example
+  pipeline: bulk_rnaseq
+  preset: L2
+organism:
+  species: Homo sapiens
+input:
+  type: raw_counts
+  path: input/counts.csv
+design:
+  type: paired_two_group
+  formula: "~ patient + condition"
+  pair_id: patient
+metadata_file: metadata.csv
+contrasts_file: contrasts.csv
+upstream:
+  engine: external
+  provider: synthetic_example
+  quantification_method: integer_gene_counts
+reference:
+  source: igenomes
+  genome: null
+thresholds:
+  padj: 0.05
+  abs_log2fc: 1.0
+analysis:
+  enrichment: []

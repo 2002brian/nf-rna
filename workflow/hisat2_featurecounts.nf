@@ -19,7 +19,7 @@ params.layout = null
 params.strandedness = null
 params.pretrimmed = false
 params.assembly_script = null
-params.hisat2_container = 'quay.io/biocontainers/hisat2:2.2.1--h87f3376_4'
+params.hisat2_container = 'quay.io/biocontainers/hisat2:2.2.3--h8471819_0'
 params.samtools_container = 'quay.io/biocontainers/samtools:1.21--h50ea8bc_0'
 params.subread_container = 'quay.io/biocontainers/subread:2.0.6--he4a0461_2'
 params.fastp_container = 'quay.io/biocontainers/fastp:0.24.0--h125f33a_0'
@@ -57,7 +57,6 @@ process FASTP_PREPARE {
     container params.fastp_container
     cpus 4
     memory '6 GB'
-    maxForks 1
     publishDir "${params.outdir}/qc/fastp", mode: 'copy', overwrite: false
     input:
     tuple val(sample), val(strandedness), path(reads)
@@ -92,7 +91,6 @@ process HISAT2_ALIGN {
     container params.hisat2_container
     cpus 4
     memory '6 GB'
-    maxForks 1
     publishDir "${params.outdir}/alignment/lane_summaries", mode: 'copy', overwrite: false
     input:
     tuple val(sample), val(strandedness), path(reads)
@@ -134,7 +132,6 @@ process SORT_LANE_BAM {
     container params.samtools_container
     cpus 4
     memory '6 GB'
-    maxForks 2
     input:
     tuple val(sample), val(strandedness), path(sam), path(summary)
     output:
@@ -151,7 +148,6 @@ process MERGE_AND_INDEX {
     container params.samtools_container
     cpus 4
     memory '6 GB'
-    maxForks 2
     publishDir "${params.outdir}/bam", mode: 'copy', overwrite: false
     input:
     tuple val(sample), val(strandedness_values), path(bams), path(summaries)
@@ -176,7 +172,6 @@ process FEATURECOUNTS {
     container params.subread_container
     cpus 4
     memory '6 GB'
-    maxForks 2
     publishDir "${params.outdir}/counts/per_sample", mode: 'copy', overwrite: false
     input:
     tuple val(sample), path(bam), path(bai), path(flagstat), path(gtf)
@@ -196,7 +191,6 @@ process PREPARE_COUNT_BAM {
     container params.samtools_container
     cpus 2
     memory '3 GB'
-    maxForks 2
     publishDir "${params.outdir}/bam/count_only", mode: 'copy', overwrite: false
     input:
     tuple val(sample), path(bam), path(bai), path(flagstat)
@@ -218,7 +212,6 @@ process ASSEMBLE_COUNTS {
     container 'quay.io/biocontainers/python:3.10.4'
     cpus 1
     memory '2 GB'
-    maxForks 1
     publishDir "${params.outdir}/counts", mode: 'copy', overwrite: false
     input:
     path counts
@@ -240,7 +233,6 @@ process MULTIQC {
     container params.multiqc_container
     cpus 1
     memory '2 GB'
-    maxForks 1
     publishDir "${params.outdir}/multiqc", mode: 'copy', overwrite: false
     input:
     path reports

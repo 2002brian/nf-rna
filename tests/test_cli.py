@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
+from types import ModuleType
 from types import SimpleNamespace
 from pathlib import Path
 
 import yaml
 from typer.testing import CliRunner
 
-from rnaseq.cli import _wizard_completion_candidates, _wizard_tab_completion, app
+from rnaseq.cli import _prompt_toolkit_choice_prompt, _wizard_completion_candidates, _wizard_tab_completion, app
 
 runner = CliRunner()
 
@@ -29,6 +31,41 @@ def test_wizard_completion_candidates_leave_ambiguous_prefix_unselected():
         "reverse",
     ]
     assert _wizard_completion_candidates("a", ["auto", "analysis"]) == ["auto", "analysis"]
+
+
+def test_live_wizard_prompt_expands_representative_canonical_values(monkeypatch):
+    class FakeCompleter:
+        def __init__(self, words, **_kwargs):
+            self.words = words
+
+    prompt_toolkit = ModuleType("prompt_toolkit")
+    completion = ModuleType("prompt_toolkit.completion")
+    completion.WordCompleter = FakeCompleter
+    typed = {"prefix": ""}
+
+    def prompt(_label, *, completer, **_kwargs):
+        if typed["prefix"] == "<enter>":
+            return ""
+        return next(word for word in completer.words if word.startswith(typed["prefix"]))
+
+    prompt_toolkit.prompt = prompt
+    monkeypatch.setitem(sys.modules, "prompt_toolkit", prompt_toolkit)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.completion", completion)
+    monkeypatch.setattr("rnaseq.cli.sys.stdin", SimpleNamespace(isatty=lambda: True))
+    for prefix, expected, choices in (
+        ("m", "mouse", ["human", "mouse"]),
+        ("his", "hisat2_featurecounts", ["salmon", "hisat2_featurecounts"]),
+        ("pai", "paired_two_group", ["two_group", "paired_two_group", "multifactor"]),
+    ):
+        typed["prefix"] = prefix
+        assert _prompt_toolkit_choice_prompt(choices, None) == expected
+    typed["prefix"] = "<enter>"
+    assert _prompt_toolkit_choice_prompt(["human", "mouse"], "mouse") == "mouse"
+
+
+def test_live_wizard_prompt_declines_non_tty_input(monkeypatch):
+    monkeypatch.setattr("rnaseq.cli.sys.stdin", SimpleNamespace(isatty=lambda: False))
+    assert _prompt_toolkit_choice_prompt(["human", "mouse"], "human") is None
 
 
 def test_wizard_tab_completion_is_temporary_and_keeps_ambiguous_candidates(monkeypatch):
@@ -393,12 +430,13 @@ def test_new_uses_imported_metadata_fields_for_noninteractive_formula(tmp_path):
     result = runner.invoke(app, [
         "new", "--name", "paired", "--destination", str(tmp_path), "--species", "mouse", "--input-type", "raw_counts",
         "--counts", str(counts), "--metadata", str(metadata), "--contrasts", str(contrasts), "--preset", "L2",
-        "--design-type", "paired", "--condition-column", "condition", "--pairing-column", "subject", "--covariate", "batch", "--yes",
+        "--design-type", "paired_two_group", "--condition-column", "condition", "--pair-id", "subject", "--covariate", "batch", "--yes",
     ])
     assert result.exit_code == 0, result.output
     config = yaml.safe_load((tmp_path / "paired" / "project.yaml").read_text(encoding="utf-8"))
     assert config["design"]["formula"] == "~ subject + batch + condition"
-    assert config["design"]["pairing_column"] == "subject"
+    assert config["design"]["type"] == "paired_two_group"
+    assert config["design"]["pair_id"] == "subject"
 
 
 def test_validate_example_passes():

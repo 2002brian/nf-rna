@@ -10,10 +10,9 @@ rnaseq CLI → nf-core/rnaseq → standardized upstream outputs → downstream N
 
 The Python control plane freezes a version-pinned input contract and records the stable nf-core handoff boundary. Its frozen `analysis_level` is the graph selector: an `L1` project runs L1 and the L1 technical report only; an `L2` project runs L1, L2, optional GO preranked GSEA (BP/MF/CC) and KEGG preranked GSEA, then the technical HTML report. The graph never infers L2 from contrasts, metadata, or available workflow modules. It does not invoke GO or KEGG ORA in production. Server executor settings remain intentionally deferred.
 
-The default downstream workflow runs at most one `ENRICHMENT_ANALYSIS` task at a
-time (`maxForks 1`) to avoid concurrent R enrichment jobs exhausting a local
-Docker host. This does not alter module selection or calculation; a future
-server-specific Nextflow configuration can override that process directive.
+Independent `ENRICHMENT_ANALYSIS` tasks may run concurrently when their summed
+CPU and memory requests fit the effective aggregate local budget. Nextflow's
+local executor provides this scheduling guard without a fixed `maxForks` cap.
 
 Each enrichment task publishes its own backend directory below the immutable
 L2 output: `downstream/l2/enrichment/gsea_go/` and
@@ -31,10 +30,11 @@ delivery finalization.
 
 The checked-in local configuration uses explicit, non-scientific runtime
 classes: SMALL (1 CPU, 2 GiB, 2 h), MEDIUM (4 CPUs, 8 GiB, 8 h), and LARGE
-(6 CPUs, 12 GiB, 12 h). L1 and the technical report use SMALL; L2 and each
-GSEA backend use MEDIUM. `ENRICHMENT_ANALYSIS` retains `maxForks 1`, and the
-frozen upstream local configuration also limits nf-core `SALMON_QUANT` to one
-MEDIUM task at a time. The global local resource ceiling is LARGE.
+(8 CPUs, 12 GiB, 12 h). L1 and the technical report use SMALL; L2 and each
+GSEA backend use MEDIUM. Sample-level upstream and independent enrichment tasks
+are not artificially serialized; Nextflow admits ready tasks while their summed
+requests fit the frozen effective aggregate ceiling. nf-core process-specific
+label requests remain intact.
 
 These limits are intended to avoid local Docker memory oversubscription and do
 not alter any inputs, model, filtering, thresholds, ranking, enrichment

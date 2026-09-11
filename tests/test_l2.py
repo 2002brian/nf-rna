@@ -97,7 +97,7 @@ def test_l2_supports_multiple_named_contrasts_and_paired_metadata(project_factor
     assert [item.contrast_id for item in prepared.contrasts] == ["B_vs_A", "C_vs_A"]
 
     paired = deepcopy(base_config())
-    paired["design"] = {"type": "paired", "formula": "~ subject_id + condition", "pairing_column": "subject_id"}
+    paired["design"] = {"type": "paired_two_group", "formula": "~ subject_id + condition", "pair_id": "subject_id"}
     metadata = "sample_id,subject_id,condition\nC1,S1,Control\nC2,S2,Control\nC3,S3,Control\nT1,S1,Treatment\nT2,S2,Treatment\nT3,S3,Treatment\n"
     paired_prepared = prepare_l2(validate_project(project_factory(config=paired, metadata=metadata)), run_id=None)
     assert paired_prepared.config.design.formula == "~ subject_id + condition"

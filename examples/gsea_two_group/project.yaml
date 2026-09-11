@@ -28,7 +28,9 @@ annotation:
   input_id_type: ENTREZID
   target_id_type: ENTREZID
   gene_symbol_output: true
-  minimum_mapping_rate: 0.70
+  mapping_warning_rate: 0.70
+  # GSEA blocks only below this threshold; 0.50–0.70 is an auditable warning.
+  minimum_mapping_rate: 0.50
   minimum_mapped_foreground: 5
   enrichment:
     go:
@@ -53,7 +55,7 @@ annotation:
         max_gs_size: 500
       gsea:
         minimum_ranked_genes: 50
-        pvalue_cutoff: 1.0
+        pvalue_cutoff: 0.05
         padj_cutoff: 0.05
         p_adjust_method: BH
         min_gs_size: 10
