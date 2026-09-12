@@ -374,7 +374,7 @@ def test_legacy_manifest_is_not_silently_promoted_to_production(tmp_path):
     assert "legacy_reference_not_production" in {issue.code for issue in report.errors}
 
 
-def test_production_runtime_requires_observed_immutable_image_identity(monkeypatch, tmp_path):
+def test_production_runtime_requires_observed_immutable_image_identity(monkeypatch, tmp_path, production_capable_execution_capacity):
     root, reference = _local_fastq_project(tmp_path)
     _promote_reference_for_production(root, reference)
     report = validate_project(root)

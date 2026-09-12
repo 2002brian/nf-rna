@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from conftest import base_config
+from conftest import base_config, require_rscript
 from rnaseq.errors import DownstreamExecutionError
 from rnaseq.kegg import KEGG_CODES, KeggResourceAdapter, execute_kegg, prepare_kegg
 from rnaseq.l2 import prepare_l2
@@ -97,6 +97,7 @@ def test_kegg_config_rejects_invalid_gene_set_bounds(project_factory):
 def test_kegg_gsea_core_members_stream_deterministically_without_cartesian_expansion(tmp_path):
     import subprocess
 
+    require_rscript()
     helper = Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "kegg_core_members.R"
     output = tmp_path / "members.tsv"
     code = f'''source("{helper}")
@@ -136,6 +137,7 @@ stopifnot(
 def test_kegg_gsea_core_member_writer_keeps_empty_outputs_valid_and_fails_missing_ranked_ids(tmp_path):
     import subprocess
 
+    require_rscript()
     helper = Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "kegg_core_members.R"
     empty_output = tmp_path / "empty.tsv"
     missing_output = tmp_path / "missing.tsv"

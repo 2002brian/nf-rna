@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from conftest import BASE_CONTRASTS, base_config
+from conftest import BASE_CONTRASTS, base_config, require_r_packages
 from rnaseq.downstream import execute_l1, prepare_l1
 from rnaseq.errors import DownstreamExecutionError
 from rnaseq.validators import validate_project
@@ -21,8 +21,7 @@ def _digest(path: Path) -> str:
 
 def test_raw_counts_l1_real_backend_is_structured_and_text_deterministic(project_factory):
     pytest.importorskip("yaml")
-    if shutil.which("Rscript") is None:
-        pytest.skip("Rscript unavailable")
+    require_r_packages("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap")
     counts = "gene_id,C1,C2,C3,T1,T2,T3\n" + "\n".join(
         f"Gene{index},{10 + index},{12 + index},{9 + index},{40 + index},{45 + index},{43 + index}"
         for index in range(1, 101)

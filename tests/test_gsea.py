@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import base_config
+from conftest import base_config, require_r_packages, require_rscript
 from rnaseq.errors import DownstreamExecutionError
 from rnaseq.gsea import execute_gsea, prepare_gsea
 from rnaseq.l2 import prepare_l2
@@ -90,11 +90,9 @@ def test_gsea_rejects_unsupported_organism(project_factory):
 
 
 def test_gsea_rank_backend_uses_finite_stats_and_deterministic_ties(tmp_path):
-    import shutil
     import subprocess
 
-    if shutil.which("Rscript") is None:
-        pytest.skip("Rscript unavailable")
+    require_r_packages("jsonlite", "AnnotationDbi", "clusterProfiler", "ggplot2", "org.Mm.eg.db")
     all_genes = tmp_path / "all_genes.tsv"
     all_genes.write_text(
         "gene_id\tstat\tpadj\tlog2FoldChange\n11287\t3\t1\t0.01\n11298\t3\t0.99\t0.01\n11303\t-2\t0.8\t-0.02\nunknown\t7\t1\t0\n11304\tNA\t0.001\t8\n",
@@ -133,6 +131,7 @@ def test_gsea_rank_backend_uses_finite_stats_and_deterministic_ties(tmp_path):
 def test_go_and_kegg_share_dual_threshold_mapping_qc(mapping_rate, status):
     import subprocess
 
+    require_rscript()
     r_root = Path(__file__).parents[1] / "src" / "rnaseq" / "r"
     code = (
         f'source("{r_root / "annotation_mapping_qc.R"}"); '
@@ -152,6 +151,7 @@ def test_go_and_kegg_share_dual_threshold_mapping_qc(mapping_rate, status):
 def test_go_and_kegg_calculate_all_evaluated_terms_then_share_nf_rna_filtering():
     import subprocess
 
+    require_rscript()
     r_root = Path(__file__).parents[1] / "src" / "rnaseq" / "r"
     code = f'''source("{r_root / "gsea_term_filtering.R"}")
 empty <- data.frame(ID=character(), Description=character(), setSize=integer(), enrichmentScore=numeric(), NES=numeric(), pvalue=numeric(), p.adjust=numeric(), qvalue=numeric(), rank=integer(), leading_edge=character(), core_enrichment=character(), stringsAsFactors=FALSE)
@@ -193,6 +193,7 @@ def test_gsea_backend_retains_na_pathways_but_excludes_them_from_nes_subsets():
 def test_gsea_core_members_have_exact_cardinality_and_no_na_expansion(tmp_path):
     import subprocess
 
+    require_rscript()
     helper = Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "gsea_core_members.R"
     output = tmp_path / "members.tsv"
     code = f'''source("{helper}")
@@ -209,6 +210,7 @@ stopifnot(audit$rows == 4L, nrow(tab) == 4L, !anyDuplicated(paste(tab$GO_ID, tab
 def test_gsea_core_member_guard_rejects_nonunique_rank_mapping(tmp_path):
     import subprocess
 
+    require_rscript()
     helper = Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "gsea_core_members.R"
     output = tmp_path / "members.tsv"
     code = f'''source("{helper}")
@@ -224,6 +226,7 @@ stopifnot(inherits(err, "try-error"))
 def test_gsea_core_members_ignore_empty_tokens_and_use_stable_pathway_order(tmp_path):
     import subprocess
 
+    require_rscript()
     helper = Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "gsea_core_members.R"
     output = tmp_path / "members.tsv"
     code = f'''source("{helper}")

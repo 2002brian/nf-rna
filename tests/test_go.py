@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from conftest import base_config
+from conftest import base_config, require_r_packages
 from rnaseq.errors import DownstreamExecutionError
 from rnaseq.go import execute_go, prepare_go
 from rnaseq.l2 import prepare_l2
@@ -79,11 +79,9 @@ def test_go_blocked_state_is_separate_from_l2(monkeypatch, project_factory):
 
 
 def test_annotation_package_maps_real_entrez_symbol_and_ensembl_suffix():
-    import shutil
     import subprocess
 
-    if shutil.which("Rscript") is None:
-        pytest.skip("Rscript unavailable")
+    require_r_packages("AnnotationDbi", "org.Mm.eg.db")
     code = "suppressPackageStartupMessages({library(AnnotationDbi);library(org.Mm.eg.db)}); a<-select(org.Mm.eg.db,keys='11303',keytype='ENTREZID',columns=c('SYMBOL','ENSEMBL')); stopifnot(a$SYMBOL[[1]]=='Abca1', a$ENSEMBL[[1]]=='ENSMUSG00000015243'); stopifnot(strsplit(paste0(a$ENSEMBL[[1]],'.7'),'.',fixed=TRUE)[[1]][1]==a$ENSEMBL[[1]])"
     result = subprocess.run(["Rscript", "-e", code], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr

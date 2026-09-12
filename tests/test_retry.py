@@ -23,6 +23,7 @@ from rnaseq.validators import validate_project
 
 
 runner = CliRunner()
+pytestmark = pytest.mark.usefixtures("production_capable_execution_capacity")
 
 
 def _failed_frozen_run(project_factory):

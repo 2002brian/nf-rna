@@ -75,7 +75,7 @@ def _ready_fastq_project(tmp_path: Path) -> Path:
     return root
 
 
-def _prepared(monkeypatch, root: Path) -> PreparedRun:
+def _prepared(monkeypatch, root: Path, production_capable_execution_capacity) -> PreparedRun:
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(root.parent / "local-execution-root"))
     monkeypatch.setattr("rnaseq.execution.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "25.10.4"))
     monkeypatch.setattr("rnaseq.execution.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "Docker daemon is available."))
@@ -87,7 +87,7 @@ def test_raw_count_run_is_rejected(project_factory):
         prepare_run(validate_project(project_factory()), "local")
 
 
-def test_preflight_rejects_server_and_stale_plan(monkeypatch, tmp_path):
+def test_preflight_rejects_server_and_stale_plan(monkeypatch, tmp_path, production_capable_execution_capacity):
     root = _ready_fastq_project(tmp_path)
     report = validate_project(root)
     with pytest.raises(ExecutionPreflightError, match="server"):
@@ -100,7 +100,7 @@ def test_preflight_rejects_server_and_stale_plan(monkeypatch, tmp_path):
         prepare_run(validate_project(root), "local")
 
 
-def test_preflight_requires_reference_and_nextflow(monkeypatch, tmp_path):
+def test_preflight_requires_reference_and_nextflow(monkeypatch, tmp_path, production_capable_execution_capacity):
     root = _ready_fastq_project(tmp_path)
     config = yaml.safe_load((root / "project.yaml").read_text())
     config["reference"]["genome"] = None
@@ -117,7 +117,7 @@ def test_preflight_requires_reference_and_nextflow(monkeypatch, tmp_path):
         prepare_run(validate_project(root), "local")
 
 
-def test_fastq_change_invalidates_plan(monkeypatch, tmp_path):
+def test_fastq_change_invalidates_plan(monkeypatch, tmp_path, production_capable_execution_capacity):
     root = _ready_fastq_project(tmp_path)
     with (root / "input" / "fastq" / "C1_R1.fastq.gz").open("ab") as handle:
         handle.write(b"changed")
@@ -125,9 +125,9 @@ def test_fastq_change_invalidates_plan(monkeypatch, tmp_path):
         prepare_run(validate_project(root), "local")
 
 
-def test_safe_pinned_command(monkeypatch, tmp_path):
+def test_safe_pinned_command(monkeypatch, tmp_path, production_capable_execution_capacity):
     root = _ready_fastq_project(tmp_path)
-    prepared = _prepared(monkeypatch, root)
+    prepared = _prepared(monkeypatch, root, production_capable_execution_capacity)
     command = build_nextflow_command(
         prepared.report,
         samplesheet=root / "planning" / "samplesheet.csv",
@@ -142,9 +142,9 @@ def test_safe_pinned_command(monkeypatch, tmp_path):
     assert "test_reference" in command
 
 
-def test_successful_mocked_execution_freezes_state_and_handoff(monkeypatch, tmp_path):
+def test_successful_mocked_execution_freezes_state_and_handoff(monkeypatch, tmp_path, production_capable_execution_capacity):
     root = _ready_fastq_project(tmp_path)
-    prepared = _prepared(monkeypatch, root)
+    prepared = _prepared(monkeypatch, root, production_capable_execution_capacity)
 
     def successful(arguments, **_kwargs):
         outdir = Path(arguments[arguments.index("--outdir") + 1])
@@ -188,9 +188,9 @@ def test_successful_mocked_execution_freezes_state_and_handoff(monkeypatch, tmp_
     assert load_run_states(root)[0]["handoff_available"] is True
 
 
-def test_handoff_accepts_modern_multiqc_report_data(monkeypatch, tmp_path):
+def test_handoff_accepts_modern_multiqc_report_data(monkeypatch, tmp_path, production_capable_execution_capacity):
     root = _ready_fastq_project(tmp_path)
-    prepared = _prepared(monkeypatch, root)
+    prepared = _prepared(monkeypatch, root, production_capable_execution_capacity)
 
     def successful(arguments, **_kwargs):
         outdir = Path(arguments[arguments.index("--outdir") + 1])
@@ -228,9 +228,9 @@ def test_augmented_tx2gene_fixture_retains_nfcore_self_mapping():
     assert sum(quant[name] for name in augmented) == 15
 
 
-def test_failed_subprocess_preserves_run_and_marks_failed(monkeypatch, tmp_path):
+def test_failed_subprocess_preserves_run_and_marks_failed(monkeypatch, tmp_path, production_capable_execution_capacity):
     root = _ready_fastq_project(tmp_path)
-    prepared = _prepared(monkeypatch, root)
+    prepared = _prepared(monkeypatch, root, production_capable_execution_capacity)
     monkeypatch.setattr("rnaseq.execution.subprocess.run", lambda *_args, **_kwargs: SimpleNamespace(returncode=23))
     with pytest.raises(UpstreamExecutionError, match="return code 23"):
         execute_prepared_run(prepared)

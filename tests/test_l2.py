@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from conftest import BASE_COUNTS, BASE_METADATA, base_config
+from conftest import BASE_COUNTS, BASE_METADATA, base_config, require_r_packages
 from rnaseq.downstream import L1Result
 from rnaseq.errors import DownstreamExecutionError
 from rnaseq.l2 import execute_l2, prepare_l2
@@ -35,8 +35,7 @@ def _rows(path: Path) -> list[dict[str, str]]:
 
 
 def test_real_l2_replicated_raw_counts_outputs_and_determinism(tmp_path):
-    if shutil.which("Rscript") is None:
-        pytest.skip("Rscript unavailable")
+    require_r_packages("jsonlite", "DESeq2", "ggplot2", "pheatmap")
     root = _example_copy(tmp_path)
     prepared = prepare_l2(validate_project(root), run_id=None)
     first = execute_l2(prepared)
@@ -104,8 +103,7 @@ def test_l2_supports_multiple_named_contrasts_and_paired_metadata(project_factor
 
 
 def test_l2_zero_deg_heatmap_is_not_applicable(tmp_path):
-    if shutil.which("Rscript") is None:
-        pytest.skip("Rscript unavailable")
+    require_r_packages("jsonlite", "DESeq2", "ggplot2", "pheatmap")
     root = _example_copy(tmp_path)
     config = yaml.safe_load((root / "project.yaml").read_text())
     config["thresholds"]["abs_log2fc"] = 100.0

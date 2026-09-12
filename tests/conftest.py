@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
@@ -67,3 +69,38 @@ def project_factory(tmp_path: Path) -> Callable[..., Path]:
         return root
 
     return create
+
+
+@pytest.fixture
+def production_capable_execution_capacity(monkeypatch):
+    """Make mocked execution tests independent of the host's actual capacity.
+
+    Production code continues to probe the real host. Tests that mock runtime
+    tools but are not testing resource calculation opt in to this fixture so a
+    four-core CI runner can reach its intended assertion.
+    """
+
+    from rnaseq.execution import LocalResourceCapacity
+
+    capacity = LocalResourceCapacity(16, 64, 60)
+    monkeypatch.setattr("rnaseq.execution.detect_local_resource_capacity", lambda: capacity)
+    monkeypatch.setattr("rnaseq.service.detect_local_resource_capacity", lambda: capacity)
+    return capacity
+
+
+def require_rscript() -> str:
+    executable = shutil.which("Rscript")
+    if executable is None:
+        pytest.skip("Rscript unavailable")
+    return executable
+
+
+def require_r_packages(*packages: str) -> str:
+    """Skip full statistical-runtime tests while retaining base-R helper tests."""
+
+    executable = require_rscript()
+    expression = " && ".join(f'requireNamespace("{package}", quietly=TRUE)' for package in packages)
+    result = subprocess.run([executable, "-e", f"quit(status=if ({expression}) 0 else 1)"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        pytest.skip("R packages unavailable: " + ", ".join(packages))
+    return executable

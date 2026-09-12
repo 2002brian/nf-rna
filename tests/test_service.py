@@ -36,6 +36,9 @@ from rnaseq.service import (
 from rnaseq.validators import validate_project
 
 
+pytestmark = pytest.mark.usefixtures("production_capable_execution_capacity")
+
+
 def _frozen_run(project_factory) -> tuple[Path, object, object]:
     root = project_factory()
     report = validate_project(root)
