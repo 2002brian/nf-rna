@@ -16,7 +16,7 @@ from rnaseq.execution import (
     detect_local_resource_capacity, doctor_checks, load_run_states,
     suggested_local_resources, validate_local_execution_budget,
 )
-from rnaseq.service import execute_service_run, prepare_service_run, sanitize_completed_delivery, validate_case_id
+from rnaseq.service import execute_retry_service_run, execute_service_run, prepare_service_run, sanitize_completed_delivery, validate_case_id
 from rnaseq.models import DesignType, FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, SequencingLayout, Species
 from rnaseq.planner import generate_plan
 from rnaseq.project import create_project
@@ -41,6 +41,25 @@ app = typer.Typer(
 )
 reference_app = typer.Typer(help="Prepare and inspect managed local references.", no_args_is_help=True)
 app.add_typer(reference_app, name="reference")
+
+
+def _show_version(value: bool) -> None:
+    if value:
+        typer.echo(PIPELINE_VERSION)
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        help="Show the nf-rna version and exit.",
+        is_eager=True,
+        callback=_show_version,
+    ),
+) -> None:
+    """nf-rna command-line control plane."""
 
 
 def render_validation_report(report: ValidationReport) -> str:
@@ -773,6 +792,38 @@ def run_command(
     typer.echo(f"Delivery package: {result.run_dir / 'delivery'}")
 
 
+@app.command("retry")
+def retry_command(
+    project_dir: Path,
+    retry_of: str = typer.Option(..., "--retry-of", help="Required failed CASE-ID/RUN-ID source run."),
+    nextflow_resume: bool = typer.Option(False, "--nextflow-resume", help="Opt in to Nextflow -resume for this new retry attempt."),
+    yes: bool = typer.Option(False, "--yes", help="Authorize retry without an interactive prompt."),
+) -> None:
+    """Create a new immutable attempt from one FAILED run's frozen contract."""
+
+    try:
+        if not yes:
+            typer.echo(f"Retry source: {retry_of}")
+            typer.echo("A new immutable run will use the source run's frozen scientific contract; the original run will not change.")
+            if nextflow_resume:
+                typer.echo("Nextflow cache reuse is requested for this new retry attempt; it does not define retry identity.")
+            if not typer.confirm("Proceed?", default=False):
+                typer.echo("Retry cancelled; no run directory was created.")
+                raise typer.Exit(code=0)
+        result = execute_retry_service_run(project_dir, retry_of=retry_of, nextflow_resume=nextflow_resume)
+    except typer.Exit:
+        raise
+    except (ExecutionPreflightError, UpstreamExecutionError) as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except (OSError, UnicodeError) as exc:
+        typer.echo(f"SYSTEM ERROR: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"Case retry: SUCCESS ({result.case_id}/{result.run_id})")
+    typer.echo(f"Run directory: {result.run_dir}")
+    typer.echo(f"Delivery package: {result.run_dir / 'delivery'}")
+
+
 @app.command("status")
 def status_command(project_dir: Path) -> None:
     """Show persisted case/run states without inspecting live processes."""
@@ -783,8 +834,12 @@ def status_command(project_dir: Path) -> None:
         return
     for state in states:
         typer.echo(f"Run ID: {state.get('run_id', 'unknown')}")
-        typer.echo(f"Status: {state.get('status', 'unknown')}")
+        attempt = "retry attempt" if state.get("attempt_type") == "RETRY" or state.get("retry_of") else "original run"
+        typer.echo(f"Status: {state.get('status', 'unknown')} ({attempt})")
         typer.echo(f"Case: {state.get('case_id', 'legacy')}")
+        retry_of = state.get("retry_of")
+        if isinstance(retry_of, dict):
+            typer.echo(f"Retry of: {retry_of.get('case_id', 'unknown')}/{retry_of.get('run_id', 'unknown')} (source status: {retry_of.get('status', 'unknown')})")
         typer.echo(f"Profile: {state.get('profile', 'local')}")
         typer.echo(f"Started: {state.get('started_at')}")
         typer.echo(f"Completed: {state.get('completed_at')}")

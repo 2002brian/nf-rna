@@ -48,7 +48,7 @@ process FASTQC_RAW {
     script:
     """
     fastqc --threads ${task.cpus} ${reads}
-    for f in *_fastqc.html *_fastqc.zip; do mv "$f" "raw_$f"; done
+    for f in *_fastqc.html *_fastqc.zip; do mv "\$f" "raw_\$f"; done
     """
 }
 
@@ -123,7 +123,7 @@ process FASTQC_PROCESSED {
     script:
     """
     fastqc --threads ${task.cpus} ${reads}
-    for f in *_fastqc.html *_fastqc.zip; do mv "$f" "processed_$f"; done
+    for f in *_fastqc.html *_fastqc.zip; do mv "\$f" "processed_\$f"; done
     """
 }
 

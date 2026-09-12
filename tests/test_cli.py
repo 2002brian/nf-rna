@@ -15,6 +15,12 @@ from rnaseq.cli import _prompt_toolkit_choice_prompt, _wizard_completion_candida
 runner = CliRunner()
 
 
+def test_version_reports_the_authoritative_package_version():
+    result = runner.invoke(app, ["--version"])
+    assert result.exit_code == 0, result.output
+    assert result.output == "1.0.0rc1\n"
+
+
 def test_wizard_completion_candidates_match_only_canonical_prefixes():
     assert _wizard_completion_candidates("p", ["paired_end", "single_end"]) == ["paired_end"]
     assert _wizard_completion_candidates("s", ["paired_end", "single_end"]) == ["single_end"]
@@ -478,7 +484,7 @@ def test_plan_is_deterministic_and_records_schema_version():
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     assert manifest["schema"]["project_schema_version"] == "1.0"
     assert isinstance(manifest["schema"]["project_schema_version"], str)
-    assert manifest["pipeline"]["version"] == "0.5.1"
+    assert manifest["pipeline"]["version"] == "1.0.0rc1"
 
     second = runner.invoke(app, ["plan", str(example)])
     assert second.exit_code == 0, second.output

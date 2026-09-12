@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## 1.0.0rc1 — 2026-09-12
+
+- Added an active downstream L2 gate that rejects contrasts with fewer than two biological samples in either group before DESeq2 is launched; L1 remains available.
+- Made the package version the single source for wheel/sdist metadata, runtime provenance, and `rnaseq --version`.
+- Added immutable failed-run retry, installed-artifact workflow smoke coverage, and the routine release CI gate.
+
 ## 0.5.1 — 2026-09-06
 
 - Corrected the nf-core/rnaseq 3.26.0 Salmon handoff to require and checksum the augmented tx2gene mapping used by tximport.

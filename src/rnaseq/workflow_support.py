@@ -165,6 +165,36 @@ def _contrasts(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def _guard_l2_biological_replication(metadata_path: Path, contrasts: list[dict[str, str]]) -> None:
+    """Reject unreplicated L2 contrasts before the Nextflow process launches R.
+
+    The project validator intentionally reports limited replication as a warning
+    so that L1 QC remains available.  L2 inference has a stricter requirement:
+    each configured numerator and denominator must contain at least two
+    biological samples.  Pair validation remains a project-contract concern and
+    is deliberately not reinterpreted here.
+    """
+
+    with metadata_path.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    for contrast in contrasts:
+        contrast_id = contrast.get("contrast_id", "<unknown>")
+        factor = contrast.get("factor")
+        numerator = contrast.get("numerator")
+        denominator = contrast.get("denominator")
+        if not all(isinstance(value, str) and value for value in (factor, numerator, denominator)):
+            raise ValueError(f"L2 contrast {contrast_id!r} is incomplete.")
+        numerator_count = sum(row.get(factor) == numerator for row in rows)
+        denominator_count = sum(row.get(factor) == denominator for row in rows)
+        if numerator_count < 2 or denominator_count < 2:
+            raise ValueError(
+                "L2 differential-expression inference requires at least two biological samples "
+                "in each configured contrast group. "
+                f"Contrast {contrast_id}: {denominator} n={denominator_count}, "
+                f"{numerator} n={numerator_count}. L1 QC remains available; L2 was not launched."
+            )
+
+
 def _required_frozen_annotation(contract: dict[str, Any], kind: str) -> dict[str, Any]:
     """Read only the immutable annotation snapshot required by one backend."""
 
@@ -201,16 +231,19 @@ def l2_config(contract_path: Path, inputs: Path, l1: Path, output: Path) -> dict
     contract = _read_contract(contract_path)
     root, manifest = _read_execution_inputs(inputs)
     project = _project(inputs)
+    metadata = _staged_file(root, manifest.get("metadata"), "metadata")
+    contrasts = _contrasts(_staged_file(root, manifest.get("contrasts"), "contrasts"))
+    _guard_l2_biological_replication(metadata, contrasts)
     return {
         **_source_config(contract, inputs),
-        "metadata": str(_staged_file(root, manifest.get("metadata"), "metadata")),
+        "metadata": str(metadata),
         "formula": project["design"]["formula"],
         "pair_id": project["design"].get("pair_id", project["design"].get("pairing_column")),
         "samples": _samples(inputs),
         "output_dir": str(output),
         "filter": FILTER,
         "thresholds": project["thresholds"],
-        "contrasts": _contrasts(_staged_file(root, manifest.get("contrasts"), "contrasts")),
+        "contrasts": contrasts,
         "l1_vst": str(l1 / "vst.tsv"),
         "heatmap_top_n": 50,
     }

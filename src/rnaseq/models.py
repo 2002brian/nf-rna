@@ -8,9 +8,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
 
+from rnaseq import __version__
+
 SUPPORTED_SCHEMA_VERSION = "1.2"
 LEGACY_SCHEMA_VERSION = "1.0"
-PIPELINE_VERSION = "0.5.1"
+PIPELINE_VERSION = __version__
 NFCORE_RNASEQ_VERSION = "3.26.0"
 PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 

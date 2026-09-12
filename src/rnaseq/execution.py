@@ -26,13 +26,14 @@ from rnaseq.hisat2_featurecounts import COUNTING_POLICY, HISAT2_VERSION, SAMTOOL
 from rnaseq.planner import render_manifest, render_samplesheet
 from rnaseq.references import LocalReferenceError, load_local_reference, sha256_file
 from rnaseq.validators import ValidationReport
+from rnaseq.workflow_assets import workflow_asset_path
 
 LOCAL_PROFILE = "local"
 CONTAINER_PROFILE = "docker"
 RUN_STATES = {"CREATED", "RUNNING", "SUCCESS", "FAILED"}
 EXECUTION_ROOT_ENV = "RNASEQ_EXECUTION_ROOT"
 CONTROL_PLANE_IMAGE = "rnaseq-control-plane:latest"
-HISAT2_WORKFLOW = Path(__file__).resolve().parents[2] / "workflow" / "hisat2_featurecounts.nf"
+HISAT2_WORKFLOW = workflow_asset_path("hisat2_featurecounts.nf")
 CONTAINER_R_PACKAGES = (
     "DESeq2", "tximport", "ggplot2", "pheatmap", "yaml", "jsonlite",
     "clusterProfiler", "AnnotationDbi", "org.Hs.eg.db", "org.Mm.eg.db",
@@ -1273,7 +1274,7 @@ def execute_prepared_run(prepared: PreparedRun) -> RunResult:
         "git_commit": git_commit,
         "source_checkout": str(source_root),
         "workflow_sha256": {
-            "workflow/main.nf": sha256_file(source_root / "workflow" / "main.nf"),
+            "workflow/main.nf": sha256_file(workflow_asset_path("main.nf")),
             "workflow/hisat2_featurecounts.nf": sha256_file(HISAT2_WORKFLOW),
         },
         "execution_root": str(workspace.root),

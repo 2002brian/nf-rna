@@ -8,7 +8,7 @@
 
 對於 FASTQ 專案，nf-rna 將固定版本的 nf-core/rnaseq 3.26.0、Salmon 與 tximport，結合 first-party 的 DESeq2 和 clusterProfiler 分析。科學與執行設定都必須明確宣告，而非由系統猜測；因此，同一個已宣告的專案可以被審查與重跑，並保有清楚的輸入與設定紀錄。
 
-目前 patch 版本為 `0.5.1`，穩定的 CLI 與 Python namespace 都是 `rnaseq`。開發模式可使用 `rnaseq-control-plane:latest`；production-intended run 必須指定 digest 或 versioned tag，並將 Docker 實際觀察到的 image ID/digest 凍結於 provenance。
+目前 release candidate 版本為 `1.0.0rc1`，穩定的 CLI 與 Python namespace 都是 `rnaseq`。開發模式可使用 `rnaseq-control-plane:latest`；production-intended run 必須指定 digest 或 versioned tag，並將 Docker 實際觀察到的 image ID/digest 凍結於 provenance。
 
 ## 概覽
 
@@ -176,7 +176,7 @@ rnaseq doctor
 
 `rnaseq doctor` 會以不變更系統狀態的方式檢查 local runtime prerequisite；提供專案路徑時，也會評估 project 與 reference readiness。它會分別報告 host、Docker、project requested budget 與 effective local budget。Docker Desktop／WSL allocation 會參與 effective ceiling；native Linux 則使用 host ceiling。只有 effective budget 無法容納最大的 8 CPU／12 GiB local process contract 時，execution 才會在啟動前失敗。
 
-目前僅支援 local execution；workstation/HPC 與 SLURM profile 明確延後，0.5.1 不宣稱支援。
+目前僅支援 local execution；workstation/HPC 與 SLURM profile 明確延後，本 release candidate 不宣稱支援。
 
 ### 3. 嘗試隨附的 smoke test
 
@@ -191,6 +191,14 @@ rnaseq run examples/nfcore_smoke_test --case-id SMOKE-001 --profile local --yes
 - `run` 會執行真正的 immutable analysis run；它可能下載 container、處理公開 fixture，並使用本機 compute 與 storage。
 
 隨附的 smoke fixture 是 integration check，不是 biological study，也不能作為 biological interpretation 的依據。
+
+若需重試失敗的 execution，又不修改來源 run，請使用：
+
+```bash
+rnaseq retry PROJECT --retry-of CASE-ID/RUN-ID [--nextflow-resume] [--yes]
+```
+
+只有 `FAILED` run 可被重試。retry 會建立新的 immutable attempt、重用失敗 run 的 frozen scientific intent，且絕不修改原始 run。`--nextflow-resume` 僅是 opt-in 的 Nextflow cache hint，不定義 retry identity；缺少、變更或不安全的 frozen reference identity 會 fail closed，不會被靜默替換。
 
 ### 4. 建立自己的專案
 
@@ -282,18 +290,16 @@ nf-rna 會在分析前驗證 input；不會靜默加入 metadata variable、重�
 
 ## 驗證狀態
 
-在公開包裝審查時，非昂貴的 regression suite 完成 **187 passed, 1 deselected**；被排除的是一項明確標示為昂貴的 L2 determinism test。新的 L1 FASTQ smoke run 也已完成 upstream nf-core/Salmon processing、immutable handoff staging、L1 analysis、L1-only reporting 與 delivery assembly，且未呼叫 control-plane L2 或 GSEA。
+unit/regression suite 涵蓋 project contract、validation、planning、provenance、workflow configuration 與 delivery behavior。release qualification 另外會建立 wheel 與 source distribution、在 source checkout 外安裝各 artifact、驗證 CLI 與 package identity、尋找 bundled workflow asset，並解析 Nextflow configuration。需 Docker daemon 或真實 SAMtools/featureCounts 的 acceptance test 會維持為獨立驗證。
 
 這些是 software 與 regression check，代表已實作的 workflow path 在對應 fixture 上如預期運作；它們不代表新的研究已取得 biological validity，也不能取代 experimental-design review。
-
-Milestone A 新增 hand-constructed 的 real-tool featureCounts fixture，驗證 single-end、paired fragment、forward/reverse strandedness、multimapper 與 overlapping-gene 排除、both-mates/chimeric policy、secondary/supplementary 排除，以及 technical-lane merge count。這是補充的 host validation，不取代 pinned-container smoke run；實際狀態請見 [runtime](docs/runtime.md)。
 
 ## Requirement 與限制
 
 - 需要 Python 3.11 以上、Docker 與足夠的 local storage。
 - FASTQ route 需要 Nextflow。
 - Host/container architecture、image availability 與 registry access 仍是 runtime responsibility。
-- L2 inference 需要適當的 biological replication；nf-rna 不會使無 replicate 的 1-vs-1 comparison 適合進行 DESeq2 inference。
+- L2 inference 的每個 configured contrast group 至少需要兩個 biological samples。n=2 時 validation 仍會提出 low-replication warning；n=1 導致 L2 被阻擋時，L1 QC 仍可使用。
 - KEGG GSEA 依賴宣告的 online KEGG route，可能回報 network unavailable。
 - nf-rna 只產生技術分析成果；不提供 clinical decision 或 biological interpretation。
 
@@ -309,4 +315,4 @@ Milestone A 新增 hand-constructed 的 real-tool featureCounts fixture，驗證
 
 ## Citation 與 license
 
-nf-rna 的版本 metadata 已準備為 `v0.5.1`，採用 [MIT License](LICENSE)。請引用實際使用的 tagged release；機器可讀紀錄位於 [CITATION.cff](CITATION.cff)。
+nf-rna 的版本 metadata 已準備為 `v1.0.0rc1`，採用 [MIT License](LICENSE)。請引用實際使用的 tagged release；機器可讀紀錄位於 [CITATION.cff](CITATION.cff)。

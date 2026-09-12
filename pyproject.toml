@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nf-rna"
-version = "0.5.1"
+dynamic = ["version"]
 description = "Production-oriented bulk RNA-seq workflow with DESeq2 and preranked GO/KEGG GSEA"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,8 +27,17 @@ rnaseq = "rnaseq.cli:app"
 [tool.hatch.build.targets.wheel]
 packages = ["src/rnaseq"]
 
+[tool.hatch.version]
+path = "src/rnaseq/__init__.py"
+
+# Nextflow graphs are executable package data.  Keep their source in the
+# repository-level workflow/ directory for developers, but install that same
+# directory below rnaseq.workflows for normal wheel consumers.
+[tool.hatch.build.targets.wheel.force-include]
+"workflow" = "rnaseq/workflows"
+
 [tool.hatch.build.targets.sdist]
-include = ["src/rnaseq", "tests", "examples", "docs", "README.md", "CHANGELOG.md", "CITATION.cff", "LICENSE", "environment.yml", "environment.docker.yml", "environment.reference-builder.yml", "environment.reference-builder-hisat2-2.2.3.yml", "pyproject.toml", "Dockerfile", ".dockerignore"]
+include = ["src/rnaseq", "workflow", "tests", "examples", "docs", "README.md", "CHANGELOG.md", "CITATION.cff", "LICENSE", "environment.yml", "environment.docker.yml", "environment.reference-builder.yml", "environment.reference-builder-hisat2-2.2.3.yml", "pyproject.toml", "Dockerfile", ".dockerignore"]
 exclude = [
   "examples/**/runs/**",
   "examples/**/work/**",

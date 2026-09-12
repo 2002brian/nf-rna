@@ -16,7 +16,7 @@ from conftest import base_config
 from rnaseq.planner import generate_plan
 from rnaseq.service import create_case_run, freeze_case_inputs, resolve_downstream_inputs
 from rnaseq.validators import validate_project
-from rnaseq.workflow_support import _samples, _source_import_label, enrichment_config, l1_config, report
+from rnaseq.workflow_support import _samples, _source_import_label, enrichment_config, l1_config, l2_config, report
 
 
 @pytest.mark.parametrize(
@@ -74,6 +74,59 @@ def _frozen_contract(project_factory, *, schema_version: str) -> tuple[dict[str,
         run.run_dir / "downstream" / "l2",
         inputs.root,
     )
+
+
+def _active_l2_contract(project_factory, *, counts: str, metadata: str) -> tuple[Path, Path, object]:
+    """Freeze an ordinary L2 project for the production config-builder route."""
+
+    root = project_factory(counts=counts, metadata=metadata)
+    validation = validate_project(root)
+    assert validation.is_valid, validation.errors
+    generate_plan(validation)
+    run = create_case_run(validation, "CASE-L2-CONTRACT", moment=datetime(2026, 9, 12, 12, 0, 0))
+    frozen = freeze_case_inputs(validation, run, profile="local", command=["rnaseq", "run"])
+    return frozen.contract, resolve_downstream_inputs(run).root, validation
+
+
+@pytest.mark.parametrize(
+    ("counts", "metadata", "expected_counts"),
+    (
+        (
+            "gene_id,C1,T1\nGeneA,10,40\nGeneB,100,95\n",
+            "sample_id,condition\nC1,Control\nT1,Treatment\n",
+            "Control n=1, Treatment n=1",
+        ),
+        (
+            "gene_id,C1,T1,T2\nGeneA,10,40,45\nGeneB,100,95,102\n",
+            "sample_id,condition\nC1,Control\nT1,Treatment\nT2,Treatment\n",
+            "Control n=1, Treatment n=2",
+        ),
+    ),
+)
+def test_active_l2_config_blocks_unreplicated_contrasts_but_l1_remains_available(
+    project_factory, tmp_path, counts, metadata, expected_counts,
+):
+    contract, inputs, validation = _active_l2_contract(project_factory, counts=counts, metadata=metadata)
+    assert validation.is_valid
+    assert l1_config(contract, inputs, tmp_path / "l1")["output_dir"] == str(tmp_path / "l1")
+    with pytest.raises(ValueError, match=expected_counts):
+        l2_config(contract, inputs, tmp_path / "l1", tmp_path / "l2")
+
+
+def test_active_l2_config_accepts_two_by_two_with_existing_low_replication_warnings(project_factory, tmp_path):
+    counts = "gene_id,C1,C2,T1,T2\nGeneA,10,12,40,45\nGeneB,100,110,95,102\n"
+    metadata = "sample_id,condition\nC1,Control\nC2,Control\nT1,Treatment\nT2,Treatment\n"
+    contract, inputs, validation = _active_l2_contract(project_factory, counts=counts, metadata=metadata)
+    assert sum(issue.code == "limited_replication" for issue in validation.warnings) == 2
+    config = l2_config(contract, inputs, tmp_path / "l1", tmp_path / "l2")
+    assert config["contrasts"] == [
+        {"contrast_id": "Treatment_vs_Control", "factor": "condition", "numerator": "Treatment", "denominator": "Control"}
+    ]
+
+
+def test_active_nextflow_l2_process_uses_the_guarded_config_builder():
+    workflow = (ROOT / "workflow" / "main.nf").read_text(encoding="utf-8")
+    assert "python -m rnaseq.workflow_support l2-config" in workflow
 
 
 def _write_report_artifacts(contrasts_path: Path, l2: Path) -> tuple[Path, Path, Path]:

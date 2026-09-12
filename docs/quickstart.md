@@ -83,7 +83,7 @@ reference:
   manifest: reference_manifest.yaml
   acceptance: production
 runtime:
-  control_plane_image: rnaseq-control-plane:0.5.1
+  control_plane_image: rnaseq-control-plane:1.0.0rc1
 ```
 
 The managed manifest must use schema 1.1 with deliberate `purpose: production`. The initial human identity contract is Ensembl 116, GRCh38.p14; an unpatched assembly such as mouse GRCm39 uses `assembly_patch: null` (or omits it) and displays simply as `GRCm39`. Assets are not downloaded by this project.
@@ -124,6 +124,14 @@ rnaseq status path/to/project
 ```
 
 This creates a new immutable case/run directory. QC-only FASTQ projects stop after the upstream backend and MultiQC delivery. L1 projects stop after L1 and the L1 report. L2 projects may run L2 and explicitly selected GSEA. Never use a small fixture or an unreplicated comparison to draw biological conclusions.
+
+To retry a failed execution without changing its source run, use:
+
+```bash
+rnaseq retry PROJECT --retry-of CASE-ID/RUN-ID [--nextflow-resume] [--yes]
+```
+
+Only `FAILED` runs are eligible. A retry creates a new immutable attempt, reuses the failed run's frozen scientific intent, and never modifies the original run. `--nextflow-resume` is only an opt-in Nextflow cache hint; it does not define retry identity. A missing, changed, or unsafe frozen reference identity fails closed rather than being silently replaced.
 
 ## Public smoke fixture
 

@@ -1,0 +1,64 @@
+name: Release gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test-build-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: nf-core/setup-nextflow@v2
+        with:
+          version: "26.04.6"
+      - name: Install test and build tools
+        run: |
+          python -m pip install --upgrade pip build
+          python -m pip install -e '.[dev]'
+      - name: Run Python tests
+        run: python -m pytest -q
+      - name: Build wheel and source distribution
+        run: python -m build
+      - name: Inspect distribution inventories
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import tarfile
+          import zipfile
+
+          required = {
+              "rnaseq/workflows/main.nf",
+              "rnaseq/workflows/hisat2_featurecounts.nf",
+              "rnaseq/workflows/nextflow.config",
+          }
+          wheel = next(Path("dist").glob("*.whl"))
+          with zipfile.ZipFile(wheel) as archive:
+              missing = required - set(archive.namelist())
+          if missing:
+              raise SystemExit(f"Wheel is missing workflow assets: {sorted(missing)}")
+          sdist = next(Path("dist").glob("*.tar.gz"))
+          with tarfile.open(sdist) as archive:
+              names = {Path(member.name).parts[-2] + "/" + Path(member.name).name for member in archive.getmembers()}
+          expected_sdist = {"workflow/" + item.rsplit("/", 1)[-1] for item in required}
+          missing = expected_sdist - names
+          if missing:
+              raise SystemExit(f"sdist is missing source workflow assets: {sorted(missing)}")
+          PY
+      - name: Fresh-install release smoke from each artifact
+        env:
+          NF_RNA_SOURCE_ROOT: ${{ github.workspace }}
+        run: |
+          for artifact in dist/*.whl dist/*.tar.gz; do
+            environment="$RUNNER_TEMP/nf-rna-$(basename "$artifact")"
+            python -m venv "$environment"
+            "$environment/bin/python" -m pip install "$artifact"
+            (
+              cd "$RUNNER_TEMP"
+              "$environment/bin/python" "$GITHUB_WORKSPACE/tests/release_smoke.py"
+            )
+          done

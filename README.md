@@ -6,7 +6,7 @@ English | [繁體中文](README_zh-TW.md)
 
 For FASTQ projects, nf-rna supports pinned nf-core/rnaseq 3.26.0 + Salmon/tximport and an explicitly configured first-party HISAT2 + featureCounts route, both feeding first-party DESeq2 and clusterProfiler analysis. Scientific and execution settings are explicit rather than inferred, so the same declared project can be reviewed and rerun with a clear record of its inputs and choices.
 
-The current patch version is `0.5.1`. Its stable CLI and Python namespace are both `rnaseq`. Development runs may use `rnaseq-control-plane:latest`; production-intended runs must request a digest or a versioned tag whose observed Docker image ID/digest is frozen in provenance.
+The current release candidate is `1.0.0rc1`. Its stable CLI and Python namespace are both `rnaseq`. Development runs may use `rnaseq-control-plane:latest`; production-intended runs must request a digest or a versioned tag whose observed Docker image ID/digest is frozen in provenance.
 
 ## Overview
 
@@ -203,7 +203,7 @@ rnaseq doctor
 
 `rnaseq doctor` reports non-mutating prerequisite checks for the local runtime; with a project path it also evaluates project and reference readiness. It reports host capacity, Docker capacity, the requested project budget, and the effective local budget. Docker Desktop/WSL allocations participate in the effective ceiling; native Linux uses the host ceiling. Execution fails before launch only when the effective budget cannot satisfy the largest 8 CPU / 12 GiB local process contract.
 
-Execution is currently local-only. Workstation/HPC and SLURM profiles are intentionally deferred and are not claimed by version 0.5.1.
+Execution is currently local-only. Workstation/HPC and SLURM profiles are intentionally deferred and are not claimed by this release candidate.
 
 ### 3. Try the included smoke test
 
@@ -315,18 +315,16 @@ Read the concise [architecture guide](docs/architecture.md) for lifecycle and da
 
 ## Validation
 
-At the public-packaging review, the non-expensive regression suite completed with **187 passed, 1 deselected**. The deselected test is an explicitly expensive L2 determinism test. A fresh L1 FASTQ smoke run also completed upstream nf-core/Salmon processing, immutable handoff staging, L1 analysis, L1-only reporting, and delivery assembly without invoking control-plane L2 or GSEA.
+The unit/regression suite covers project contracts, validation, planning, provenance, workflow configuration, and delivery behavior. Release qualification additionally builds wheel and source distributions, installs each artifact outside the source checkout, verifies CLI and package identity, discovers bundled workflow assets, and parses the Nextflow configuration. Docker- and tool-dependent acceptance tests remain separate because they require a Docker daemon or real SAMtools/featureCounts.
 
-These are software and regression checks. They demonstrate that the implemented workflow paths behaved as expected for their fixtures; they do not establish biological validity for a new study or replace experimental-design review.
-
-Milestone A adds a hand-constructed real-tool featureCounts fixture. It verifies single-end reads, paired fragments, forward/reverse strand selection, multimapper and overlapping-gene exclusion, both-mates and chimeric-fragment policy, secondary/supplementary exclusion, and technical-lane merge counts. It is supplementary host validation, not a substitute for the pinned-container smoke run; see [runtime](docs/runtime.md) for the recorded status.
+These are software and regression checks. They demonstrate that implemented workflow paths behaved as expected for their fixtures; they do not establish biological validity for a new study or replace experimental-design review.
 
 ## Requirements and limitations
 
 - Python 3.11+, Docker, and adequate local storage are required.
 - Nextflow is required for the FASTQ route.
 - Host/container architecture, image availability, and registry access remain runtime responsibilities.
-- L2 inference requires appropriate biological replication; nf-rna does not make an unreplicated 1-vs-1 comparison suitable for DESeq2 inference.
+- L2 inference requires at least two biological samples in each configured contrast group. Validation retains a low-replication warning for n=2; L1 QC remains available when L2 is blocked for n=1.
 - KEGG GSEA depends on the declared online KEGG route and may report network unavailability.
 - nf-rna produces technical analysis artifacts only; it does not provide clinical decisions or biological interpretation.
 
@@ -342,4 +340,4 @@ Milestone A adds a hand-constructed real-tool featureCounts fixture. It verifies
 
 ## Citation and license
 
-nf-rna version metadata is prepared for `v0.5.1` under the [MIT License](LICENSE). Cite the specific tagged release you use; the machine-readable record is [CITATION.cff](CITATION.cff).
+nf-rna version metadata is prepared for `v1.0.0rc1` under the [MIT License](LICENSE). Cite the specific tagged release you use; the machine-readable record is [CITATION.cff](CITATION.cff).

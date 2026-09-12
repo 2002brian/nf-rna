@@ -59,10 +59,12 @@ from rnaseq.execution import (
     ResourceContract,
     LOCAL_RESOURCE_CEILING,
 )
-from rnaseq.models import FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, production_enrichment_backends
+from rnaseq.models import FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, ProjectConfig, production_enrichment_backends
+from rnaseq.project import LoadedProject
 from rnaseq.hisat2_featurecounts import FASTP_IMAGE, FASTP_VERSION, FASTQC_IMAGE, FASTQC_VERSION, HISAT2_IMAGE, HISAT2_VERSION, MULTIQC_IMAGE, MULTIQC_VERSION, SAMTOOLS_IMAGE, SAMTOOLS_VERSION, SUBREAD_IMAGE, SUBREAD_VERSION
 from rnaseq.planner import pairing_contract, render_manifest
-from rnaseq.validators import ValidationReport
+from rnaseq.validators import FastqRecord, FastqSummary, ValidationReport
+from rnaseq.workflow_assets import workflow_asset_path
 
 CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 RUN_ID_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}\+[0-9]{4}(?:-[0-9]{2,3})?$")
@@ -100,6 +102,18 @@ class ResolvedDownstreamInputs:
     manifest: Path
     source_type: str
     samples: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RetrySource:
+    """A fail-closed, validated failed run that can seed one new attempt."""
+
+    run: CaseRun
+    state: dict[str, Any]
+    contract: dict[str, Any]
+    execution: dict[str, Any]
+    provenance: dict[str, Any]
+    reuse_upstream: bool
 
 
 def validate_case_id(value: str) -> str:
@@ -713,7 +727,7 @@ def _provenance(
     control_plane = inspect_container_image(requested_image)
     source_root = Path(__file__).resolve().parents[2]
     workflow_hashes = {
-        "workflow/main.nf": _sha256(source_root / "workflow" / "main.nf"),
+        "workflow/main.nf": _sha256(workflow_asset_path("main.nf")),
         "workflow/hisat2_featurecounts.nf": _sha256(HISAT2_WORKFLOW),
     }
     local_config = run.run_dir / "frozen" / "nfcore.local.config"
@@ -891,7 +905,6 @@ def build_downstream_nextflow_command(
     execution_inputs: ResolvedDownstreamInputs | None = None, runtime_config: Path | None = None,
     local_resource_config: Path | None = None,
 ) -> list[str]:
-    root = Path(__file__).resolve().parents[2]
     contract = json.loads((run.run_dir / "frozen" / "downstream_contract.json").read_text(encoding="utf-8"))
     analysis_level = contract.get("analysis_level")
     if analysis_level not in {"L1", "L2"}:
@@ -901,7 +914,7 @@ def build_downstream_nextflow_command(
         raise ValueError("Frozen downstream contract cannot enable enrichment for analysis_level L1.")
     resolved_work_dir = work_dir or (resolve_execution_workspace(run.case_id, run.run_id).work_dir / "downstream")
     command = [
-        "nextflow", "run", str(root / "workflow" / "main.nf"), "-c", str(root / "workflow" / "nextflow.config"), "-profile", CONTAINER_PROFILE if profile == LOCAL_PROFILE else profile,
+        "nextflow", "run", str(workflow_asset_path("main.nf")), "-c", str(workflow_asset_path("nextflow.config")), "-profile", CONTAINER_PROFILE if profile == LOCAL_PROFILE else profile,
     ]
     if observer_config is not None:
         command.extend(["-c", str(observer_config.resolve())])
@@ -1162,6 +1175,306 @@ def prepare_service_run(report: ValidationReport, *, profile: str) -> EffectiveR
     return resources
 
 
+def _parse_retry_reference(value: str) -> tuple[str, str]:
+    pieces = value.split("/")
+    if len(pieces) != 2:
+        raise ExecutionPreflightError("--retry-of must be formatted as CASE-ID/RUN-ID.")
+    case_id, run_id = pieces
+    validate_case_id(case_id)
+    if not RUN_ID_PATTERN.fullmatch(run_id):
+        raise ExecutionPreflightError("--retry-of has an unsafe run ID.")
+    return case_id, run_id
+
+
+def _require_immutable_file(path: Path, label: str) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise ExecutionPreflightError(f"Retry source is incomplete or unsafe: missing regular {label}: {path}")
+
+
+def _validate_frozen_manifest(run: CaseRun) -> None:
+    """Verify the frozen scientific snapshots before retry can allocate a run."""
+
+    frozen = run.run_dir / "frozen"
+    manifest = _read_yaml_mapping(frozen / "input_manifest.yaml", "retry source input manifest")
+    for key, filename in (("configuration", "project.yaml"), ("metadata", "metadata.csv"), ("contrasts", "contrasts.csv")):
+        entry = manifest.get(key)
+        if entry is None and key in {"metadata", "contrasts"}:
+            continue
+        if not isinstance(entry, dict) or not isinstance(entry.get("sha256"), str):
+            raise ExecutionPreflightError(f"Retry source input manifest has no checksum for {key}.")
+        path = frozen / filename
+        _require_immutable_file(path, f"frozen {key}")
+        if _sha256(path) != entry["sha256"]:
+            raise ExecutionPreflightError(f"Retry source frozen {key} checksum does not match its input manifest.")
+
+    input_entry = manifest.get("input")
+    if not isinstance(input_entry, dict):
+        raise ExecutionPreflightError("Retry source input manifest has no input identity.")
+    if input_entry.get("type") == "fastq":
+        files = input_entry.get("files")
+        if not isinstance(files, list) or not files:
+            raise ExecutionPreflightError("Retry source FASTQ manifest has no frozen file identities.")
+        for item in files:
+            if not isinstance(item, dict) or not isinstance(item.get("relative_path"), str) or not isinstance(item.get("sha256"), str):
+                raise ExecutionPreflightError("Retry source FASTQ manifest is malformed.")
+            path = frozen / "input" / "fastq" / Path(item["relative_path"]).name
+            _require_immutable_file(path, "frozen FASTQ")
+            if _sha256(path) != item["sha256"]:
+                raise ExecutionPreflightError(f"Retry source frozen FASTQ checksum does not match its input manifest: {path.name}")
+    elif input_entry.get("type") == "raw_counts":
+        path = frozen / "input" / "counts.csv"
+        _require_immutable_file(path, "frozen raw count matrix")
+        if not isinstance(input_entry.get("sha256"), str) or _sha256(path) != input_entry["sha256"]:
+            raise ExecutionPreflightError("Retry source frozen raw count matrix checksum does not match its input manifest.")
+    else:
+        raise ExecutionPreflightError("Retry source input manifest has an unsupported input type.")
+
+
+def _validate_retry_upstream_handoff(run: CaseRun, contract: dict[str, Any]) -> bool:
+    """Return whether a failed run has a complete immutable upstream handoff."""
+
+    source = contract.get("source")
+    if not isinstance(source, dict):
+        raise ExecutionPreflightError("Retry source downstream contract has no source mapping.")
+    handoff_value = source.get("upstream_handoff")
+    if handoff_value is None:
+        return False
+    expected = (run.run_dir / "frozen" / "upstream_handoff_manifest.yaml").resolve()
+    if not isinstance(handoff_value, str) or Path(handoff_value).resolve() != expected:
+        raise ExecutionPreflightError("Retry source downstream contract has an incompatible frozen upstream handoff path.")
+    handoff = _read_yaml_mapping(expected, "retry source frozen upstream handoff")
+    method = source.get("type")
+    if method == "salmon_tximport":
+        gene = handoff.get("gene_level_counts")
+        salmon = handoff.get("salmon")
+        if not isinstance(gene, dict) or not isinstance(salmon, dict):
+            raise ExecutionPreflightError("Retry source Salmon handoff is incomplete.")
+        _safe_existing_under(run.run_dir, gene.get("path"), "gene_level_counts.path", allowed_root=run.run_dir / "upstream" / "nfcore_rnaseq")
+        _salmon_mapping_contract(run.run_dir, salmon.get("tx2gene"))
+        quant = salmon.get("quant_sf")
+        if not isinstance(quant, dict) or not quant:
+            raise ExecutionPreflightError("Retry source Salmon handoff has no per-sample quantification files.")
+        for sample, path in quant.items():
+            _safe_existing_under(run.run_dir, path, f"salmon.quant_sf[{sample!r}]", allowed_root=run.run_dir / "upstream" / "nfcore_rnaseq")
+    elif method == "featurecounts_raw_counts":
+        featurecounts = handoff.get("featurecounts")
+        if not isinstance(featurecounts, dict):
+            raise ExecutionPreflightError("Retry source featureCounts handoff is incomplete.")
+        _safe_existing_under(run.run_dir, featurecounts.get("canonical_matrix"), "featurecounts.canonical_matrix", allowed_root=run.run_dir / "upstream" / "hisat2_featurecounts")
+    else:
+        raise ExecutionPreflightError("Retry source has an unsupported upstream handoff type.")
+    if not (run.run_dir / "upstream").is_dir():
+        raise ExecutionPreflightError("Retry source has a frozen upstream handoff but no upstream output directory.")
+    return True
+
+
+def _load_retry_source(project_dir: Path, retry_of: str) -> RetrySource:
+    """Resolve a FAILED source run and prove its immutable contract is usable."""
+
+    case_id, run_id = _parse_retry_reference(retry_of)
+    runs_dir = (project_dir / "runs").resolve()
+    source_path = runs_dir / case_id / run_id
+    if source_path.is_symlink():
+        raise ExecutionPreflightError("Retry source run directory must not be a symlink.")
+    source_dir = source_path.resolve()
+    try:
+        source_dir.relative_to(runs_dir)
+    except ValueError as exc:
+        raise ExecutionPreflightError("--retry-of must refer to a run in this project.") from exc
+    if not source_dir.is_dir():
+        raise ExecutionPreflightError("Retry source run directory does not exist.")
+    run = CaseRun(case_id, run_id, source_dir, "unknown")
+    _require_immutable_file(run.state_path, "retry source run state")
+    state = _read_json_mapping(run.state_path, "retry source run state")
+    if state.get("case_id") != case_id or state.get("run_id") != run_id:
+        raise ExecutionPreflightError("Retry source run state does not match its case/run directory.")
+    if state.get("status") != "FAILED":
+        raise ExecutionPreflightError("Only FAILED runs may be retried; successful runs are not failed-run retries.")
+    frozen = source_dir / "frozen"
+    if frozen.is_symlink() or not frozen.is_dir():
+        raise ExecutionPreflightError("Retry source is incomplete: frozen contract directory is missing.")
+    for path in frozen.rglob("*"):
+        if path.is_symlink():
+            raise ExecutionPreflightError(f"Retry source frozen contract contains a symlink: {path}")
+    _validate_frozen_manifest(run)
+    contract = _read_json_mapping(frozen / "downstream_contract.json", "retry source downstream contract")
+    execution = _read_yaml_mapping(frozen / "execution_manifest.yaml", "retry source execution manifest")
+    provenance_path = source_dir / "provenance" / "run_provenance.yaml"
+    _require_immutable_file(provenance_path, "retry source provenance")
+    provenance = _read_yaml_mapping(provenance_path, "retry source provenance")
+    for key, expected in (
+        ("project_config", frozen / "project.yaml"),
+        ("metadata", frozen / "metadata.csv"),
+        ("contrasts", frozen / "contrasts.csv"),
+        ("input_manifest", frozen / "input_manifest.yaml"),
+    ):
+        if not isinstance(contract.get(key), str) or Path(contract[key]).resolve() != expected.resolve():
+            raise ExecutionPreflightError(f"Retry source downstream contract has an incompatible {key} path.")
+    case = contract.get("case")
+    if not isinstance(case, dict) or case.get("id") != case_id or case.get("run_id") != run_id:
+        raise ExecutionPreflightError("Retry source downstream contract does not match its case/run identity.")
+    if execution.get("case_id") != case_id or execution.get("run_id") != run_id or execution.get("profile") != LOCAL_PROFILE:
+        raise ExecutionPreflightError("Retry source execution manifest is incompatible with local immutable retry.")
+    return RetrySource(run, state, contract, execution, provenance, _validate_retry_upstream_handoff(run, contract))
+
+
+def _create_retry_case_run(project_dir: Path, source: RetrySource) -> CaseRun:
+    """Allocate a distinct attempt without consulting mutable project inputs."""
+
+    case_dir = project_dir / "runs" / source.run.case_id
+    case_dir.mkdir(parents=True, exist_ok=True)
+    stamp = taipei_run_timestamp()
+    for index in range(0, 1000):
+        run_id = stamp if index == 0 else f"{stamp}-{index:02d}"
+        run_dir = case_dir / run_id
+        try:
+            run_dir.mkdir()
+        except FileExistsError:
+            continue
+        for child in ("frozen", "upstream", "downstream", "logs", "provenance", "handoff", "delivery"):
+            (run_dir / child).mkdir()
+        run = CaseRun(source.run.case_id, run_id, run_dir, datetime.now(TAIPEI).replace(microsecond=0).isoformat())
+        _write_state(
+            run, "CREATED", command=None, attempt_type="RETRY",
+            retry_of={"case_id": source.run.case_id, "run_id": source.run.run_id, "status": source.state["status"]},
+            retry_requested_at=run.started_at,
+        )
+        return run
+    raise ExecutionPreflightError("Unable to allocate a unique immutable retry run directory.")
+
+
+def _rewrite_retry_samplesheet(path: Path, frozen: Path) -> None:
+    try:
+        with path.open(encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    except (OSError, UnicodeError, csv.Error) as exc:
+        raise ExecutionPreflightError(f"Retry source frozen samplesheet is unreadable: {exc}") from exc
+    if not rows or not all(row.get("sample") and row.get("fastq_1") for row in rows):
+        raise ExecutionPreflightError("Retry source frozen samplesheet is malformed.")
+    output: list[list[str]] = [["sample", "fastq_1", "fastq_2", "strandedness"]]
+    for row in rows:
+        first = frozen / "input" / "fastq" / Path(str(row["fastq_1"])).name
+        second_value = row.get("fastq_2") or ""
+        second = frozen / "input" / "fastq" / Path(second_value).name if second_value else None
+        _require_immutable_file(first, "retry frozen FASTQ")
+        if second is not None:
+            _require_immutable_file(second, "retry frozen FASTQ")
+        output.append([str(row["sample"]), str(first.resolve()), str(second.resolve()) if second else "", str(row.get("strandedness") or "")])
+    from io import StringIO
+    text = StringIO(newline="")
+    csv.writer(text, lineterminator="\n").writerows(output)
+    _write_text(path, text.getvalue())
+
+
+def _clone_retry_contract(source: RetrySource, run: CaseRun, command: list[str]) -> None:
+    """Copy frozen bytes, then rewrite only paths and identity local to the new run."""
+
+    frozen = run.run_dir / "frozen"
+    shutil.copytree(source.run.run_dir / "frozen", frozen, dirs_exist_ok=True, ignore=shutil.ignore_patterns("._*"))
+    contract = _read_json_mapping(frozen / "downstream_contract.json", "cloned retry downstream contract")
+    contract["case"] = {"id": run.case_id, "run_id": run.run_id, "timezone": "Asia/Taipei"}
+    for key, name in (("project_config", "project.yaml"), ("metadata", "metadata.csv"), ("contrasts", "contrasts.csv"), ("input_manifest", "input_manifest.yaml")):
+        contract[key] = str((frozen / name).resolve())
+    contract["output_dir"] = str((run.run_dir / "downstream").resolve())
+    source_mapping = contract.get("source")
+    if not isinstance(source_mapping, dict):
+        raise ExecutionPreflightError("Retry source downstream contract has no source mapping.")
+    if source_mapping.get("type") == "raw_counts":
+        source_mapping["counts"] = str((frozen / "input" / "counts.csv").resolve())
+    if source_mapping.get("upstream_handoff") is not None:
+        source_mapping["upstream_handoff"] = str((frozen / "upstream_handoff_manifest.yaml").resolve())
+    _write_text(frozen / "downstream_contract.json", json.dumps(contract, indent=2, sort_keys=True) + "\n")
+    execution = _read_yaml_mapping(frozen / "execution_manifest.yaml", "cloned retry execution manifest")
+    execution.update({"case_id": run.case_id, "run_id": run.run_id, "command": command})
+    execution["retry"] = {"retry_of": f"{source.run.case_id}/{source.run.run_id}", "source_status": source.state["status"]}
+    _write_yaml(frozen / "execution_manifest.yaml", execution)
+    samplesheet = frozen / "samplesheet.csv"
+    if samplesheet.is_file():
+        _rewrite_retry_samplesheet(samplesheet, frozen)
+
+
+def _retry_report(run: CaseRun) -> tuple[ValidationReport, dict[str, Path]]:
+    """Build the minimal execution report exclusively from a cloned frozen contract."""
+
+    frozen = run.run_dir / "frozen"
+    try:
+        raw = yaml.safe_load((frozen / "project.yaml").read_text(encoding="utf-8"))
+        config = ProjectConfig.model_validate(raw)
+    except (OSError, UnicodeError, yaml.YAMLError, ValueError) as exc:
+        raise ExecutionPreflightError(f"Retry source frozen project configuration is invalid: {exc}") from exc
+    input_path = frozen / "input" / ("fastq" if config.input.type is InputType.FASTQ else "counts.csv")
+    loaded = LoadedProject(frozen.resolve(), (frozen / "project.yaml").resolve(), config, input_path.resolve(), (frozen / "metadata.csv").resolve(), (frozen / "contrasts.csv").resolve())
+    report = ValidationReport(project_dir=frozen.resolve(), loaded=loaded)
+    paths: dict[str, Path] = {}
+    if config.input.type is InputType.FASTQ:
+        samplesheet = frozen / "samplesheet.csv"
+        try:
+            with samplesheet.open(encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+        except (OSError, UnicodeError, csv.Error) as exc:
+            raise ExecutionPreflightError(f"Retry frozen samplesheet is unreadable: {exc}") from exc
+        records: list[FastqRecord] = []
+        for index, row in enumerate(rows, start=1):
+            first, second = Path(str(row.get("fastq_1") or "")), Path(str(row.get("fastq_2") or "")) if row.get("fastq_2") else None
+            if not row.get("sample") or not first.is_file() or (second is not None and not second.is_file()):
+                raise ExecutionPreflightError("Retry frozen samplesheet references unavailable staged FASTQs.")
+            records.append(FastqRecord(str(row["sample"]), f"retry-{index}", first, second))
+        if not records:
+            raise ExecutionPreflightError("Retry frozen samplesheet has no records.")
+        report.fastq = FastqSummary(input_path, config.input.layout, tuple(records))
+    if config.reference.source == "local":
+        from rnaseq.references import LocalReferenceError, load_local_reference
+        try:
+            report.local_reference = load_local_reference(config.reference, config.organism.species.value)
+        except LocalReferenceError as exc:
+            raise ExecutionPreflightError(f"Retry frozen managed reference is unavailable: {exc}") from exc
+        snapshot = frozen / "reference" / "reference_manifest.yaml"
+        _require_immutable_file(snapshot, "frozen managed reference manifest")
+        if snapshot.read_bytes() != report.local_reference.manifest_path.read_bytes():
+            raise ExecutionPreflightError("Retry managed reference manifest no longer matches the frozen reference identity.")
+    elif config.reference.source == "custom":
+        for key in ("fasta", "gtf", "transcript_fasta", "salmon_index", "hisat2_index", "hisat2_splice_sites"):
+            value = getattr(config.reference, key)
+            if value is None:
+                continue
+            copied = frozen / "reference" / Path(value).name
+            if not copied.is_file():
+                raise ExecutionPreflightError(
+                    f"Retry requires a copied immutable custom reference asset for {key}; this source run retained {value!r} externally."
+                )
+            paths[key] = copied.resolve()
+    return report, paths
+
+
+def _prepare_retry_runtime(report: ValidationReport, profile: str) -> EffectiveResourceBudget:
+    """Perform runtime-only checks without consulting mutable project planning files."""
+
+    if profile != LOCAL_PROFILE or report.config is None:
+        raise ExecutionPreflightError("Retry supports only the frozen local execution profile.")
+    validate_local_execution_budget(report.config.execution.max_cpus, report.config.execution.max_memory_gb, detect_local_resource_capacity())
+    resources = effective_resource_budget(runtime_snapshot(report.config.runtime.control_plane_image), project_execution_budget(report.config))
+    validate_effective_resource_budget(resources)
+    if report.config.input.type is InputType.FASTQ and not report.execution_ready:
+        raise ExecutionPreflightError("Retry frozen execution contract is not runtime-ready.")
+    nextflow, docker = check_nextflow(), check_docker()
+    if nextflow.state != "FOUND":
+        raise ExecutionPreflightError("Nextflow is required: " + nextflow.detail)
+    if docker.state != "FOUND":
+        raise ExecutionPreflightError("Docker is required: " + docker.detail)
+    container = check_container_runtime(report.config.runtime.control_plane_image)
+    if container.state != "FOUND":
+        raise ExecutionPreflightError("Control-plane container is required: " + container.detail)
+    if report.config.reference.acceptance == "production" and not inspect_container_image(report.config.runtime.control_plane_image).get("image_id"):
+        raise ExecutionPreflightError("Production-intended retry requires an observed immutable control-plane image ID/digest.")
+    return resources
+
+
+def _retry_command(command: list[str], enabled: bool) -> list[str]:
+    """Keep Nextflow cache reuse opt-in and separate from retry identity."""
+
+    return [*command, "-resume"] if enabled else command
+
+
 def reuse_upstream_if_compatible(run: CaseRun, frozen: FrozenInputs, reference: str) -> str:
     """Copy a prior nf-core output only when its frozen upstream contract matches."""
 
@@ -1264,6 +1577,116 @@ def execute_service_run(
         delivery = assemble_delivery(run)
         _write_state(run, "SUCCESS", phase="delivery", delivery=str(delivery))
     except (OSError, UpstreamExecutionError) as exc:
+        _write_state(run, "FAILED", error=str(exc))
+        raise
+    return run
+
+
+def execute_retry_service_run(
+    project_dir: Path, *, retry_of: str, nextflow_resume: bool = False,
+) -> CaseRun:
+    """Execute a new immutable attempt from one validated FAILED run.
+
+    This intentionally does not call :func:`validate_project` or consult the
+    project's planning directory: biological intent comes solely from the
+    source run's frozen bytes.  ``-resume`` remains an optional Nextflow cache
+    hint; the new run and its audit relationship exist independently of cache
+    availability.
+    """
+
+    source = _load_retry_source(project_dir.resolve(), retry_of)
+    # Runtime preflight is based on the frozen project snapshot, before a new
+    # run is allocated.  It therefore cannot silently absorb current edits.
+    source_report, _ = _retry_report(source.run)
+    resources = _prepare_retry_runtime(source_report, source.execution["profile"])
+    command = ["rnaseq", "retry", str(project_dir.resolve()), "--retry-of", retry_of]
+    if nextflow_resume:
+        command.append("--nextflow-resume")
+    run = _create_retry_case_run(project_dir.resolve(), source)
+    try:
+        _clone_retry_contract(source, run, command)
+        report, reference_paths = _retry_report(run)
+        workspace = resolve_execution_workspace(run.case_id, run.run_id)
+        provenance = _provenance(
+            report, run, profile=source.execution["profile"], command=command, workspace=workspace, resources=resources,
+        )
+        # Pairing and other scientific fields are already frozen in the source
+        # provenance.  Preserve them rather than re-deriving them from runtime
+        # paths while recording a new observed execution identity.
+        if "design" in source.provenance:
+            provenance["design"] = source.provenance["design"]
+        provenance["retry"] = {
+            "retry_of": {"case_id": source.run.case_id, "run_id": source.run.run_id},
+            "source_status": source.state["status"],
+            "retried_at": run.started_at,
+            "nextflow_resume_requested": nextflow_resume,
+            "upstream_reused_from_source": source.reuse_upstream,
+        }
+        _write_yaml(run.run_dir / "provenance" / "run_provenance.yaml", provenance)
+        prepare_execution_workspace(workspace)
+        _write_state(run, "RUNNING", phase="retry_freeze", command=command)
+        assert report.config is not None
+        profile = source.execution["profile"]
+        frozen = run.run_dir / "frozen"
+        if report.config.input.type is InputType.FASTQ:
+            assert (frozen / "samplesheet.csv").is_file() and (frozen / "nfcore.local.config").is_file()
+            if source.reuse_upstream:
+                shutil.copytree(source.run.run_dir / "upstream", run.run_dir / "upstream", dirs_exist_ok=True, ignore=shutil.ignore_patterns("._*"))
+                _update_contract(
+                    frozen / "downstream_contract.json",
+                    {"source": {
+                        **_read_json_mapping(frozen / "downstream_contract.json", "retry downstream contract")["source"],
+                        "reused_from": f"{source.run.case_id}/{source.run.run_id}",
+                    }},
+                )
+            else:
+                method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
+                upstream = (build_nextflow_command(
+                    report, samplesheet=frozen / "samplesheet.csv", output_dir=run.run_dir / "upstream" / "nfcore_rnaseq",
+                    profile=profile, params_file=frozen / "nfcore.params.json", config_file=frozen / "nfcore.local.config",
+                    reference_paths=reference_paths, work_dir=workspace.work_dir / "upstream",
+                ) if method == "salmon" else build_hisat2_featurecounts_command(
+                    report, samplesheet=frozen / "samplesheet.csv", output_dir=run.run_dir / "upstream" / "hisat2_featurecounts",
+                    profile=profile, reference_paths=reference_paths, work_dir=workspace.work_dir / "upstream",
+                    config_file=frozen / "nfcore.local.config",
+                ))
+                upstream = _retry_command(upstream, nextflow_resume)
+                _write_state(run, "RUNNING", phase="upstream", upstream_command=upstream)
+                result = _run_command(upstream, cwd=workspace.launch_dir, stdout_path=run.run_dir / "logs" / "upstream.stdout.log", stderr_path=run.run_dir / "logs" / "upstream.stderr.log")
+                if result != 0:
+                    raise UpstreamExecutionError(
+                        classify_execution_failure(
+                            "nf-core/rnaseq" if method == "salmon" else "HISAT2 + featureCounts", result,
+                            run.run_dir / "logs" / "upstream.stderr.log", resource=RESOURCE_CONTRACTS["MEDIUM"],
+                        )
+                    )
+                finalize_fastq_handoff(report, run, frozen / "downstream_contract.json")
+        if report.config.project.preset is Preset.QC:
+            delivery = assemble_delivery(run)
+            _write_state(run, "SUCCESS", phase="delivery", delivery=str(delivery), downstream_skipped="technical_qc_only")
+            return run
+        execution_inputs = resolve_downstream_inputs(run)
+        observer_config = write_downstream_observer_config(run)
+        runtime_config = write_downstream_runtime_config(run, report.config.runtime.control_plane_image)
+        docker_user_config = write_downstream_docker_user_config(run)
+        downstream = build_downstream_nextflow_command(
+            run, profile=profile, work_dir=workspace.work_dir / "downstream", observer_config=observer_config,
+            docker_user_config=docker_user_config, execution_inputs=execution_inputs, runtime_config=runtime_config,
+            local_resource_config=(frozen / "nfcore.local.config") if (frozen / "nfcore.local.config").is_file() else None,
+        )
+        downstream = _retry_command(downstream, nextflow_resume)
+        _write_state(run, "RUNNING", phase="downstream", downstream_command=downstream)
+        result = _run_command(downstream, cwd=workspace.launch_dir, stdout_path=run.run_dir / "logs" / "downstream.stdout.log", stderr_path=run.run_dir / "logs" / "downstream.stderr.log")
+        if result != 0:
+            raise UpstreamExecutionError(
+                classify_execution_failure(
+                    "downstream Nextflow", result, run.run_dir / "logs" / "downstream.stderr.log",
+                    resource=RESOURCE_CONTRACTS["LARGE"],
+                )
+            )
+        delivery = assemble_delivery(run)
+        _write_state(run, "SUCCESS", phase="delivery", delivery=str(delivery))
+    except (OSError, UpstreamExecutionError, ExecutionPreflightError, ValueError) as exc:
         _write_state(run, "FAILED", error=str(exc))
         raise
     return run
