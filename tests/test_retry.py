@@ -18,6 +18,7 @@ from rnaseq.service import (
     create_case_run,
     execute_retry_service_run,
     freeze_case_inputs,
+    verify_delivery_manifest,
 )
 from rnaseq.validators import validate_project
 
@@ -88,6 +89,9 @@ def test_retry_creates_new_run_and_preserves_frozen_scientific_contract(monkeypa
     provenance = yaml.safe_load((retry.run_dir / "provenance" / "run_provenance.yaml").read_text(encoding="utf-8"))
     assert provenance["retry"]["retry_of"] == {"case_id": source.case_id, "run_id": source.run_id}
     assert provenance["retry"]["nextflow_resume_requested"] is False
+    assert (retry.run_dir / "delivery" / "delivery_manifest.yaml").is_file()
+    assert verify_delivery_manifest(retry.run_dir / "delivery") == ()
+    assert not (source.run_dir / "delivery" / "delivery_manifest.yaml").exists()
 
 
 def test_retry_rejects_success_and_malformed_source_before_creating_attempt(monkeypatch, project_factory):

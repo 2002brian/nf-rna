@@ -263,6 +263,7 @@ runs/<case-id>/<run-id>/
 │   ├── figures/tiff_300dpi/
 │   ├── tables/
 │   ├── methods_and_versions/
+│   ├── delivery_manifest.yaml
 │   └── report_YYYYMMDD.html
 ├── downstream/
 │   ├── l1/
@@ -280,6 +281,12 @@ non-integer; `vst.csv` is transformed expression for visualization. The count
 artifact manifest records checksum and sample order. Fit DESeq2 from the
 source-appropriate raw/estimated matrix, never VST, and do not compare raw
 count magnitudes across samples without normalization.
+
+Each completed delivery also includes `delivery_manifest.yaml`, a deterministic
+SHA-256 inventory of the final delivered files. Its paths are relative to the
+delivery root and each entry records byte size and a stable artifact role. The
+manifest intentionally does not hash itself. It can therefore be used to check
+for changed, missing, or unexpected delivery files without exposing host paths.
 
 ## Scientific defaults
 

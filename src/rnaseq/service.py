@@ -17,8 +17,8 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PurePosixPath
+from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
 import yaml
@@ -70,6 +70,7 @@ CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 RUN_ID_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}\+[0-9]{4}(?:-[0-9]{2,3})?$")
 TAIPEI = ZoneInfo("Asia/Taipei")
 FINAL_STATES = {"SUCCESS", "FAILED"}
+DELIVERY_MANIFEST_FILENAME = "delivery_manifest.yaml"
 
 
 @dataclass(frozen=True)
@@ -1033,10 +1034,176 @@ def _delivery_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _delivery_manifest_relative_path(root: Path, path: Path) -> Path:
+    """Return one safe, existing delivery-relative regular-file path."""
+
+    candidate = path if path.is_absolute() else root / path
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as exc:
+        raise OSError(f"Delivery manifest path escapes delivery root: {path}") from exc
+    if relative == Path(".") or ".." in relative.parts:
+        raise OSError(f"Delivery manifest path escapes delivery root: {path}")
+    if candidate.is_symlink():
+        raise OSError(f"Delivery manifest cannot include symlinked file: {relative.as_posix()}")
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise OSError(f"Delivery manifest path escapes delivery root: {path}") from exc
+    if not resolved.is_file():
+        raise OSError(f"Declared delivery file is missing or not a regular file: {relative.as_posix()}")
+    return relative
+
+
+def _delivery_manifest_file_paths(root: Path) -> list[Path]:
+    """Enumerate final delivery files without following or accepting symlinks."""
+
+    files: list[Path] = []
+
+    def fail_walk(error: OSError) -> None:
+        raise error
+
+    for current, directories, names in os.walk(root, followlinks=False, onerror=fail_walk):
+        parent = Path(current)
+        for name in sorted(directories):
+            candidate = parent / name
+            if candidate.is_symlink():
+                raise OSError(f"Delivery manifest cannot traverse symlinked directory: {candidate.relative_to(root).as_posix()}")
+        for name in sorted(names):
+            candidate = parent / name
+            relative = _delivery_manifest_relative_path(root, candidate)
+            if relative == Path(DELIVERY_MANIFEST_FILENAME):
+                continue
+            files.append(candidate)
+    return sorted(files, key=lambda path: _delivery_manifest_relative_path(root, path).as_posix())
+
+
+def _delivery_artifact_role(relative_path: Path) -> str:
+    """Assign a small stable role vocabulary from the existing delivery layout."""
+
+    parts = relative_path.parts
+    if relative_path.name.startswith("report_") and relative_path.suffix == ".html":
+        return "report"
+    if relative_path.name.startswith("README_"):
+        return "metadata"
+    if not parts:
+        return "artifact"
+    return {
+        "counts": "count_matrix",
+        "figures": "figure",
+        "tables": "analysis_table",
+        "multiqc": "qc_report",
+        "methods_and_versions": "provenance",
+    }.get(parts[0], "artifact")
+
+
+def write_delivery_manifest(delivery: Path, *, declared_files: Iterable[Path] | None = None) -> Path:
+    """Write a deterministic integrity inventory for one final delivery package.
+
+    ``delivery_manifest.yaml`` intentionally does not contain a checksum for
+    itself.  Callers may provide the declared final file set when they need a
+    missing file to fail closed; otherwise the completed delivery tree is used.
+    """
+
+    root = _resolved_delivery_root(delivery)
+    files = list(declared_files) if declared_files is not None else _delivery_manifest_file_paths(root)
+    entries: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for path in files:
+        relative = _delivery_manifest_relative_path(root, path)
+        if relative == Path(DELIVERY_MANIFEST_FILENAME):
+            raise OSError("Delivery manifest must not include itself.")
+        key = relative.as_posix()
+        if key in seen:
+            raise OSError(f"Delivery manifest contains duplicate path: {key}")
+        seen.add(key)
+        source = root / relative
+        entries.append(
+            {
+                "relative_path": key,
+                "sha256": _delivery_sha256(source),
+                "size_bytes": source.stat().st_size,
+                "role": _delivery_artifact_role(relative),
+            }
+        )
+    entries.sort(key=lambda entry: str(entry["relative_path"]))
+    manifest = {
+        "schema_version": "1.0",
+        "algorithm": "sha256",
+        "self_hashed": False,
+        "files": entries,
+    }
+    path = root / DELIVERY_MANIFEST_FILENAME
+    _write_text(path, yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True))
+    return path
+
+
+def verify_delivery_manifest(delivery: Path) -> tuple[str, ...]:
+    """Return deterministic integrity failures for one completed delivery."""
+
+    root = _resolved_delivery_root(delivery)
+    manifest_path = root / DELIVERY_MANIFEST_FILENAME
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise OSError("Delivery manifest is missing or not a regular file.")
+    try:
+        payload = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise OSError(f"Delivery manifest is unreadable: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("algorithm") != "sha256" or not isinstance(payload.get("files"), list):
+        raise OSError("Delivery manifest has an invalid schema.")
+
+    failures: list[str] = []
+    declared: set[str] = set()
+    for entry in payload["files"]:
+        if not isinstance(entry, dict) or not isinstance(entry.get("relative_path"), str):
+            failures.append("invalid manifest file entry")
+            continue
+        value = entry["relative_path"]
+        pure = PurePosixPath(value)
+        if not value or pure.is_absolute() or ".." in pure.parts or "\\" in value:
+            failures.append(f"unsafe manifest path: {value!r}")
+            continue
+        if value == DELIVERY_MANIFEST_FILENAME:
+            failures.append("manifest must not include itself")
+            continue
+        if value in declared:
+            failures.append(f"duplicate manifest path: {value}")
+            continue
+        declared.add(value)
+        try:
+            relative = _delivery_manifest_relative_path(root, Path(*pure.parts))
+        except OSError as exc:
+            failures.append(str(exc))
+            continue
+        path = root / relative
+        if entry.get("size_bytes") != path.stat().st_size:
+            failures.append(f"size mismatch: {value}")
+        if entry.get("sha256") != _delivery_sha256(path):
+            failures.append(f"sha256 mismatch: {value}")
+
+    actual = {path.relative_to(root).as_posix() for path in _delivery_manifest_file_paths(root)}
+    for value in sorted(declared - actual):
+        failures.append(f"missing delivered file: {value}")
+    for value in sorted(actual - declared):
+        failures.append(f"unexpected delivered file: {value}")
+    return tuple(failures)
+
+
 def assemble_delivery(run: CaseRun) -> Path:
     """Build a client-safe package from an explicit allowlist of final artifacts."""
 
     delivery = _resolved_delivery_root(run.run_dir / "delivery", run_dir=run.run_dir)
+    declared_files: list[Path] = []
+
+    def copy_declared(source: Path, destination: Path) -> None:
+        _copy_delivery_artifact(source, destination)
+        declared_files.append(destination)
+
+    def write_declared(destination: Path, content: str) -> None:
+        _write_text(destination, content)
+        declared_files.append(destination)
+
     figures = {".png": delivery / "figures" / "png", ".tif": delivery / "figures" / "tiff_300dpi", ".tiff": delivery / "figures" / "tiff_300dpi"}
     tables = delivery / "tables"
     counts_dir = delivery / "counts"
@@ -1045,7 +1212,7 @@ def assemble_delivery(run: CaseRun) -> Path:
     downstream = run.run_dir / "downstream"
     report = downstream / "report" / "report.html"
     if report.is_file():
-        _copy_delivery_artifact(report, delivery / delivery_filename("report.html", run.run_id))
+        copy_declared(report, delivery / delivery_filename("report.html", run.run_id))
     artifacts: list[dict[str, object]] = []
     source = _delivery_count_source(run)
     samples = _frozen_sample_ids(run.run_dir / "frozen" / "metadata.csv")
@@ -1054,6 +1221,7 @@ def assemble_delivery(run: CaseRun) -> Path:
         rows, columns = _validate_delivery_count_matrix(matrix, samples, integer_required=integer_required, delimiter=delimiter)
         target = counts_dir / filename
         _copy_matrix_as_csv(matrix, target, delimiter=delimiter)
+        declared_files.append(target)
         artifacts.append({
             "role": "analysis_input" if matrix.is_relative_to(run.run_dir / "downstream") else "frozen_or_upstream_input",
             "filename": f"counts/{filename}", "source_type": _read_json_mapping(run.run_dir / "frozen" / "downstream_contract.json", "frozen downstream contract")["source"]["type"],
@@ -1065,7 +1233,7 @@ def assemble_delivery(run: CaseRun) -> Path:
     if vst.is_file():
         rows, columns = _validate_delivery_count_matrix(vst, samples, integer_required=False, nonnegative=False)
         target = counts_dir / "vst.csv"
-        _copy_delivery_artifact(vst, target)
+        copy_declared(vst, target)
         artifacts.append({
             "role": "visualization", "filename": "counts/vst.csv", "source_type": "downstream_l1",
             "value_semantics": "variance_stabilized_expression", "normalized": True, "integer_required": False,
@@ -1074,6 +1242,7 @@ def assemble_delivery(run: CaseRun) -> Path:
         })
     if artifacts:
         _write_delivery_count_manifest(delivery, artifacts)
+        declared_files.append(delivery / "counts" / "artifact_manifest.json")
     for path in downstream.rglob("*") if downstream.is_dir() else ():
         if not path.is_file() or _is_appledouble(path):
             continue
@@ -1086,9 +1255,9 @@ def assemble_delivery(run: CaseRun) -> Path:
         suffix = path.suffix.lower()
         relative = path.relative_to(downstream)
         if suffix in figures:
-            _copy_delivery_artifact(path, figures[suffix] / relative)
+            copy_declared(path, figures[suffix] / relative)
         elif suffix in {".tsv", ".csv"}:
-            _copy_delivery_artifact(path, tables / relative)
+            copy_declared(path, tables / relative)
     handoff = run.run_dir / "frozen" / "upstream_handoff_manifest.yaml"
     if handoff.is_file():
         payload = yaml.safe_load(handoff.read_text(encoding="utf-8"))
@@ -1097,30 +1266,32 @@ def assemble_delivery(run: CaseRun) -> Path:
         if isinstance(html, str):
             source = run.run_dir / html
             if source.is_file():
-                _copy_delivery_artifact(
+                copy_declared(
                     source,
                     delivery / "multiqc" / delivery_filename("multiqc_report.html", run.run_id),
                 )
     for name in ("execution_manifest.yaml", "input_manifest.yaml", "upstream_handoff_manifest.yaml"):
         source = run.run_dir / "frozen" / name
         if source.is_file():
-            _copy_delivery_artifact(
+            copy_declared(
                 source,
                 delivery / "methods_and_versions" / delivery_filename(name, run.run_id),
             )
     for source in (run.state_path, run.run_dir / "provenance" / "run_provenance.yaml"):
         if source.is_file():
-            _copy_delivery_artifact(
+            copy_declared(
                 source,
                 delivery / "methods_and_versions" / delivery_filename(source.name, run.run_id),
             )
-    _write_text(
+    write_declared(
         delivery / delivery_filename("README.md", run.run_id),
         f"# RNA-seq delivery package\n\nCase: `{run.case_id}`  \nRun: `{run.run_id}`  \nTimezone: `Asia/Taipei`\n\nThis directory contains only curated client deliverables. Internal logs, work directories, caches and temporary artifacts remain outside this package.\n",
     )
     # This is deliberately the last mutation of delivery.  SUCCESS is recorded
     # only after this hard check confirms there are no AppleDouble entries.
     _sanitize_delivery_appledouble(delivery)
+    _assert_delivery_appledouble_free(delivery)
+    write_delivery_manifest(delivery, declared_files=declared_files)
     _assert_delivery_appledouble_free(delivery)
     return delivery
 

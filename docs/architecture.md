@@ -54,7 +54,7 @@ FASTQ preprocessing is declared as `raw` or `pretrimmed`. The Salmon route maps 
 
 Every authorized execution creates `runs/<case-id>/<run-id>/` with frozen configuration/contracts, logs, upstream outputs, staged downstream inputs, downstream artifacts, provenance, and a curated delivery tree. The run ID is an internal identity; client-facing delivery filenames use the date only.
 
-Nextflow launch/cache/work state belongs in a local execution root outside the persistent immutable run. Reuse of upstream data is explicit and requires a matching frozen contract. Delivery finalization uses an allowlist and a scoped, symlink-safe AppleDouble cleanup pass restricted to the new delivery root.
+Nextflow launch/cache/work state belongs in a local execution root outside the persistent immutable run. Reuse of upstream data is explicit and requires a matching frozen contract. Delivery finalization uses an allowlist and a scoped, symlink-safe AppleDouble cleanup pass restricted to the new delivery root. It then writes `delivery_manifest.yaml`: a deterministic relative-path SHA-256 and byte-size inventory of delivered files. The manifest is deliberately excluded from its own inventory.
 
 ## Reproducibility boundaries
 

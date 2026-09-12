@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+- Added a delivery-wide SHA-256 integrity manifest for final curated delivery packages.
+
 ## 1.0.0rc1 — 2026-09-12
 
 - Added an active downstream L2 gate that rejects contrasts with fewer than two biological samples in either group before DESeq2 is launched; L1 remains available.

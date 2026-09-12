@@ -30,6 +30,8 @@ from rnaseq.service import (
     sanitize_completed_delivery,
     taipei_run_timestamp,
     validate_case_id,
+    verify_delivery_manifest,
+    write_delivery_manifest,
     write_downstream_docker_user_config,
     write_downstream_observer_config,
 )
@@ -109,6 +111,69 @@ def test_taipei_timestamp_formatting():
     assert delivery_filename("report.html", "20260828-235959+0800-01") == "report_20260828.html"
     with pytest.raises(ExecutionPreflightError, match="unsafe run ID"):
         delivery_filename("report.html", "20260828")
+
+
+def test_delivery_manifest_is_deterministic_and_describes_final_files(tmp_path):
+    delivery = tmp_path / "delivery"
+    (delivery / "tables").mkdir(parents=True)
+    (delivery / "tables" / "results.tsv").write_bytes(b"gene_id\np53\n")
+    (delivery / "README_20260828.md").write_text("delivery\n", encoding="utf-8")
+
+    manifest_path = write_delivery_manifest(delivery)
+    first = manifest_path.read_bytes()
+    manifest = yaml.safe_load(first)
+    entries = manifest["files"]
+
+    assert manifest == {
+        "schema_version": "1.0",
+        "algorithm": "sha256",
+        "self_hashed": False,
+        "files": entries,
+    }
+    assert [entry["relative_path"] for entry in entries] == ["README_20260828.md", "tables/results.tsv"]
+    table = next(entry for entry in entries if entry["relative_path"] == "tables/results.tsv")
+    assert table["sha256"] == hashlib.sha256(b"gene_id\np53\n").hexdigest()
+    assert table["size_bytes"] == len(b"gene_id\np53\n")
+    assert table["role"] == "analysis_table"
+    assert all(not Path(entry["relative_path"]).is_absolute() for entry in entries)
+    assert "delivery_manifest.yaml" not in {entry["relative_path"] for entry in entries}
+    assert verify_delivery_manifest(delivery) == ()
+
+    assert write_delivery_manifest(delivery).read_bytes() == first
+
+
+def test_delivery_manifest_fails_closed_for_missing_or_escaping_declared_files(tmp_path):
+    delivery = tmp_path / "delivery"
+    delivery.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+
+    with pytest.raises(OSError, match="missing"):
+        write_delivery_manifest(delivery, declared_files=[delivery / "missing.tsv"])
+    with pytest.raises(OSError, match="escapes delivery root"):
+        write_delivery_manifest(delivery, declared_files=[outside])
+    with pytest.raises(OSError, match="escapes delivery root"):
+        write_delivery_manifest(delivery, declared_files=[delivery / ".." / "outside.txt"])
+
+
+def test_delivery_manifest_verification_detects_tampering_and_unexpected_files(tmp_path):
+    delivery = tmp_path / "delivery"
+    delivery.mkdir()
+    delivered = delivery / "report_20260828.html"
+    delivered.write_bytes(b"original")
+    unrelated = delivery / "unrelated.txt"
+    unrelated.write_text("unexpected", encoding="utf-8")
+    manifest = yaml.safe_load(write_delivery_manifest(delivery, declared_files=[delivered]).read_text(encoding="utf-8"))
+    assert [entry["relative_path"] for entry in manifest["files"]] == ["report_20260828.html"]
+
+    delivered.write_bytes(b"tampered")
+    assert verify_delivery_manifest(delivery) == (
+        "sha256 mismatch: report_20260828.html",
+        "unexpected delivered file: unrelated.txt",
+    )
+
+    delivered.write_bytes(b"original")
+    assert verify_delivery_manifest(delivery) == ("unexpected delivered file: unrelated.txt",)
 
 
 def test_case_runs_are_immutable_and_freeze_raw_count_inputs(project_factory):
