@@ -87,6 +87,16 @@ def test_raw_count_run_is_rejected(project_factory):
         prepare_run(validate_project(project_factory()), "local")
 
 
+def test_mocked_execution_capacity_fixture_supplies_a_production_capable_runtime_snapshot(
+    production_capable_execution_capacity,
+):
+    snapshot = production_capable_execution_capacity
+    resources = effective_resource_budget(snapshot, ResourceContract("PROJECT_LOCAL", 8, 12, 12))
+    assert (snapshot.logical_cpus, snapshot.docker_cpus) == (16, 16)
+    assert (resources.effective_cpus, resources.effective_memory_gib) == (8, 12)
+    validate_effective_resource_budget(resources)
+
+
 def test_preflight_rejects_server_and_stale_plan(monkeypatch, tmp_path, production_capable_execution_capacity):
     root = _ready_fastq_project(tmp_path)
     report = validate_project(root)

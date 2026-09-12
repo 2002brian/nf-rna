@@ -80,12 +80,25 @@ def production_capable_execution_capacity(monkeypatch):
     four-core CI runner can reach its intended assertion.
     """
 
-    from rnaseq.execution import LocalResourceCapacity
+    from rnaseq.execution import LocalResourceCapacity, RuntimeSnapshot
 
     capacity = LocalResourceCapacity(16, 64, 60)
+    snapshot = RuntimeSnapshot(
+        host_os="Linux",
+        host_architecture="amd64",
+        logical_cpus=16,
+        host_memory_bytes=64 * 1024**3,
+        docker_architecture="amd64",
+        docker_memory_bytes=64 * 1024**3,
+        docker_version="test",
+        control_plane_image_architecture="amd64",
+        docker_cpus=16,
+    )
     monkeypatch.setattr("rnaseq.execution.detect_local_resource_capacity", lambda: capacity)
     monkeypatch.setattr("rnaseq.service.detect_local_resource_capacity", lambda: capacity)
-    return capacity
+    monkeypatch.setattr("rnaseq.execution.runtime_snapshot", lambda *_args: snapshot)
+    monkeypatch.setattr("rnaseq.service.runtime_snapshot", lambda *_args: snapshot)
+    return snapshot
 
 
 def require_rscript() -> str:
