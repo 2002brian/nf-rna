@@ -4,6 +4,13 @@ channels:
   - bioconda
 dependencies:
   - python=3.11
+  # Keep the non-editable execution-image install reproducible: pip receives
+  # --no-deps, so every declared nf-rna application dependency belongs here.
+  - click>=8.1,<9
+  - pydantic>=2.8,<3
+  - pyyaml>=6,<7
+  - prompt-toolkit>=3.0,<4
+  - typer>=0.12,<1
   - r-base=4.5
   - bioconductor-deseq2
   - bioconductor-tximport

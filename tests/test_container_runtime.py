@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import re
 import shlex
 import tomllib
 from pathlib import Path
@@ -8,6 +10,10 @@ import yaml
 
 
 ROOT = Path(__file__).parents[1]
+
+
+def _normalized_distribution_name(specification: str) -> str:
+    return re.split(r"[<>=!~;\[]", specification, maxsplit=1)[0].strip().lower().replace("_", "-")
 
 
 def _copy_sources(dockerfile: str) -> set[str]:
@@ -37,6 +43,8 @@ def test_container_runtime_path_contract_uses_non_login_shell():
     assert dockerfile.index('ENV PATH="/opt/conda/envs/rnaseq/bin:${PATH}"') < dockerfile.index("RUN micromamba create")
     assert "micromamba run --name rnaseq" not in dockerfile
     assert "python -m pip install --no-deps ." in dockerfile
+    assert "python -c \"import rnaseq.models, rnaseq.workflow_support" in dockerfile
+    assert "python -m rnaseq.workflow_support report --help" in dockerfile
     assert "org.opencontainers.image.revision" in dockerfile
     assert "sh -lc" not in dockerfile
     for command in ("command -v ps", "ps --version", "command -v python", "command -v Rscript"):
@@ -78,3 +86,35 @@ def test_docker_runtime_bundle_is_owned_by_the_non_root_micromamba_user():
     assert "chmod 777" not in dockerfile
     assert "chmod -R 777" not in dockerfile
     assert dockerfile.rfind("USER $MAMBA_USER") > dockerfile.rfind("USER root")
+
+
+def test_shared_execution_environment_covers_declared_python_runtime_dependencies():
+    """The image installs nf-rna with --no-deps, so Conda must provide its runtime."""
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    environment = yaml.safe_load((ROOT / "environment.yml").read_text(encoding="utf-8"))
+    declared = {_normalized_distribution_name(item) for item in pyproject["project"]["dependencies"]}
+    supplied = {_normalized_distribution_name(item) for item in environment["dependencies"] if isinstance(item, str)}
+
+    assert declared <= supplied
+
+
+def test_pydantic_execution_contract_requires_v2_apis():
+    """Avoid a satisfiable-but-incompatible Pydantic v1 image environment."""
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pydantic_requirement = next(
+        item
+        for item in pyproject["project"]["dependencies"]
+        if _normalized_distribution_name(item) == "pydantic"
+    )
+    tree = ast.parse((ROOT / "src" / "rnaseq" / "models.py").read_text(encoding="utf-8"))
+    imports = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "pydantic"
+        for alias in node.names
+    }
+
+    assert {"ConfigDict", "field_validator", "model_validator"} <= imports
+    assert ">=2.8" in pydantic_requirement and "<3" in pydantic_requirement
