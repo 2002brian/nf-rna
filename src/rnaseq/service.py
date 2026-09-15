@@ -262,6 +262,45 @@ def _frozen_sample_ids(metadata: Path) -> tuple[str, ...]:
     return tuple(samples)
 
 
+def _stage_featurecounts_matrix(matrix: Path, destination: Path, samples: tuple[str, ...]) -> None:
+    """Validate and align a frozen featureCounts matrix to frozen metadata order.
+
+    The upstream canonical matrix is immutable and may use its own deterministic
+    sample ordering.  The downstream snapshot instead adopts the frozen
+    metadata ``sample_id`` order, which is also the order passed to R.
+    """
+
+    try:
+        with matrix.open(encoding="utf-8", newline="") as handle:
+            reader = csv.reader(handle)
+            header = next(reader, [])
+            if not header or header[0] != "gene_id":
+                raise UpstreamExecutionError("Frozen featureCounts matrix first column must be exactly gene_id.")
+            matrix_samples = header[1:]
+            if any(not sample for sample in matrix_samples) or len(set(matrix_samples)) != len(matrix_samples):
+                raise UpstreamExecutionError(
+                    "Frozen featureCounts matrix must contain unique, nonblank sample IDs."
+                )
+            missing = sorted(set(samples) - set(matrix_samples))
+            extra = sorted(set(matrix_samples) - set(samples))
+            if missing or extra:
+                raise UpstreamExecutionError(
+                    "Frozen featureCounts matrix sample IDs disagree with frozen metadata: "
+                    f"missing={missing!r}; extra={extra!r}."
+                )
+            columns = [header.index(sample) for sample in samples]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with destination.open("w", encoding="utf-8", newline="") as staged:
+                writer = csv.writer(staged, lineterminator="\n")
+                writer.writerow(["gene_id", *samples])
+                for row in reader:
+                    if len(row) != len(header):
+                        raise UpstreamExecutionError("Frozen featureCounts matrix has a malformed row width.")
+                    writer.writerow([row[0], *(row[index] for index in columns)])
+    except (OSError, UnicodeError, csv.Error) as exc:
+        raise UpstreamExecutionError(f"Frozen featureCounts matrix is unreadable: {matrix}: {exc}") from exc
+
+
 def resolve_downstream_inputs(run: CaseRun) -> ResolvedDownstreamInputs:
     """Resolve immutable provenance into narrow, stageable Nextflow file inputs.
 
@@ -317,11 +356,7 @@ def resolve_downstream_inputs(run: CaseRun) -> ResolvedDownstreamInputs:
             if not isinstance(featurecounts, dict):
                 raise UpstreamExecutionError("Frozen upstream handoff has no featureCounts artifact mapping.")
             matrix = _safe_existing_under(run.run_dir, featurecounts.get("canonical_matrix"), "featurecounts.canonical_matrix", allowed_root=run.run_dir / "upstream" / "hisat2_featurecounts")
-            with matrix.open(encoding="utf-8", newline="") as handle:
-                header = next(csv.reader(handle), [])
-            if header != ["gene_id", *samples]:
-                raise UpstreamExecutionError("Frozen featureCounts matrix sample IDs disagree with frozen metadata.")
-            _copy_snapshot(matrix, temporary / "source" / "canonical_counts.csv")
+            _stage_featurecounts_matrix(matrix, temporary / "source" / "canonical_counts.csv", samples)
             execution_source = {"type": "featurecounts_raw_counts", "counts": "source/canonical_counts.csv"}
         else:
             expected_handoff = frozen / "upstream_handoff_manifest.yaml"

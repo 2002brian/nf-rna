@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import hashlib
 import shutil
@@ -328,6 +329,79 @@ def test_featurecounts_delivery_uses_canonical_integer_matrix(project_factory):
     artifact = json.loads((delivery / "counts" / "artifact_manifest.json").read_text())['artifacts'][0]
     assert artifact["source_type"] == "featurecounts_raw_counts"
     assert artifact["deseq2_construction_method"] == "DESeqDataSetFromMatrix"
+
+
+def _featurecounts_staging_run(project_factory, header: list[str]):
+    _root, _report, run = _frozen_run(project_factory)
+    matrix = run.run_dir / "upstream" / "hisat2_featurecounts" / "counts" / "canonical_counts.csv"
+    matrix.parent.mkdir(parents=True)
+    matrix.write_text(
+        ",".join(header) + "\n" + ",".join(["GeneA", *[f"value-{sample}" for sample in header[1:]]]) + "\n",
+        encoding="utf-8",
+    )
+    handoff_path = run.run_dir / "frozen" / "upstream_handoff_manifest.yaml"
+    handoff_path.write_text(
+        yaml.safe_dump({"featurecounts": {"canonical_matrix": str(matrix.relative_to(run.run_dir))}}),
+        encoding="utf-8",
+    )
+    contract_path = run.run_dir / "frozen" / "downstream_contract.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract["source"] = {
+        "type": "featurecounts_raw_counts",
+        "construction_method": "DESeqDataSetFromMatrix",
+        "upstream_handoff": str(handoff_path.resolve()),
+    }
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    return run, matrix
+
+
+def test_featurecounts_staging_aligns_different_matrix_order_to_frozen_metadata(project_factory):
+    metadata_order = ["C1", "C2", "C3", "T1", "T2", "T3"]
+    run, matrix = _featurecounts_staging_run(
+        project_factory,
+        ["gene_id", "T3", "C2", "T1", "C1", "T2", "C3"],
+    )
+    upstream_before = matrix.read_bytes()
+
+    staged = resolve_downstream_inputs(run)
+    with (staged.root / "source" / "canonical_counts.csv").open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.reader(handle))
+
+    assert rows == [
+        ["gene_id", *metadata_order],
+        ["GeneA", *[f"value-{sample}" for sample in metadata_order]],
+    ]
+    assert json.loads(staged.manifest.read_text(encoding="utf-8"))["samples"] == metadata_order
+    assert matrix.read_bytes() == upstream_before
+
+
+def test_featurecounts_staging_preserves_an_already_aligned_matrix(project_factory):
+    header = ["gene_id", "C1", "C2", "C3", "T1", "T2", "T3"]
+    run, matrix = _featurecounts_staging_run(project_factory, header)
+
+    staged = resolve_downstream_inputs(run)
+
+    assert (staged.root / "source" / "canonical_counts.csv").read_bytes() == matrix.read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("header", "message"),
+    [
+        (["gene_id", "C1", "C2", "C3", "T1", "T2"], "missing="),
+        (["gene_id", "C1", "C2", "C3", "T1", "T2", "T3", "EXTRA"], "extra="),
+        (["gene_id", "C1", "C2", "C3", "T1", "T2", "T2"], "unique, nonblank"),
+        (["gene_id", "C1", "C2", "C3", "T1", "T2", ""], "unique, nonblank"),
+        (["not_gene_id", "C1", "C2", "C3", "T1", "T2", "T3"], "exactly gene_id"),
+    ],
+    ids=["missing", "extra", "duplicate", "blank", "first-column"],
+)
+def test_featurecounts_staging_rejects_invalid_matrix_sample_contract(project_factory, header, message):
+    run, _matrix = _featurecounts_staging_run(project_factory, header)
+
+    with pytest.raises(UpstreamExecutionError, match=message):
+        resolve_downstream_inputs(run)
+
+    assert not (run.run_dir / "downstream_inputs").exists()
 
 
 def test_salmon_delivery_is_estimated_never_raw_and_qc_uses_upstream_matrix(tmp_path):
