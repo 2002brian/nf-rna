@@ -6,7 +6,7 @@ English | [繁體中文](README_zh-TW.md)
 
 For FASTQ projects, nf-rna supports pinned nf-core/rnaseq 3.26.0 + Salmon/tximport and an explicitly configured first-party HISAT2 + featureCounts route, both feeding first-party DESeq2 and clusterProfiler analysis. Scientific and execution settings are explicit rather than inferred, so the same declared project can be reviewed and rerun with a clear record of its inputs and choices.
 
-The current release candidate is `1.0.0rc1`. Its stable CLI and Python namespace are both `rnaseq`. Development runs may use `rnaseq-control-plane:latest`; production-intended runs must request a digest or a versioned tag whose observed Docker image ID/digest is frozen in provenance.
+The current release candidate is `1.0.0rc1`. Its stable CLI and Python namespace are both `rnaseq`. `rnaseq` is the control plane; Nextflow owns process scheduling and Docker task launch. Development runs may use `nf-rna:latest`; production-intended runs must request a digest or a versioned tag whose observed Docker image ID/digest and build revision label are frozen in provenance.
 
 ## Overview
 
@@ -147,10 +147,11 @@ git clone https://github.com/2002brian/nf-rna.git
 cd nf-rna
 conda env create -f environment.yml
 conda activate nf-rna
-docker build -t rnaseq-control-plane:latest .
+python -m pip install -e '.[dev]'
+docker build --build-arg NF_RNA_SOURCE_REVISION="$(git rev-parse HEAD)" -t nf-rna:latest .
 ```
 
-Python 3.11+ is required. The shared `environment.yml` is portable across Linux/WSL and Apple Silicon macOS; it deliberately contains no Linux-only `procps-ng` dependency. The Docker build applies `environment.docker.yml`, which installs GNU/procps `ps` for Nextflow task metrics and verifies it during the image build. Install Nextflow before using the FASTQ route, and ensure Docker Desktop or another compatible Docker daemon is running. `latest` is permitted only for explicitly non-production development. Set `runtime.control_plane_image` to a digest or versioned tag for production acceptance; `rnaseq doctor PROJECT` reports both requested and observed identity.
+Python 3.11+ is required. The shared `environment.yml` is portable across Linux/WSL and Apple Silicon macOS; install the project explicitly after activation. The Docker build applies `environment.docker.yml`, which installs GNU/procps `ps` for Nextflow task metrics and verifies the installed first-party execution package, R scripts, and R dependencies during the image build. Install Nextflow before using the FASTQ route, and ensure Docker Desktop or another compatible Docker daemon is running. `latest` is permitted only for explicitly non-production development. Set `runtime.execution_image` to a digest or versioned tag for production acceptance; `rnaseq doctor PROJECT` reports requested and observed identity. Nextflow—not Python—launches the downstream task containers.
 
 Prebuilt Salmon and HISAT2 indexes are first-class managed-reference inputs:
 declare their root-relative path/prefix, version, strategy, and matching source

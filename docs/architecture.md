@@ -37,16 +37,32 @@ FASTQ: nf-core/rnaseq 3.26.0          raw counts: staged matrix
 
 The project preset is frozen as `analysis_level` in the downstream contract. That immutable field selects the workflow graph:
 
-- **L1:** L1 analysis and L1-only report; no control-plane L2 or enrichment process is constructed.
+- **L1:** L1 analysis and L1-only report; no L2 or enrichment process is constructed.
 - **L2:** L1, L2, then only configured GSEA backends, followed by the regular report.
 
 The graph does not infer L2 from the presence of contrasts, condition metadata, or an installed R module.
+
+## Execution ownership
+
+`rnaseq` is the control plane: it validates and freezes the project, authorizes
+an immutable run or retry, materializes narrow stageable inputs, records
+provenance, and assembles delivery. It starts Nextflow but never schedules an
+L1, L2, GSEA, or report container itself. Nextflow is the execution plane: its
+explicit `L1_ANALYSIS`, `L2_ANALYSIS`, enrichment, and report processes all
+declare `container params.first_party_image`. The per-run generated config
+freezes that parameter as `params.first_party_image`; it does not inject a
+global `process.container` or depend on a source checkout mounted into a task.
+
+The one first-party image contains the installed `rnaseq.workflow_support`
+package and a copied `/opt/nf-rna/r` script bundle. Docker is the current local
+Nextflow process runtime. A future Apptainer profile can select the same
+process image without moving scientific execution back into Python.
 
 `paired_two_group` is a specialization of the existing additive-design path, not a separate analysis pipeline. Its explicit `pair_id` column, formula, contrast-specific pair membership, complete-pair counts, and analyzed-sample counts are validated before execution and frozen into the input manifest and downstream contract. L1, the single DESeq2 L2 fit, explicit contrast extraction, and optional preranked GSEA then follow the same graph as unpaired projects.
 
 ## FASTQ boundary
 
-For `upstream.quantification.method: salmon`, the control plane invokes pinned nf-core/rnaseq 3.26.0 with Salmon pseudoalignment and a frozen params file. Its stable downstream handoff contains validated `quant.sf` and tx2gene material needed by tximport. For `hisat2_featurecounts`, a first-party Nextflow graph performs lane alignment, per-sample BAM merge/index, featureCounts and deterministic matrix assembly; it hands off a staged canonical integer matrix to `DESeqDataSetFromMatrix`. The downstream workflow receives a narrow task-staged bundle rather than arbitrary host paths from provenance.
+For `upstream.quantification.method: salmon`, the control plane invokes pinned nf-core/rnaseq 3.26.0 with Salmon pseudoalignment and a frozen params file. Its stable downstream handoff contains validated `quant.sf` and tx2gene material needed by tximport. For `hisat2_featurecounts`, a first-party Nextflow graph performs lane alignment, per-sample BAM merge/index, featureCounts and deterministic matrix assembly; it hands off a staged canonical integer matrix to `DESeqDataSetFromMatrix`. Frozen metadata row order is canonical: featureCounts staging validates exact sample-set identity and writes a downstream-only reordered copy, while Salmon remains sample-keyed and is staged in that same order. The downstream workflow receives a narrow task-staged bundle rather than arbitrary host paths from provenance.
 
 FASTQ preprocessing is declared as `raw` or `pretrimmed`. The Salmon route maps `pretrimmed` to nf-core's native `skip_trimming: true`; the HISAT2 route bypasses fastp while retaining QC. Local references are checksum-bound by a manifest and require the index appropriate to the selected backend. HISAT2 does not consume a Salmon index.
 

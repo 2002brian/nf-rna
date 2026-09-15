@@ -69,9 +69,17 @@ def test_fastq_l1_requires_explicit_successful_handoff_and_upgrades_legacy(proje
         item = run / "upstream/nfcore_rnaseq/salmon" / sample
         item.mkdir()
         (item / "quant.sf").write_text("Name\tLength\tEffectiveLength\tTPM\tNumReads\nTx1\t100\t80\t1\t10\n", encoding="utf-8")
+    # The handoff happens to be lexical; frozen metadata order deliberately is
+    # not, and remains the order passed to tximport/DESeq2.
+    (run / "frozen" / "metadata.csv").write_text(
+        "sample_id,condition\nT1,Treatment\nC1,Control\nT2,Treatment\nC2,Control\nT3,Treatment\nC3,Control\n",
+        encoding="utf-8",
+    )
     prepared = prepare_l1(report, run_id="run-fixture")
     assert prepared.source_type == "salmon_tximport"
     assert prepared.metadata_path == run / "frozen" / "metadata.csv"
+    assert prepared.sample_ids == ("T1", "C1", "T2", "C2", "T3", "C3")
+    assert list(prepared.config["quant_sf"]) == list(prepared.sample_ids)
     handoff = yaml.safe_load((run / "handoff" / "upstream_manifest.yaml").read_text())
     assert sorted(handoff["salmon"]["quant_sf"]) == ["C1", "C2", "C3", "T1", "T2", "T3"]
     assert handoff["salmon"]["tx2gene"]["mapping_type"] == "historical_ordinary"

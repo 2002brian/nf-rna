@@ -8,7 +8,7 @@
 
 對於 FASTQ 專案，nf-rna 將固定版本的 nf-core/rnaseq 3.26.0、Salmon 與 tximport，結合 first-party 的 DESeq2 和 clusterProfiler 分析。科學與執行設定都必須明確宣告，而非由系統猜測；因此，同一個已宣告的專案可以被審查與重跑，並保有清楚的輸入與設定紀錄。
 
-目前 release candidate 版本為 `1.0.0rc1`，穩定的 CLI 與 Python namespace 都是 `rnaseq`。開發模式可使用 `rnaseq-control-plane:latest`；production-intended run 必須指定 digest 或 versioned tag，並將 Docker 實際觀察到的 image ID/digest 凍結於 provenance。
+目前 release candidate 版本為 `1.0.0rc1`，穩定的 CLI 與 Python namespace 都是 `rnaseq`。`rnaseq` 是 control plane；Nextflow 負責 process 排程與 Docker task 啟動。開發模式可使用 `nf-rna:latest`；production-intended run 必須指定 digest 或 versioned tag，並將 Docker 實際觀察到的 image ID/digest 與 build revision label 凍結於 provenance。
 
 ## 概覽
 
@@ -92,7 +92,7 @@ Local reference 請在 `reference_manifest.yaml` 登錄相容的 prebuilt HISAT2
 
 已在 arm64 Docker Desktop 上以 amd64 emulation 執行 production pinned SAMtools 1.21 與 featureCounts 2.0.6 的語意 fixture；single-end、paired fragment、forward/reverse strand、overlap/multimapper、secondary/supplementary、both-mates、chimeric fragment 與 technical-lane merge 都符合預期。`samtools view -bh -F 0x900` 移除 multimapper secondary record 後，保留下來的 primary `NH:i:2` 仍被 featureCounts 排除，沒有被誤當作 unique read。
 
-同日以目前 checkout 建立的 arm64 control-plane image（ID `sha256:dc5cd9f336c411eb65ac80c360e6a7abe9f40acfa6cd86fcab05018b073d3171`）完成 raw L2 run `MILESTONE-A-RAW-L2-FINAL/20260905-115310+0800`，並另完成 pretrimmed L1 run `MILESTONE-A-PRETRIMMED-L1/20260905-115200+0800`。raw L2 run 實際產出 original/count-only BAM lineage、alignment/QC、featureCounts、canonical matrix/sample map、`featurecounts_raw_counts` → `DESeqDataSetFromMatrix`、L1、L2、report 與 delivery；完整機器可讀證據位於 immutable run directory。此小型合成資料未啟用 enrichment，因此驗證的是文件化的 no-enrichment graceful route，不宣稱 GO/KEGG 生物學結果。
+同日以目前 checkout 建立的 arm64 first-party execution image（ID `sha256:dc5cd9f336c411eb65ac80c360e6a7abe9f40acfa6cd86fcab05018b073d3171`）完成 raw L2 run `MILESTONE-A-RAW-L2-FINAL/20260905-115310+0800`，並另完成 pretrimmed L1 run `MILESTONE-A-PRETRIMMED-L1/20260905-115200+0800`。raw L2 run 實際產出 original/count-only BAM lineage、alignment/QC、featureCounts、canonical matrix/sample map、`featurecounts_raw_counts` → `DESeqDataSetFromMatrix`、L1、L2、report 與 delivery；完整機器可讀證據位於 immutable run directory。此小型合成資料未啟用 enrichment，因此驗證的是文件化的 no-enrichment graceful route，不宣稱 GO/KEGG 生物學結果。
 
 獨立的 interactive single-end QC 驗收 run `WIZARD-HISAT2-QC-R3/20260905-144237+0800` 亦於同日通過；它僅以 single-end synthetic fixture 驗證 raw preprocessing、HISAT2、featureCounts、FastQC/MultiQC 與 QC delivery，沒有宣稱 paired fragment accounting 或 L1/L2/enrichment。這些項目分別由後述 paired UAT 與上述 Milestone A smoke records 支持。
 
@@ -145,10 +145,11 @@ git clone https://github.com/2002brian/nf-rna.git
 cd nf-rna
 conda env create -f environment.yml
 conda activate nf-rna
-docker build -t rnaseq-control-plane:latest .
+python -m pip install -e '.[dev]'
+docker build --build-arg NF_RNA_SOURCE_REVISION="$(git rev-parse HEAD)" -t nf-rna:latest .
 ```
 
-需要 Python 3.11 以上版本。共用的 `environment.yml` 支援 Linux/WSL 與 Apple Silicon macOS，並刻意不含 Linux-only 的 `procps-ng`。Docker build 會另外套用 `environment.docker.yml`，安裝 Nextflow task metrics 所需的 GNU/procps `ps`，並在 image build 時驗證。使用 FASTQ route 前，請安裝 Nextflow，並確認 Docker Desktop 或其他相容的 Docker daemon 已啟動。`latest` 僅可用於明確的 non-production 開發模式；production acceptance 必須將 `runtime.control_plane_image` 設為 digest 或 versioned tag，`rnaseq doctor PROJECT` 會同時報告 requested 與 observed identity。
+需要 Python 3.11 以上版本。共用的 `environment.yml` 支援 Linux/WSL 與 Apple Silicon macOS；activate 後請明確安裝本專案。Docker build 會另外套用 `environment.docker.yml`，安裝 Nextflow task metrics 所需的 GNU/procps `ps`，並在 image build 時驗證已安裝的 first-party execution package、R scripts 與 R dependencies。使用 FASTQ route 前，請安裝 Nextflow，並確認 Docker Desktop 或其他相容的 Docker daemon 已啟動。`latest` 僅可用於明確的 non-production 開發模式；production acceptance 必須將 `runtime.execution_image` 設為 digest 或 versioned tag，`rnaseq doctor PROJECT` 會同時報告 requested 與 observed identity。下游 task container 一律由 Nextflow 而非 Python 啟動。
 
 Prebuilt Salmon 與 HISAT2 index 是一級 managed-reference 輸入：請在
 `reference_manifest.yaml` 宣告 root-relative path/prefix、version、strategy 與相符的 source checksum。下列 builders 僅在需要由 nf-rna 建立新 index 時使用；它們是 host-native、不使用 Docker，也不需要 RSEM：

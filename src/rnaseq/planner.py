@@ -392,7 +392,7 @@ def generate_plan(report: ValidationReport) -> tuple[Path, ...]:
     # Keep machine-specific observations out of the deterministic manifest.
     # The dedicated resource plan is intentionally refreshed by every plan run.
     from rnaseq.execution import effective_resource_budget, project_execution_budget, runtime_snapshot
-    snapshot = runtime_snapshot(report.config.runtime.control_plane_image)
+    snapshot = runtime_snapshot(report.config.runtime.execution_image)
     resources = effective_resource_budget(snapshot, project_execution_budget(report.config))
     resource_plan = {
         "schema_version": "1.0",

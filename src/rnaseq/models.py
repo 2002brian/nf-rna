@@ -371,15 +371,30 @@ class ReferenceConfig(StrictModel):
 
 
 class RuntimeConfig(StrictModel):
-    """Requested control-plane runtime identity for downstream tasks."""
+    """Requested first-party execution image for downstream Nextflow tasks."""
 
-    control_plane_image: StrictStr = "rnaseq-control-plane:latest"
+    execution_image: StrictStr = "nf-rna:latest"
 
-    @field_validator("control_plane_image")
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_control_plane_image(cls, value: object) -> object:
+        """Read the pre-1.0 runtime spelling without serializing it again."""
+
+        if not isinstance(value, dict) or "control_plane_image" not in value:
+            return value
+        if "execution_image" in value:
+            raise ValueError(
+                "runtime may specify only execution_image; control_plane_image is a legacy read-only alias."
+            )
+        migrated = dict(value)
+        migrated["execution_image"] = migrated.pop("control_plane_image")
+        return migrated
+
+    @field_validator("execution_image")
     @classmethod
     def validate_image_reference(cls, value: str) -> str:
         if not value.strip() or any(char.isspace() for char in value):
-            raise ValueError("runtime.control_plane_image must be a non-blank container reference without whitespace.")
+            raise ValueError("runtime.execution_image must be a non-blank container reference without whitespace.")
         return value
 
 
@@ -451,10 +466,10 @@ class ProjectConfig(StrictModel):
         if self.reference.acceptance == "production":
             if self.input.type is not InputType.FASTQ:
                 raise ValueError("reference.acceptance: production is supported only for FASTQ projects.")
-            image = self.runtime.control_plane_image
+            image = self.runtime.execution_image
             if image.endswith(":latest") or (":" not in image.rsplit("/", 1)[-1] and "@sha256:" not in image):
                 raise ValueError(
-                    "Production acceptance requires an immutable runtime.control_plane_image: "
+                    "Production acceptance requires an immutable runtime.execution_image: "
                     "use an image digest or a versioned tag, never latest or an untagged reference."
                 )
         if self.schema_version == SUPPORTED_SCHEMA_VERSION and self.analysis is None:

@@ -52,6 +52,20 @@ def test_unknown_nested_key_fails(project_factory):
     assert "input.mystery" in issue_messages(report)
 
 
+def test_runtime_execution_image_is_canonical_and_legacy_control_plane_image_is_read_compatible(project_factory):
+    canonical = base_config()
+    canonical["runtime"] = {"execution_image": "nf-rna:1.0.0rc1"}
+    loaded = load_project(project_factory(config=canonical)).config
+    assert loaded.runtime.execution_image == "nf-rna:1.0.0rc1"
+    assert loaded.runtime.model_dump() == {"execution_image": "nf-rna:1.0.0rc1"}
+
+    legacy = base_config()
+    legacy["runtime"] = {"control_plane_image": "rnaseq-control-plane:0.9.0"}
+    loaded_legacy = load_project(project_factory(config=legacy)).config
+    assert loaded_legacy.runtime.execution_image == "rnaseq-control-plane:0.9.0"
+    assert loaded_legacy.runtime.model_dump() == {"execution_image": "rnaseq-control-plane:0.9.0"}
+
+
 def test_invalid_preset_fails(project_factory):
     config = deepcopy(base_config())
     config["project"]["preset"] = "L3"

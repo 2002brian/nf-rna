@@ -8,13 +8,14 @@
   GNU/procps `ps`, which Nextflow requires for task metrics.
 - Docker Desktop or a compatible running Docker daemon.
 - Nextflow for FASTQ execution.
-- A first-party control-plane image selected by `runtime.control_plane_image`.
+- A first-party execution image selected by `runtime.execution_image`.
 - Sufficient local disk for Nextflow cache/work and the selected reference.
 
 ```bash
 conda env create -f environment.yml
 conda activate nf-rna
-docker build -t rnaseq-control-plane:latest .
+python -m pip install -e '.[dev]'
+docker build --build-arg NF_RNA_SOURCE_REVISION="$(git rev-parse HEAD)" -t nf-rna:latest .
 rnaseq doctor
 ```
 
@@ -22,7 +23,7 @@ The image runtime is intentionally verified with a non-login shell, matching
 the environment Nextflow task containers inherit:
 
 ```bash
-docker run --rm rnaseq-control-plane:latest \
+docker run --rm nf-rna:latest \
   sh -c 'command -v ps && ps --version'
 ```
 
@@ -65,7 +66,7 @@ creates staging output. Salmon uses the manifest-registered transcript FASTA
 and retains its decoy-aware gentrome strategy with `k=31`. HISAT2 builds a
 genome-only index and registers GTF-derived splice sites for the runtime
 `--known-splicesite-infile` argument. Docker remains required for FASTQ workflow
-execution and the downstream control-plane contract, not for index construction.
+execution and the downstream Nextflow task contract, not for index construction.
 
 For a prebuilt Salmon index, declare `index`, `version`, `strategy`, and
 `source_transcriptome_sha256`; `decoy_aware` additionally requires the matching
@@ -139,7 +140,9 @@ Run `rnaseq doctor <PROJECT>` before an authorized FASTQ run. It checks the runt
 
 Only the local execution profile is implemented. Workstation/HPC and SLURM execution remain deferred to the resource-profile milestone.
 
-`rnaseq-control-plane:latest` is allowed for non-production development and is labelled accordingly. Production acceptance requires an image digest or versioned tag plus a Docker-observed image ID/digest. `rnaseq doctor <PROJECT>` reports requested and observed identities. Each run also freezes those identities, the Git commit resolved from the installed source checkout, and SHA-256 values for the executed first-party workflow files.
+`runtime.execution_image: nf-rna:latest` is allowed only for non-production development. Production acceptance requires a versioned tag or digest plus a Docker-observed image ID/digest. `rnaseq doctor <PROJECT>` reports requested and observed identities. Each run freezes those identities, the OCI build revision label when supplied, the Git commit resolved from the control-plane checkout when available, and SHA-256 values for the executed first-party workflow files. `runtime.control_plane_image` remains a read-only compatibility alias for existing projects; newly created and serialized configuration uses `runtime.execution_image`.
+
+`rnaseq` validates, freezes, and launches Nextflow; it does not launch downstream analysis containers. Nextflow owns Docker container launch through explicit process-level `container params.first_party_image` directives. The one first-party execution image contains the installed `rnaseq.workflow_support` package and `/opt/nf-rna/r` scripts used by L1, L2, GSEA, and technical-report tasks. Docker is the current local process runtime; an Apptainer/Singularity profile can be added later without moving scientific execution into Python.
 
 On Linux and WSL, downstream Nextflow task containers run with the invoking host user's numeric UID:GID. nf-rna freezes a per-run Nextflow override equivalent to Docker `--user $(id -u):$(id -g)`, so host-created task directories remain writable without `sudo`, `chmod 777`, or changing the fixed image user. macOS keeps its existing Docker Desktop behavior and does not receive this override. `rnaseq doctor` reports the selected policy and Linux/WSL mapping before execution.
 

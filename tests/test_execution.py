@@ -270,7 +270,7 @@ def test_container_runtime_probe_requires_procps_python_r_and_r_packages(monkeyp
     assert result.state == "FOUND"
     assert calls[0][:3] == ["docker", "image", "inspect"]
     probe = calls[1]
-    assert probe[:6] == ["docker", "run", "--rm", "rnaseq-control-plane:latest", "sh", "-c"]
+    assert probe[:6] == ["docker", "run", "--rm", "nf-rna:latest", "sh", "-c"]
     assert "--entrypoint" not in probe
     # Docker image ENV is the task runtime contract; a login shell can replace
     # PATH via profile startup files and is deliberately not representative.
@@ -313,40 +313,41 @@ def test_container_runtime_probe_reports_the_failed_prerequisite(monkeypatch):
 def test_doctor_reports_a_successful_container_probe(monkeypatch):
     monkeypatch.setattr("rnaseq.execution.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "available"))
     monkeypatch.setattr("rnaseq.execution.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "available"))
-    monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda *_args: RuntimeCheck("Control-plane container", "FOUND", "available"))
+    monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda *_args: RuntimeCheck("First-party execution image", "FOUND", "available"))
     monkeypatch.setattr("rnaseq.downstream.r_runtime_checks", lambda: ())
     checks = doctor_checks()
-    assert RuntimeCheck("Control-plane container", "FOUND", "available") in checks
+    assert RuntimeCheck("First-party execution image", "FOUND", "available") in checks
 
 
 def test_doctor_reports_requested_and_observed_image_identity(monkeypatch, project_factory):
     root = project_factory()
     config_path = root / "project.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    config["runtime"] = {"control_plane_image": "rnaseq-control-plane:0.5.1"}
+    config["runtime"] = {"execution_image": "nf-rna:0.5.1"}
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     monkeypatch.setattr("rnaseq.execution.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "available"))
     monkeypatch.setattr("rnaseq.execution.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "available"))
-    monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda *_args: RuntimeCheck("Control-plane container", "FOUND", "available"))
+    monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda *_args: RuntimeCheck("First-party execution image", "FOUND", "available"))
     monkeypatch.setattr(
         "rnaseq.execution.inspect_container_image",
-        lambda image: {"reference": image, "image_id": "sha256:" + "a" * 64, "repo_digests": ["repo@sha256:" + "b" * 64]},
+        lambda image: {"reference": image, "image_id": "sha256:" + "a" * 64, "repo_digests": ["repo@sha256:" + "b" * 64], "labels": {"org.opencontainers.image.revision": "test-revision"}},
     )
     monkeypatch.setattr(
         "rnaseq.execution.runtime_snapshot",
         lambda *_args: RuntimeSnapshot("Darwin", "arm64", 12, 24 * 1024**3, "arm64", 15 * 1024**3, "test", "arm64"),
     )
     monkeypatch.setattr("rnaseq.downstream.r_runtime_checks", lambda: ())
-    identity = {check.name: check for check in doctor_checks(root)}["Control-plane image identity"]
+    identity = {check.name: check for check in doctor_checks(root)}["First-party execution image identity"]
     assert identity.verdict == "PASS"
-    assert "requested=rnaseq-control-plane:0.5.1" in identity.detail
+    assert "requested=nf-rna:0.5.1" in identity.detail
     assert "observed_image_id=sha256:" in identity.detail
+    assert "test-revision" in identity.detail
 
 
 def test_doctor_distinguishes_missing_nextflow_and_docker_from_architecture_warnings(monkeypatch):
     monkeypatch.setattr("rnaseq.execution.check_nextflow", lambda: RuntimeCheck("Nextflow", "NOT FOUND", "not installed"))
     monkeypatch.setattr("rnaseq.execution.check_docker", lambda: RuntimeCheck("Docker", "NOT FOUND", "daemon unavailable"))
-    monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda *_args: RuntimeCheck("Control-plane container", "NOT FOUND", "daemon unavailable"))
+    monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda *_args: RuntimeCheck("First-party execution image", "NOT FOUND", "daemon unavailable"))
     monkeypatch.setattr(
         "rnaseq.execution.runtime_snapshot",
         lambda *_args: RuntimeSnapshot("Darwin", "arm64", 12, 24 * 1024**3, None, None, None, "amd64"),
@@ -357,7 +358,7 @@ def test_doctor_distinguishes_missing_nextflow_and_docker_from_architecture_warn
     assert by_name["Nextflow"].verdict == "FAIL"
     assert by_name["Docker"].verdict == "FAIL"
     assert by_name["Docker runtime"].verdict == "FAIL"
-    assert by_name["Control-plane image architecture"].verdict == "WARN"
+    assert by_name["First-party execution image architecture"].verdict == "WARN"
     assert by_name["Effective local budget"].verdict == "WARN"
     assert "unavailable" in by_name["Effective local budget"].detail
     assert "architecture=arm64" in by_name["Host runtime"].detail
@@ -367,11 +368,11 @@ def test_runtime_doctor_warns_for_amd64_image_on_arm64_and_low_docker_memory():
     checks = runtime_resource_checks(RuntimeSnapshot(
         host_os="Darwin", host_architecture="arm64", logical_cpus=12, host_memory_bytes=24 * 1024**3,
         docker_architecture="arm64", docker_memory_bytes=8 * 1024**3, docker_version="28.0.1",
-        control_plane_image_architecture="amd64", docker_cpus=12,
+        first_party_image_architecture="amd64", docker_cpus=12,
     ))
     by_name = {item.name: item for item in checks}
-    assert by_name["Control-plane image architecture"].verdict == "WARN"
-    assert "Rosetta" in by_name["Control-plane image architecture"].detail
+    assert by_name["First-party execution image architecture"].verdict == "WARN"
+    assert "Rosetta" in by_name["First-party execution image architecture"].detail
     assert by_name["Effective local budget"].verdict == "WARN"
     assert "8 CPUs/8 GiB" in by_name["Effective local budget"].detail
 

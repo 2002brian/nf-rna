@@ -1,5 +1,10 @@
 FROM mambaorg/micromamba:2.0.5
 
+ARG NF_RNA_SOURCE_REVISION=unknown
+LABEL org.opencontainers.image.title="nf-rna first-party execution image" \
+      org.opencontainers.image.source="https://github.com/nf-rna/nf-rna" \
+      org.opencontainers.image.revision="${NF_RNA_SOURCE_REVISION}"
+
 WORKDIR /opt/rnaseq
 COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yml environment.docker.yml pyproject.toml README.md ./
 COPY --chown=$MAMBA_USER:$MAMBA_USER src ./src
@@ -9,7 +14,7 @@ ENV PYTHONUNBUFFERED=1
 
 RUN micromamba create --yes --name rnaseq --file environment.yml && \
     micromamba install --yes --name rnaseq --file environment.docker.yml && \
-    sh -c 'command -v ps && ps --version && command -v python && command -v Rscript && Rscript -e "packages <- c(\"DESeq2\", \"tximport\", \"ggplot2\", \"pheatmap\", \"yaml\", \"jsonlite\", \"clusterProfiler\", \"AnnotationDbi\", \"org.Hs.eg.db\", \"org.Mm.eg.db\"); quit(status=if (all(vapply(packages, requireNamespace, logical(1), quietly=TRUE))) 0 else 1)"' && \
+    sh -c 'python -m pip install --no-deps . && mkdir -p /opt/nf-rna/r && cp -a src/rnaseq/r/. /opt/nf-rna/r/ && test -f /opt/nf-rna/r/l1_analysis.R && command -v ps && ps --version && command -v python && command -v Rscript && Rscript -e "packages <- c(\"DESeq2\", \"tximport\", \"ggplot2\", \"pheatmap\", \"yaml\", \"jsonlite\", \"clusterProfiler\", \"AnnotationDbi\", \"org.Hs.eg.db\", \"org.Mm.eg.db\"); quit(status=if (all(vapply(packages, requireNamespace, logical(1), quietly=TRUE))) 0 else 1)" && python -m rnaseq.workflow_support report --help >/dev/null' && \
     micromamba clean --all --yes
 
 ENTRYPOINT ["/usr/local/bin/_entrypoint.sh"]

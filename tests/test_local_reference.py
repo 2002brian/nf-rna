@@ -253,7 +253,7 @@ def _promote_reference_for_production(root: Path, reference: Path, *, purpose: s
     config_path = root / "project.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     config["reference"]["acceptance"] = "production"
-    config["runtime"] = {"control_plane_image": "rnaseq-control-plane:0.5.1"}
+    config["runtime"] = {"execution_image": "nf-rna:0.5.1"}
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
 
@@ -368,7 +368,7 @@ def test_legacy_manifest_is_not_silently_promoted_to_production(tmp_path):
     config_path = root / "project.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     config["reference"]["acceptance"] = "production"
-    config["runtime"] = {"control_plane_image": "rnaseq-control-plane:0.5.1"}
+    config["runtime"] = {"execution_image": "nf-rna:0.5.1"}
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     report = validate_project(root)
     assert "legacy_reference_not_production" in {issue.code for issue in report.errors}

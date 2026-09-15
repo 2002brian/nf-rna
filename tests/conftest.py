@@ -91,7 +91,7 @@ def production_capable_execution_capacity(monkeypatch):
         docker_architecture="amd64",
         docker_memory_bytes=64 * 1024**3,
         docker_version="test",
-        control_plane_image_architecture="amd64",
+        first_party_image_architecture="amd64",
         docker_cpus=16,
     )
     monkeypatch.setattr("rnaseq.execution.detect_local_resource_capacity", lambda: capacity)

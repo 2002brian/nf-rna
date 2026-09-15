@@ -25,7 +25,7 @@ import yaml
 
 from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
 from rnaseq.execution import (
-    CONTROL_PLANE_IMAGE,
+    FIRST_PARTY_EXECUTION_IMAGE,
     HISAT2_WORKFLOW,
     CONTAINER_PROFILE,
     LOCAL_PROFILE,
@@ -368,10 +368,10 @@ def resolve_downstream_inputs(run: CaseRun) -> ResolvedDownstreamInputs:
             salmon = handoff.get("salmon")
             if not isinstance(handoff_samples, list) or not all(isinstance(item, str) and item for item in handoff_samples):
                 raise UpstreamExecutionError("Frozen upstream handoff has no valid Salmon sample list.")
-            if tuple(sorted(handoff_samples)) != samples:
+            if len(set(handoff_samples)) != len(handoff_samples) or set(handoff_samples) != set(samples):
                 raise UpstreamExecutionError(
                     "Frozen metadata sample IDs disagree with upstream Salmon handoff samples: "
-                    f"metadata={list(samples)!r}; handoff={sorted(handoff_samples)!r}."
+                    f"metadata={list(samples)!r}; handoff={handoff_samples!r}."
                 )
             if not isinstance(salmon, dict) or not isinstance(salmon.get("quant_sf"), dict):
                 raise UpstreamExecutionError("Frozen upstream handoff has no Salmon quant.sf mapping.")
@@ -661,7 +661,7 @@ def freeze_case_inputs(
         # and the first-party downstream workflow for every local FASTQ run.
         runtime = frozen / "nfcore.local.config"
         resolved = resources or effective_resource_budget(
-            runtime_snapshot(report.config.runtime.control_plane_image), project_execution_budget(report.config)
+            runtime_snapshot(report.config.runtime.execution_image), project_execution_budget(report.config)
         )
         _write_text(runtime, render_local_resource_config(ResourceContract(
             "EFFECTIVE_LOCAL", resolved.effective_cpus, resolved.effective_memory_gib, LOCAL_RESOURCE_CEILING.time_hours
@@ -753,14 +753,14 @@ def _provenance(
     except OSError:
         pass
     nextflow = check_nextflow()
-    requested_image = report.config.runtime.control_plane_image if report.config else CONTROL_PLANE_IMAGE
+    requested_image = report.config.runtime.execution_image if report.config else FIRST_PARTY_EXECUTION_IMAGE
     runtime = runtime_snapshot(requested_image)
     resolved_resources = resources or effective_resource_budget(runtime, project_execution_budget(report.config))
     method = report.config.upstream.quantification.method if report.config and report.config.upstream.quantification else None
     def tool_identity(version: str, image: str) -> dict[str, object]:
         return {"version": version, **inspect_container_image(image)}
 
-    control_plane = inspect_container_image(requested_image)
+    execution_image = inspect_container_image(requested_image)
     source_root = Path(__file__).resolve().parents[2]
     workflow_hashes = {
         "workflow/main.nf": _sha256(workflow_asset_path("main.nf")),
@@ -792,7 +792,11 @@ def _provenance(
             } if method == "hisat2_featurecounts" else None
         ),
         "container_runtime": "docker",
-        "container_image": control_plane,
+        "execution_image": execution_image,
+        # Compatibility for consumers of pre-migration provenance.  New
+        # consumers should use execution_image, whose name reflects that
+        # Nextflow—not the Python control plane—owns task container launch.
+        "container_image": execution_image,
         "production_intended": bool(report.config and report.config.reference.acceptance == "production"),
         "runtime_resources": {
             **resolved_resources.as_dict(),
@@ -803,7 +807,7 @@ def _provenance(
             "docker_architecture": runtime.docker_architecture,
             "docker_memory_bytes": runtime.docker_memory_bytes,
             "docker_version": runtime.docker_version,
-            "control_plane_image_architecture": runtime.control_plane_image_architecture,
+            "first_party_image_architecture": runtime.first_party_image_architecture,
             "resource_profile": "M5_LOCAL_SMALL_MEDIUM_LARGE",
         },
         "frozen_local_nextflow_config": (
@@ -900,10 +904,10 @@ def write_downstream_docker_user_config(
 
 
 def write_downstream_runtime_config(run: CaseRun, image: str) -> Path:
-    """Freeze the requested per-run downstream image instead of inheriting latest."""
+    """Freeze the image parameter consumed by explicit Nextflow processes."""
 
     path = run.run_dir / "frozen" / "downstream.runtime.config"
-    _write_text(path, f"process.container = {json.dumps(image)}\n")
+    _write_text(path, f"params.first_party_image = {json.dumps(image)}\n")
     return path
 
 
@@ -1354,7 +1358,7 @@ def prepare_service_run(report: ValidationReport, *, profile: str) -> EffectiveR
         report.config.execution.max_cpus, report.config.execution.max_memory_gb, detect_local_resource_capacity()
     )
     resources = effective_resource_budget(
-        runtime_snapshot(report.config.runtime.control_plane_image), project_execution_budget(report.config)
+        runtime_snapshot(report.config.runtime.execution_image), project_execution_budget(report.config)
     )
     validate_effective_resource_budget(resources)
     require_fresh_plan(report)
@@ -1367,15 +1371,15 @@ def prepare_service_run(report: ValidationReport, *, profile: str) -> EffectiveR
         raise ExecutionPreflightError("Nextflow is required: " + nextflow.detail)
     if docker.state != "FOUND":
         raise ExecutionPreflightError("Docker is required: " + docker.detail)
-    requested_image = report.config.runtime.control_plane_image
+    requested_image = report.config.runtime.execution_image
     container = check_container_runtime(requested_image)
     if container.state != "FOUND":
-        raise ExecutionPreflightError("Control-plane container is required: " + container.detail)
+        raise ExecutionPreflightError("First-party execution image is required: " + container.detail)
     if report.config.reference.acceptance == "production":
         observed = inspect_container_image(requested_image)
         if not observed.get("image_id"):
             raise ExecutionPreflightError(
-                "Production-intended execution requires an observed immutable control-plane image ID/digest; "
+                "Production-intended execution requires an observed immutable execution image ID/digest; "
                 f"Docker could not establish one for {requested_image}."
             )
     return resources
@@ -1658,7 +1662,7 @@ def _prepare_retry_runtime(report: ValidationReport, profile: str) -> EffectiveR
     if profile != LOCAL_PROFILE or report.config is None:
         raise ExecutionPreflightError("Retry supports only the frozen local execution profile.")
     validate_local_execution_budget(report.config.execution.max_cpus, report.config.execution.max_memory_gb, detect_local_resource_capacity())
-    resources = effective_resource_budget(runtime_snapshot(report.config.runtime.control_plane_image), project_execution_budget(report.config))
+    resources = effective_resource_budget(runtime_snapshot(report.config.runtime.execution_image), project_execution_budget(report.config))
     validate_effective_resource_budget(resources)
     if report.config.input.type is InputType.FASTQ and not report.execution_ready:
         raise ExecutionPreflightError("Retry frozen execution contract is not runtime-ready.")
@@ -1667,11 +1671,11 @@ def _prepare_retry_runtime(report: ValidationReport, profile: str) -> EffectiveR
         raise ExecutionPreflightError("Nextflow is required: " + nextflow.detail)
     if docker.state != "FOUND":
         raise ExecutionPreflightError("Docker is required: " + docker.detail)
-    container = check_container_runtime(report.config.runtime.control_plane_image)
+    container = check_container_runtime(report.config.runtime.execution_image)
     if container.state != "FOUND":
-        raise ExecutionPreflightError("Control-plane container is required: " + container.detail)
-    if report.config.reference.acceptance == "production" and not inspect_container_image(report.config.runtime.control_plane_image).get("image_id"):
-        raise ExecutionPreflightError("Production-intended retry requires an observed immutable control-plane image ID/digest.")
+        raise ExecutionPreflightError("First-party execution image is required: " + container.detail)
+    if report.config.reference.acceptance == "production" and not inspect_container_image(report.config.runtime.execution_image).get("image_id"):
+        raise ExecutionPreflightError("Production-intended retry requires an observed immutable execution image ID/digest.")
     return resources
 
 
@@ -1764,7 +1768,7 @@ def execute_service_run(
             return run
         execution_inputs = resolve_downstream_inputs(run)
         observer_config = write_downstream_observer_config(run)
-        runtime_config = write_downstream_runtime_config(run, report.config.runtime.control_plane_image)
+        runtime_config = write_downstream_runtime_config(run, report.config.runtime.execution_image)
         docker_user_config = write_downstream_docker_user_config(run)
         downstream = build_downstream_nextflow_command(
             run, profile=profile, work_dir=workspace.work_dir / "downstream", observer_config=observer_config,
@@ -1873,7 +1877,7 @@ def execute_retry_service_run(
             return run
         execution_inputs = resolve_downstream_inputs(run)
         observer_config = write_downstream_observer_config(run)
-        runtime_config = write_downstream_runtime_config(run, report.config.runtime.control_plane_image)
+        runtime_config = write_downstream_runtime_config(run, report.config.runtime.execution_image)
         docker_user_config = write_downstream_docker_user_config(run)
         downstream = build_downstream_nextflow_command(
             run, profile=profile, work_dir=workspace.work_dir / "downstream", observer_config=observer_config,

@@ -10,6 +10,8 @@ rnaseq CLI → nf-core/rnaseq → standardized upstream outputs → downstream N
 
 The Python control plane freezes a version-pinned input contract and records the stable nf-core handoff boundary. Its frozen `analysis_level` is the graph selector: an `L1` project runs L1 and the L1 technical report only; an `L2` project runs L1, L2, optional GO preranked GSEA (BP/MF/CC) and KEGG preranked GSEA, then the technical HTML report. The graph never infers L2 from contrasts, metadata, or available workflow modules. It does not invoke GO or KEGG ORA in production. Server executor settings remain intentionally deferred.
 
+Each downstream computational process explicitly declares `container params.first_party_image`. Python freezes that parameter for the immutable run and starts Nextflow; Nextflow alone launches Docker task containers. The image contains the installed `rnaseq.workflow_support` package and `/opt/nf-rna/r` scripts, so task execution does not depend on the host checkout.
+
 Independent `ENRICHMENT_ANALYSIS` tasks may run concurrently when their summed
 CPU and memory requests fit the effective aggregate local budget. Nextflow's
 local executor provides this scheduling guard without a fixed `maxForks` cap.

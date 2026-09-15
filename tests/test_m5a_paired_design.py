@@ -175,7 +175,7 @@ def test_run_provenance_preserves_paired_design(monkeypatch, project_factory, tm
         lambda _image: SimpleNamespace(
             host_os="test", host_architecture="test", logical_cpus=1,
             host_memory_bytes=1, docker_architecture="test", docker_memory_bytes=1,
-            docker_version="test", control_plane_image_architecture="test",
+            docker_version="test", first_party_image_architecture="test",
         ),
     )
     workspace = SimpleNamespace(root=tmp_path / "runtime", launch_dir=tmp_path / "launch", work_dir=tmp_path / "work")

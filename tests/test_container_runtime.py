@@ -15,13 +15,16 @@ def test_container_runtime_path_contract_uses_non_login_shell():
     dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
     # Keep the host environment portable; procps is a Linux image contract.
     assert "procps-ng" not in environment
+    assert "-e .[dev]" not in environment
     assert docker_environment["dependencies"] == ["procps-ng"]
     assert "!environment.docker.yml" in dockerignore
     assert "micromamba install --yes --name rnaseq --file environment.docker.yml" in dockerfile
     assert 'ENV PATH="/opt/conda/envs/rnaseq/bin:${PATH}"' in dockerfile
     assert dockerfile.index('ENV PATH="/opt/conda/envs/rnaseq/bin:${PATH}"') < dockerfile.index("RUN micromamba create")
     assert "micromamba run --name rnaseq" not in dockerfile
-    assert "sh -c 'command -v ps" in dockerfile
+    assert "python -m pip install --no-deps ." in dockerfile
+    assert "cp -a src/rnaseq/r/. /opt/nf-rna/r/" in dockerfile
+    assert "org.opencontainers.image.revision" in dockerfile
     assert "sh -lc" not in dockerfile
     for command in ("command -v ps", "ps --version", "command -v python", "command -v Rscript"):
         assert command in dockerfile

@@ -80,10 +80,15 @@ def test_downstream_nextflow_profiles_parse(profile: str):
     assert result.returncode == 0, result.stderr
 
 
-def test_all_downstream_processes_use_the_doctor_checked_runtime_image():
+def test_all_downstream_processes_explicitly_use_the_frozen_first_party_image():
+    main = (WORKFLOW / "main.nf").read_text(encoding="utf-8")
     config = (WORKFLOW / "nextflow.config").read_text(encoding="utf-8")
-    assert "process.container = 'rnaseq-control-plane:latest'" in config
-    assert "rnaseq-downstream:latest" not in config
+    assert "params.first_party_image = 'nf-rna:latest'" in main
+    for name in ("L1_ANALYSIS", "L2_ANALYSIS", "ENRICHMENT_ANALYSIS", "TECHNICAL_REPORT", "TECHNICAL_REPORT_NO_ENRICHMENT", "TECHNICAL_REPORT_L1"):
+        body = re.search(rf"process {name} \{{(?P<body>.*?)^\}}", main, flags=re.DOTALL | re.MULTILINE)
+        assert body is not None
+        assert "container params.first_party_image" in body.group("body")
+    assert "process.container" not in config
 
 
 def test_downstream_resource_contracts_are_explicit_without_artificial_serialization():

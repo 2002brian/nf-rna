@@ -55,6 +55,21 @@ def _capture(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, capture_output=True, text=True, check=False)
 
 
+def _frozen_metadata_sample_ids(path: Path) -> tuple[str, ...]:
+    """Return the immutable metadata order used by all downstream backends."""
+
+    try:
+        with path.open(encoding="utf-8", newline="") as handle:
+            sample_ids = [row.get("sample_id") for row in csv.DictReader(handle)]
+    except (OSError, UnicodeError, csv.Error) as exc:
+        raise DownstreamExecutionError(f"Frozen metadata is unreadable: {path}: {exc}") from exc
+    if not sample_ids or any(not isinstance(sample, str) or not sample for sample in sample_ids):
+        raise DownstreamExecutionError("Frozen metadata must contain nonblank sample_id values.")
+    if len(set(sample_ids)) != len(sample_ids):
+        raise DownstreamExecutionError("Frozen metadata must contain unique sample_id values.")
+    return tuple(sample_ids)
+
+
 def r_runtime_checks() -> tuple[RuntimeCheck, ...]:
     """Report R and the explicit M3 Bioconductor dependencies without installing them."""
     try:
@@ -165,9 +180,10 @@ def prepare_l1(report: ValidationReport, *, run_id: str | None) -> PreparedL1:
     samples = manifest.get("samples")
     if not isinstance(quant, dict) or not isinstance(samples, list):
         raise DownstreamExecutionError("Handoff Salmon quant.sf mapping is invalid.")
+    if any(not isinstance(sample, str) or not sample for sample in samples) or len(set(samples)) != len(samples):
+        raise DownstreamExecutionError("Handoff Salmon sample list must contain unique, nonblank sample IDs.")
     if set(quant) != set(samples):
         raise DownstreamExecutionError("Handoff Salmon quant.sf sample set disagrees with its recorded sample list.")
-    quant_paths = {sample: str(_relative_existing(run_dir, value, f"salmon.quant_sf.{sample}")) for sample, value in sorted(quant.items())}
     mapping = salmon.get("tx2gene")
     mapping_metadata: dict[str, Any]
     if isinstance(mapping, dict):
@@ -198,6 +214,13 @@ def prepare_l1(report: ValidationReport, *, run_id: str | None) -> PreparedL1:
     frozen_metadata = run_dir / "frozen" / "metadata.csv"
     if not frozen_metadata.is_file():
         raise DownstreamExecutionError("Selected run has no frozen metadata.csv.")
+    metadata_samples = _frozen_metadata_sample_ids(frozen_metadata)
+    if set(samples) != set(metadata_samples):
+        raise DownstreamExecutionError("Handoff Salmon sample set disagrees with frozen metadata sample IDs.")
+    quant_paths = {
+        sample: str(_relative_existing(run_dir, quant[sample], f"salmon.quant_sf.{sample}"))
+        for sample in metadata_samples
+    }
     # A run is immutable: downstream uses its frozen project formula and metadata.
     frozen_project = _read_yaml(run_dir / "frozen" / "project.yaml", "frozen project configuration")
     try:
@@ -206,7 +229,7 @@ def prepare_l1(report: ValidationReport, *, run_id: str | None) -> PreparedL1:
         raise DownstreamExecutionError(f"Selected run frozen project configuration is invalid: {exc}") from exc
     formula = frozen_config.design.formula
     return PreparedL1(
-        report.project_dir, run_dir / "downstream" / "l1", "salmon_tximport", tuple(sorted(samples)),
+        report.project_dir, run_dir / "downstream" / "l1", "salmon_tximport", metadata_samples,
         frozen_metadata, formula,
         {
             "source_type": "salmon_tximport",

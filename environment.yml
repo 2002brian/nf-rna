@@ -16,5 +16,3 @@ dependencies:
   - r-yaml
   - r-jsonlite
   - pip
-  - pip:
-      - "-e .[dev]"

@@ -32,7 +32,7 @@ LOCAL_PROFILE = "local"
 CONTAINER_PROFILE = "docker"
 RUN_STATES = {"CREATED", "RUNNING", "SUCCESS", "FAILED"}
 EXECUTION_ROOT_ENV = "RNASEQ_EXECUTION_ROOT"
-CONTROL_PLANE_IMAGE = "rnaseq-control-plane:latest"
+FIRST_PARTY_EXECUTION_IMAGE = "nf-rna:latest"
 HISAT2_WORKFLOW = workflow_asset_path("hisat2_featurecounts.nf")
 CONTAINER_R_PACKAGES = (
     "DESeq2", "tximport", "ggplot2", "pheatmap", "yaml", "jsonlite",
@@ -136,7 +136,7 @@ class RuntimeSnapshot:
     docker_architecture: str | None
     docker_memory_bytes: int | None
     docker_version: str | None
-    control_plane_image_architecture: str | None
+    first_party_image_architecture: str | None
     docker_cpus: int | None = None
 
 
@@ -206,9 +206,9 @@ def resolve_execution_workspace(case_id: str, run_id: str) -> ExecutionWorkspace
     if configured:
         base = Path(configured).expanduser()
     elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Caches" / "rnaseq-control-plane"
+        base = Path.home() / "Library" / "Caches" / "nf-rna"
     else:
-        base = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "rnaseq-control-plane"
+        base = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "nf-rna"
     if not base.is_absolute():
         raise ExecutionPreflightError(f"{EXECUTION_ROOT_ENV} must be an absolute path when configured.")
     root = (base / case_id / run_id).resolve()
@@ -273,6 +273,7 @@ def inspect_container_image(image: str) -> dict[str, object]:
         "image_id": None,
         "repo_digests": [],
         "architecture": None,
+        "labels": {},
     }
     try:
         result = _run_capture(["docker", "image", "inspect", image, "--format", "{{json .}}"])
@@ -292,6 +293,13 @@ def inspect_container_image(image: str) -> dict[str, object]:
     architecture = _normalise_architecture(str(payload.get("Architecture") or ""))
     if architecture:
         observed["architecture"] = architecture
+    labels = payload.get("Config", {}).get("Labels") if isinstance(payload.get("Config"), dict) else None
+    if isinstance(labels, dict):
+        observed["labels"] = {
+            key: labels[key]
+            for key in ("org.opencontainers.image.title", "org.opencontainers.image.revision")
+            if isinstance(labels.get(key), str) and labels[key]
+        }
     return observed
 
 
@@ -338,7 +346,7 @@ def _host_memory_bytes() -> int | None:
         return None
 
 
-def runtime_snapshot(image: str = CONTROL_PLANE_IMAGE) -> RuntimeSnapshot:
+def runtime_snapshot(image: str = FIRST_PARTY_EXECUTION_IMAGE) -> RuntimeSnapshot:
     """Collect cheap host/Docker facts without launching workflow containers."""
 
     host_architecture = _normalise_architecture(platform.machine()) or "unknown"
@@ -382,7 +390,7 @@ def runtime_snapshot(image: str = CONTROL_PLANE_IMAGE) -> RuntimeSnapshot:
         docker_architecture=docker_architecture,
         docker_memory_bytes=docker_memory_bytes,
         docker_version=docker_version,
-        control_plane_image_architecture=image_architecture,
+        first_party_image_architecture=image_architecture,
         docker_cpus=docker_cpus,
     )
 
@@ -515,12 +523,12 @@ def runtime_resource_checks(snapshot: RuntimeSnapshot, budget: ResourceContract 
             f"architecture={snapshot.docker_architecture}; logical_cpus={snapshot.docker_cpus or 'unavailable'}; memory={_gib(snapshot.docker_memory_bytes)}; version={snapshot.docker_version or 'unavailable'}",
         )
     checks: list[RuntimeCheck] = [host, docker]
-    if snapshot.control_plane_image_architecture is None:
-        checks.append(RuntimeCheck("Control-plane image architecture", "NOT FOUND", "Image architecture is unavailable; build or inspect rnaseq-control-plane:latest.", "WARN"))
-    elif snapshot.host_architecture == "arm64" and snapshot.control_plane_image_architecture == "amd64":
-        checks.append(RuntimeCheck("Control-plane image architecture", "FOUND", "amd64 image on arm64 host; Docker/Rosetta emulation may reduce throughput.", "WARN"))
+    if snapshot.first_party_image_architecture is None:
+        checks.append(RuntimeCheck("First-party execution image architecture", "NOT FOUND", "Image architecture is unavailable; build or inspect nf-rna:latest.", "WARN"))
+    elif snapshot.host_architecture == "arm64" and snapshot.first_party_image_architecture == "amd64":
+        checks.append(RuntimeCheck("First-party execution image architecture", "FOUND", "amd64 image on arm64 host; Docker/Rosetta emulation may reduce throughput.", "WARN"))
     else:
-        checks.append(RuntimeCheck("Control-plane image architecture", "FOUND", f"image={snapshot.control_plane_image_architecture}; host={snapshot.host_architecture}"))
+        checks.append(RuntimeCheck("First-party execution image architecture", "FOUND", f"image={snapshot.first_party_image_architecture}; host={snapshot.host_architecture}"))
     resources = effective_resource_budget(snapshot, budget)
     checks.append(RuntimeCheck(
         "Project resource budget", "FOUND",
@@ -599,8 +607,8 @@ def check_docker() -> RuntimeCheck:
     return RuntimeCheck("Docker", "FOUND", "Docker daemon is available.")
 
 
-def check_container_runtime(image: str = CONTROL_PLANE_IMAGE) -> RuntimeCheck:
-    """Verify the built control-plane image has Nextflow task prerequisites.
+def check_container_runtime(image: str = FIRST_PARTY_EXECUTION_IMAGE) -> RuntimeCheck:
+    """Verify the first-party image has downstream Nextflow task prerequisites.
 
     This intentionally runs only a short shell/R package probe; it does not run a
     workflow, access project inputs, or pull an image implicitly.
@@ -608,14 +616,14 @@ def check_container_runtime(image: str = CONTROL_PLANE_IMAGE) -> RuntimeCheck:
 
     docker = check_docker()
     if docker.state != "FOUND":
-        return RuntimeCheck("Control-plane container", "NOT FOUND", "Docker daemon is unavailable.")
+        return RuntimeCheck("First-party execution image", "NOT FOUND", "Docker daemon is unavailable.")
     try:
         present = _run_capture(["docker", "image", "inspect", image])
     except FileNotFoundError:
-        return RuntimeCheck("Control-plane container", "NOT FOUND", "Docker executable was not found on PATH.")
+        return RuntimeCheck("First-party execution image", "NOT FOUND", "Docker executable was not found on PATH.")
     if present.returncode != 0:
         return RuntimeCheck(
-            "Control-plane container", "NOT FOUND",
+            "First-party execution image", "NOT FOUND",
             f"Required image {image} is not available locally; build or resolve it before execution.",
         )
     packages = ", ".join(repr(package) for package in CONTAINER_R_PACKAGES)
@@ -645,9 +653,9 @@ def check_container_runtime(image: str = CONTROL_PLANE_IMAGE) -> RuntimeCheck:
             if output
             else f"container prerequisite probe exited {result.returncode} without diagnostic output."
         )
-        return RuntimeCheck("Control-plane container", "NOT FOUND", detail)
+        return RuntimeCheck("First-party execution image", "NOT FOUND", detail)
     return RuntimeCheck(
-        "Control-plane container", "FOUND",
+        "First-party execution image", "FOUND",
         f"requested={image}; ps, python, Rscript, required R packages, and the final-report CLI contract are available.",
     )
 
@@ -683,13 +691,13 @@ def doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeCheck, ...]:
     probe = Path.cwd()
     writable = probe.exists() and probe.is_dir() and probe.stat().st_mode != 0
     from rnaseq.downstream import r_runtime_checks
-    requested_image = CONTROL_PLANE_IMAGE
+    requested_image = FIRST_PARTY_EXECUTION_IMAGE
     budget = LOCAL_RESOURCE_CEILING
     if project_dir is not None:
         try:
             from rnaseq.project import load_project
             config = load_project(project_dir).config
-            requested_image = config.runtime.control_plane_image
+            requested_image = config.runtime.execution_image
             budget = project_execution_budget(config)
         except (OSError, ValueError):
             pass
@@ -712,10 +720,11 @@ def doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeCheck, ...]:
         check_docker(),
         check_container_runtime(requested_image),
         RuntimeCheck(
-            "Control-plane image identity",
+            "First-party execution image identity",
             "FOUND" if observed_image.get("image_id") else "NOT FOUND",
             f"requested={requested_image}; observed_image_id={observed_image.get('image_id') or 'unavailable'}; "
-            f"observed_repo_digests={observed_image.get('repo_digests') or []}",
+            f"observed_repo_digests={observed_image.get('repo_digests') or []}; "
+            f"execution_labels={observed_image.get('labels') or {} }",
             None if observed_image.get("image_id") else "WARN",
         ),
         downstream_docker_user_mapping_check(),
@@ -831,7 +840,7 @@ def prepare_run(report: ValidationReport, profile: str) -> PreparedRun:
     validate_local_execution_budget(
         report.config.execution.max_cpus, report.config.execution.max_memory_gb, detect_local_resource_capacity()
     )
-    snapshot = runtime_snapshot(report.config.runtime.control_plane_image)
+    snapshot = runtime_snapshot(report.config.runtime.execution_image)
     resources = effective_resource_budget(snapshot, project_execution_budget(report.config))
     validate_effective_resource_budget(resources)
     _validate_custom_reference_files(report)
@@ -959,7 +968,7 @@ def _freeze_inputs(prepared: PreparedRun, run_dir: Path) -> tuple[Path, Path, Pa
     # Resource declarations are frozen separately from scientific parameters.
     runtime_config = frozen / "local.nextflow.config"
     effective = prepared.resource_budget or effective_resource_budget(
-        runtime_snapshot(report.config.runtime.control_plane_image), project_execution_budget(report.config)
+        runtime_snapshot(report.config.runtime.execution_image), project_execution_budget(report.config)
     )
     _write_text(runtime_config, render_local_resource_config(ResourceContract(
         "EFFECTIVE_LOCAL", effective.effective_cpus, effective.effective_memory_gib, LOCAL_RESOURCE_CEILING.time_hours
@@ -1253,7 +1262,7 @@ def execute_prepared_run(prepared: PreparedRun) -> RunResult:
         config_file=runtime_config,
         work_dir=workspace.work_dir / "upstream",
     )
-    requested_image = prepared.report.config.runtime.control_plane_image
+    requested_image = prepared.report.config.runtime.execution_image
     runtime = runtime_snapshot(requested_image)
     resources = prepared.resource_budget or effective_resource_budget(runtime, project_execution_budget(prepared.report.config))
     source_root = Path(__file__).resolve().parents[2]
@@ -1289,7 +1298,7 @@ def execute_prepared_run(prepared: PreparedRun) -> RunResult:
             "host_architecture": runtime.host_architecture,
             "docker_architecture": runtime.docker_architecture,
             "docker_memory_bytes": runtime.docker_memory_bytes,
-            "control_plane_image_architecture": runtime.control_plane_image_architecture,
+            "first_party_image_architecture": runtime.first_party_image_architecture,
             "resource_profile": "M5_LOCAL_SMALL_MEDIUM_LARGE",
         },
         "frozen_local_nextflow_config": {

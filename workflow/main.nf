@@ -8,12 +8,14 @@ nextflow.enable.dsl=2
 params.contract = null
 params.inputs = null
 params.outdir = null
-params.r_scripts = '/opt/rnaseq/src/rnaseq/r'
+params.first_party_image = 'nf-rna:latest'
+params.r_scripts = '/opt/nf-rna/r'
 params.enrichment = ''
 params.analysis_level = null
 
 process L1_ANALYSIS {
     tag 'L1 expression QC'
+    container params.first_party_image
     publishDir params.outdir, mode: 'copy', overwrite: false
     stageInMode 'copy'
     input:
@@ -30,6 +32,7 @@ process L1_ANALYSIS {
 
 process L2_ANALYSIS {
     tag 'L2 DESeq2'
+    container params.first_party_image
     publishDir params.outdir, mode: 'copy', overwrite: false
     stageInMode 'copy'
     input:
@@ -47,6 +50,7 @@ process L2_ANALYSIS {
 
 process TECHNICAL_REPORT {
     tag 'HTML technical report'
+    container params.first_party_image
     publishDir params.outdir, mode: 'copy', overwrite: false
     stageInMode 'copy'
     input:
@@ -65,6 +69,7 @@ process TECHNICAL_REPORT {
 
 process TECHNICAL_REPORT_NO_ENRICHMENT {
     tag 'HTML technical report (no enrichment selected)'
+    container params.first_party_image
     publishDir params.outdir, mode: 'copy', overwrite: false
     stageInMode 'copy'
     input:
@@ -82,6 +87,7 @@ process TECHNICAL_REPORT_NO_ENRICHMENT {
 
 process TECHNICAL_REPORT_L1 {
     tag 'HTML technical report (L1 only)'
+    container params.first_party_image
     publishDir params.outdir, mode: 'copy', overwrite: false
     stageInMode 'copy'
     input:
@@ -98,6 +104,7 @@ process TECHNICAL_REPORT_L1 {
 
 process ENRICHMENT_ANALYSIS {
     tag { module }
+    container params.first_party_image
     // Each task emits exactly one backend-specific directory.  Publishing the
     // shared parent directory would make gsea-go and gsea-kegg collide.
     publishDir "${params.outdir}/l2", mode: 'copy', overwrite: false

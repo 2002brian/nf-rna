@@ -186,7 +186,7 @@ def _project_yaml(
             }
         ),
         "reference": reference or {"source": "igenomes", "genome": None},
-        "runtime": {"control_plane_image": "rnaseq-control-plane:latest"},
+        "runtime": {"execution_image": "nf-rna:latest"},
         "execution": execution or {"profile": "local", "max_cpus": 8, "max_memory_gb": 12},
         "thresholds": {"padj": 0.05, "abs_log2fc": 1.0},
         "analysis": {"enrichment": []},

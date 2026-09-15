@@ -5,7 +5,8 @@
 ```bash
 conda env create -f environment.yml
 conda activate nf-rna
-docker build -t rnaseq-control-plane:latest .
+python -m pip install -e '.[dev]'
+docker build --build-arg NF_RNA_SOURCE_REVISION="$(git rev-parse HEAD)" -t nf-rna:latest .
 rnaseq doctor
 ```
 
@@ -83,7 +84,7 @@ reference:
   manifest: reference_manifest.yaml
   acceptance: production
 runtime:
-  control_plane_image: rnaseq-control-plane:1.0.0rc1
+  execution_image: nf-rna:1.0.0rc1
 ```
 
 The managed manifest must use schema 1.1 with deliberate `purpose: production`. The initial human identity contract is Ensembl 116, GRCh38.p14; an unpatched assembly such as mouse GRCm39 uses `assembly_patch: null` (or omits it) and displays simply as `GRCm39`. Assets are not downloaded by this project.
