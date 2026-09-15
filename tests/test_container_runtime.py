@@ -1,11 +1,25 @@
 from __future__ import annotations
 
+import shlex
+import tomllib
 from pathlib import Path
 
 import yaml
 
 
 ROOT = Path(__file__).parents[1]
+
+
+def _copy_sources(dockerfile: str) -> set[str]:
+    """Return root-relative sources explicitly supplied to Docker build stages."""
+
+    sources: set[str] = set()
+    for line in dockerfile.splitlines():
+        if not line.startswith("COPY "):
+            continue
+        fields = [field for field in shlex.split(line) if not field.startswith("--")]
+        sources.update(fields[1:-1])
+    return sources
 
 
 def test_container_runtime_path_contract_uses_non_login_shell():
@@ -30,3 +44,19 @@ def test_container_runtime_path_contract_uses_non_login_shell():
         assert command in dockerfile
     for package in ("DESeq2", "tximport", "clusterProfiler", "org.Mm.eg.db"):
         assert package in dockerfile
+
+
+def test_docker_packaging_context_supplies_every_hatch_force_include_input():
+    """Keep image installation equivalent to the repository packaging contract."""
+
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    force_include = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+    required = {"src", "pyproject.toml", "README.md", *force_include}
+    copied = _copy_sources(dockerfile)
+
+    assert required <= copied
+    for directory in force_include:
+        assert f"!{directory}/" in dockerignore
+        assert f"!{directory}/**" in dockerignore

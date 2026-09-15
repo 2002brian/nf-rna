@@ -8,6 +8,7 @@ LABEL org.opencontainers.image.title="nf-rna first-party execution image" \
 WORKDIR /opt/rnaseq
 COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yml environment.docker.yml pyproject.toml README.md ./
 COPY --chown=$MAMBA_USER:$MAMBA_USER src ./src
+COPY --chown=$MAMBA_USER:$MAMBA_USER workflow ./workflow
 
 ENV PATH="/opt/conda/envs/rnaseq/bin:${PATH}"
 ENV PYTHONUNBUFFERED=1
