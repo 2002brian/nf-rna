@@ -37,7 +37,6 @@ def test_container_runtime_path_contract_uses_non_login_shell():
     assert dockerfile.index('ENV PATH="/opt/conda/envs/rnaseq/bin:${PATH}"') < dockerfile.index("RUN micromamba create")
     assert "micromamba run --name rnaseq" not in dockerfile
     assert "python -m pip install --no-deps ." in dockerfile
-    assert "cp -a src/rnaseq/r/. /opt/nf-rna/r/" in dockerfile
     assert "org.opencontainers.image.revision" in dockerfile
     assert "sh -lc" not in dockerfile
     for command in ("command -v ps", "ps --version", "command -v python", "command -v Rscript"):
@@ -60,3 +59,22 @@ def test_docker_packaging_context_supplies_every_hatch_force_include_input():
     for directory in force_include:
         assert f"!{directory}/" in dockerignore
         assert f"!{directory}/**" in dockerignore
+
+
+def test_docker_runtime_bundle_is_owned_by_the_non_root_micromamba_user():
+    """The fixed R bundle path must be usable without making /opt writable."""
+
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    root_setup = dockerfile.index("USER root")
+    directory_setup = dockerfile.index("RUN mkdir -p /opt/nf-rna/r", root_setup)
+    runtime_user = dockerfile.index("USER $MAMBA_USER", directory_setup)
+    package_install = dockerfile.index("RUN micromamba create", runtime_user)
+
+    assert root_setup < directory_setup < runtime_user < package_install
+    assert 'chown "$MAMBA_USER:$MAMBA_USER" /opt/nf-rna /opt/nf-rna/r' in dockerfile
+    assert "COPY --chown=$MAMBA_USER:$MAMBA_USER src/rnaseq/r/ /opt/nf-rna/r/" in dockerfile
+    assert "test -f /opt/nf-rna/r/l1_analysis.R" in dockerfile
+    assert "cp -a src/rnaseq/r/." not in dockerfile
+    assert "chmod 777" not in dockerfile
+    assert "chmod -R 777" not in dockerfile
+    assert dockerfile.rfind("USER $MAMBA_USER") > dockerfile.rfind("USER root")
