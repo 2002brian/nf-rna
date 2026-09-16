@@ -14,23 +14,21 @@
 
 ## 架構
 
-nf-rna 將專案控制與科學執行分開。`rnaseq` CLI 會驗證已宣告的專案、凍結 immutable run、記錄 provenance，並組裝 delivery。它會啟動 Nextflow，但不會排程個別的分析 container。Nextflow 是唯一的 execution plane；Docker 則提供其分析 process 的 runtime。
+nf-rna 為兩種輸入路徑提供同一套經驗證、以 count 為基礎的下游分析流程。FASTQ 專案會先進行上游定量；count-matrix 專案則在驗證提供的 count 後進入下游路徑。兩條路徑會匯入相同的 expression analysis。
 
 ```mermaid
 flowchart LR
-    A[專案輸入] --> B["rnaseq CLI<br/>control plane"]
-    B --> C["已驗證專案<br/>immutable run"]
-    C --> D["Nextflow<br/>single execution plane"]
-    D --> E["Docker task container<br/>process runtime"]
-    E --> F["FASTQ quantification<br/>或 count-matrix staging"]
-    F --> G["L1 expression QC"]
-    G --> H{是否選擇 L2？}
-    H -- 是 --> I["DESeq2 與選用的<br/>preranked GSEA"]
-    H -- 否 --> J["Technical report、<br/>delivery 與 provenance"]
-    I --> J
+    A[FASTQ] --> B["Quantification<br/>Salmon / tximport<br/>或 HISAT2 / featureCounts"]
+    C[Count matrix] --> D[已驗證的 counts]
+    B --> D
+    D --> E["L1<br/>表現 QC、PCA、<br/>sample correlation"]
+    E --> F{是否選擇 L2？}
+    F -- 是 --> G["L2：DESeq2<br/>選用的 preranked<br/>GO/KEGG GSEA"]
+    F -- 否 --> H["輸出<br/>圖表與表格<br/>technical report<br/>curated delivery<br/>frozen provenance"]
+    G --> H
 ```
 
-L1 提供品質控制與探索性表現分析。L2 是明確的專案選擇：它會針對已宣告的 contrast 加入 differential expression，並可啟用 preranked GSEA。專案不會因為存在 metadata 或 contrast 而推測應執行 L2。
+L1 提供表現品質控制與探索。L2 必須明確選擇：它會對已宣告的 contrast 執行 DESeq2，之後可進行支援的 preranked GO/KEGG GSEA；不會從 metadata 或 contrast 推測是否應執行 L2。每條路徑都會產生圖表、表格、technical report、curated delivery artifact 與 frozen provenance。
 
 ## 輸入與輸出
 

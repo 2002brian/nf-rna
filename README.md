@@ -14,23 +14,21 @@ English | [繁體中文](README_zh-TW.md)
 
 ## Architecture
 
-nf-rna separates project control from scientific execution. The `rnaseq` CLI validates the declared project, freezes an immutable run, records provenance, and assembles delivery. It starts Nextflow but does not schedule individual analysis containers. Nextflow is the single execution plane; Docker supplies the runtime for its analysis processes.
+nf-rna provides one validated, count-based downstream workflow for two input routes. FASTQ projects first perform upstream quantification; count-matrix projects enter the downstream path after their supplied counts are validated. Both routes converge on the same expression analysis.
 
 ```mermaid
 flowchart LR
-    A[Project inputs] --> B["rnaseq CLI<br/>control plane"]
-    B --> C["Validated project<br/>immutable run"]
-    C --> D["Nextflow<br/>single execution plane"]
-    D --> E["Docker task containers<br/>process runtime"]
-    E --> F["FASTQ quantification<br/>or count-matrix staging"]
-    F --> G["L1 expression QC"]
-    G --> H{L2 selected?}
-    H -- Yes --> I["DESeq2 and optional<br/>preranked GSEA"]
-    H -- No --> J["Technical report,<br/>delivery, and provenance"]
-    I --> J
+    A[FASTQ] --> B["Quantification<br/>Salmon / tximport<br/>or HISAT2 / featureCounts"]
+    C[Count matrix] --> D[Validated counts]
+    B --> D
+    D --> E["L1<br/>Expression QC, PCA,<br/>sample correlation"]
+    E --> F{L2 selected?}
+    F -- Yes --> G["L2: DESeq2<br/>optional preranked<br/>GO/KEGG GSEA"]
+    F -- No --> H["Outputs<br/>figures and tables<br/>technical report<br/>curated delivery<br/>frozen provenance"]
+    G --> H
 ```
 
-L1 provides quality control and exploratory expression analysis. L2 is an explicit project choice: it adds differential expression for declared contrasts and can enable preranked GSEA. A project does not infer L2 from the presence of metadata or contrasts.
+L1 provides expression quality control and exploration. L2 is explicitly selected: it performs DESeq2 for declared contrasts and may be followed by supported preranked GO/KEGG GSEA; it is never inferred from metadata or contrasts. Each route produces figures, tables, a technical report, curated delivery artifacts, and frozen provenance.
 
 ## Inputs and outputs
 
