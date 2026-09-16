@@ -2,16 +2,33 @@
 
 # nf-rna
 
-`nf-rna` 是可重現的 bulk RNA-seq workflow。`rnaseq` 是 control plane；Nextflow 是 execution plane；Docker 是 process runtime。一般 production 使用者應透過 `rnaseq` 執行，不需要自行 build execution image 或呼叫內部 Nextflow module。
+`nf-rna` 是可重現的 bulk RNA-seq workflow，支援 FASTQ 與 raw-count 專案。它會驗證已宣告的輸入與實驗設計，執行選定的 QC 與分析階段，並產生圖表、表格、technical report 與凍結的 provenance。
 
-目前已發布的 release 是 `v1.0.0`。本 branch 的 installation UX 變更是為下一個 patch release 準備；本文件不宣稱已有新的 release。
+`rnaseq` 是 control plane，Nextflow 是 execution plane，Docker 是 process runtime。production 使用者透過 `rnaseq` 執行，不需要自行 build execution image 或呼叫內部 Nextflow module。
 
-## 下一個已發布 patch release 的 canonical 安裝路徑
+## 功能
 
-下一個包含此變更的 patch release 發布後，請將下列 `RELEASE_VERSION` 換成實際已發布的版本；不要據此假設 `v1.0.1` 已存在。
+- FASTQ 專案可使用 nf-core/rnaseq 的 Salmon/tximport，或 first-party HISAT2 + featureCounts。
+- Raw-count 專案提供已驗證 metadata、明確 contrast、QC、differential expression 與選用的 preranked GSEA。
+- Immutable run 會凍結設定、execution-image identity、workflow hash，並建立 curated delivery artifact。
+
+## 系統需求
+
+請使用支援的 Linux 或 WSL workstation，並準備：
+
+- Python 3.11+（含 `venv`）與 Git；
+- 已啟動的 Docker daemon；
+- 位於 `PATH` 的 Bash、Java 17+ 與 Nextflow；以及
+- 足夠儲存 reference 與 Nextflow work data 的本機空間。
+
+Java 與 Nextflow 在 host 執行。R、DESeq2、HISAT2、featureCounts、SAMtools 與 Salmon 由 execution image 提供，一般使用者不需要在 host 安裝。請參考 [Nextflow 官方文件](https://docs.seqera.io/nextflow/install)。
+
+## 安裝
+
+nf-rna 沒有 PyPI distribution。請從 Git tag 安裝已發布的 CLI，並 pull 對應的 official image。將 `X.Y.Z` 換成想使用的已發布版本：
 
 ```bash
-RELEASE_VERSION=<published-version>
+RELEASE_VERSION=X.Y.Z
 python3.11 -m venv ~/.venvs/nf-rna-${RELEASE_VERSION}
 source ~/.venvs/nf-rna-${RELEASE_VERSION}/bin/activate
 python -m pip install --upgrade pip
@@ -21,11 +38,15 @@ rnaseq --version
 rnaseq doctor
 ```
 
-此為 non-editable Git 安裝；目前沒有 PyPI distribution。CLI 會將自己的 package version 映射為新專案的預設 image：CLI `X.Y.Z` 對應 `ghcr.io/2002brian/nf-rna:X.Y.Z`。例如 prerelease `1.0.1rc1` 需要明確對應已發布的 `:1.0.1rc1` image，絕不以 `latest` 取代。
+release contract 為：
 
-Linux/WSL host 需要 Python 3.11+（含 `venv`）、Git、已啟動的 Docker daemon、Bash、Java 17+ 與 Nextflow。Java/Nextflow 在 host 執行；R、DESeq2、HISAT2、featureCounts、SAMtools 與 Salmon 在 execution image 中。請參考 [Nextflow 官方文件](https://docs.seqera.io/nextflow/install)。
+```text
+CLI X.Y.Z  ↔  Git tag vX.Y.Z  ↔  ghcr.io/2002brian/nf-rna:X.Y.Z
+```
 
-## 下一個 release 的 canonical Quick Start
+`rnaseq doctor` 是 read-only 檢查；它會驗證 host 與本機 image，但不會 pull 或 build image。
+
+## 快速開始
 
 ```bash
 mkdir -p ~/projects/rnaseq-projects
@@ -40,30 +61,21 @@ rnaseq doctor .
 rnaseq run . --case-id CASE-001 --profile local --yes
 ```
 
-這個路徑不需要手動替換 YAML。FASTQ 專案仍需要 execution-ready reference；詳細設定請見 [quick start](docs/quickstart.md)。
+wizard 只建立 project scaffold，不會推測科學輸入。FASTQ 專案還需要 execution-ready reference；可用 `rnaseq reference register /absolute/reference-root` 註冊既有的 checksum-bound managed reference，或設定支援的 reference route。詳細內容請見 [Quick Start](docs/quickstart.md)。
 
-## 歷史 v1.0.0 相容性
+## 可重現性
 
-不可變的 `v1.0.0` wizard 仍會寫入 `execution_image: nf-rna:latest`。它可使用已驗證的 image，但在 plan/run 前需要一次相容性替換：
+新專案使用與已安裝 CLI 版本相符的 execution image。prerelease CLI 也使用明確相符的 prerelease tag；使用 prerelease 前必須先發布並驗證該 image。
 
-```bash
-python3.11 -m venv ~/.venvs/nf-rna-1.0.0
-source ~/.venvs/nf-rna-1.0.0/bin/activate
-python -m pip install "git+https://github.com/2002brian/nf-rna.git@v1.0.0"
-docker pull ghcr.io/2002brian/nf-rna:1.0.0
-sed -i 's|execution_image: nf-rna:latest|execution_image: ghcr.io/2002brian/nf-rna:1.0.0|' project.yaml
-```
+正式分析應使用明確的 release tag 或 immutable digest。`ghcr.io/2002brian/nf-rna:latest` 只是 convenience tag，不應用於進行中的 production analysis。`rnaseq doctor PROJECT` 會報告 requested 與 Docker 實際觀察到的 image identity。
 
-這只屬於 v1.0.0 historical compatibility，不是下一個 patch release 的正常 Quick Start。
+## 文件
 
-## Runtime identity 與文件
-
-`rnaseq doctor PROJECT` 會報告 requested image 與 Docker 實際觀察到的 image identity。正式分析應使用 version tag 或 immutable digest；`:latest` 僅是 convenience tag。
-
-- [Detailed Quick Start](docs/quickstart.md)
-- [Runtime and reproducibility](docs/runtime.md)
+- [Detailed Quick Start and v1.0.0 compatibility](docs/quickstart.md)
+- [Runtime and reproducibility contract](docs/runtime.md)
 - [Scientific contract](docs/scientific_contract.md)
 - [Architecture](docs/architecture.md)
-- [Development installation](docs/development.md)
 
-git clone、editable install、local Docker build 與 tests 都是 contributor workflow，已與一般 production installation 分離。
+## 開發
+
+git clone、editable install、local image build 與 tests 都是 contributor activity。請見 [Development installation](docs/development.md)。

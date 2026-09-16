@@ -1,15 +1,13 @@
 # nf-rna Quick Start
 
-This document distinguishes the intended next-release installation UX from the immutable historical `v1.0.0` release. It does not create or announce a new release.
+This guide is for production users on Linux or WSL. Install Python 3.11+, Git, Docker with a running daemon, Bash, Java 17+, and Nextflow before starting. Nextflow runs on the host; Docker runs analysis tasks. See the [official Nextflow installation guide](https://docs.seqera.io/nextflow/install) for Java and Nextflow.
 
-## Canonical path for the next published patch release
+## Install a released nf-rna version
 
-On Linux or WSL, install Python 3.11+, Git, Docker with a running daemon, Bash, Java 17+, and Nextflow before starting. Nextflow executes on the host; Docker executes analysis tasks. Follow the [official Nextflow installation guide](https://docs.seqera.io/nextflow/install) for Java and Nextflow.
-
-When a patch release containing this change is published, substitute its actual version for `RELEASE_VERSION`:
+nf-rna is installed from Git tags; it is not published to PyPI. Replace `X.Y.Z` with the released version you intend to use:
 
 ```bash
-RELEASE_VERSION=<published-version>
+RELEASE_VERSION=X.Y.Z
 python3.11 -m venv ~/.venvs/nf-rna-${RELEASE_VERSION}
 source ~/.venvs/nf-rna-${RELEASE_VERSION}/bin/activate
 python -m pip install --upgrade pip
@@ -19,9 +17,9 @@ rnaseq --version
 rnaseq doctor
 ```
 
-No PyPI distribution exists. This is a non-editable Git installation and the installed package contains the required workflow assets. `doctor` is read-only: it does not pull or build an image.
+The installed package contains required workflow assets. `rnaseq doctor` is read-only: it checks the local environment and image without pulling or building anything.
 
-Create, configure, inspect, and run a project:
+## Create and run a project
 
 ```bash
 mkdir -p ~/projects/rnaseq-projects
@@ -37,11 +35,11 @@ rnaseq run . --case-id CASE-001 --profile local --yes
 rnaseq status .
 ```
 
-The CLI maps its package version directly to the initial project image: CLI `X.Y.Z` writes `ghcr.io/2002brian/nf-rna:X.Y.Z`. A prerelease CLI such as `1.0.1rc1` writes its equally explicit prerelease image tag; publish and qualify that image before offering the prerelease to users. No manual YAML replacement is part of this path.
+The wizard writes `project.yaml`, `metadata.csv`, `contrasts.csv`, `input/`, and `planning/`; it does not import data unless explicit import flags are supplied. FASTQ projects require an execution-ready reference.
 
 ## References and inputs
 
-The wizard creates `project.yaml`, `metadata.csv`, `contrasts.csv`, `input/`, and `planning/`; it does not import data unless explicit import flags are used. FASTQ projects require an execution-ready reference. Register an existing checksum-bound managed reference once:
+Register an existing checksum-bound managed reference once:
 
 ```bash
 rnaseq reference register /absolute/reference-root
@@ -53,28 +51,31 @@ For `input/counts.csv`, the first column is `gene_id` and remaining columns are 
 
 Only `--profile local` is implemented. HPC, SLURM, and Apptainer are not currently supported.
 
-## Historical v1.0.0 compatibility
+## Reproducible runtime
 
-The currently published `v1.0.0` release is installable and qualified with `ghcr.io/2002brian/nf-rna:1.0.0`, but its project wizard predates the version-matched default. Use the following only for that released version:
+The release contract is:
 
-```bash
-python3.11 -m venv ~/.venvs/nf-rna-1.0.0
-source ~/.venvs/nf-rna-1.0.0/bin/activate
-python -m pip install "git+https://github.com/2002brian/nf-rna.git@v1.0.0"
-docker pull ghcr.io/2002brian/nf-rna:1.0.0
-rnaseq new
-cd <new-project>
-sed -i 's|execution_image: nf-rna:latest|execution_image: ghcr.io/2002brian/nf-rna:1.0.0|' project.yaml
+```text
+CLI X.Y.Z  ↔  Git tag vX.Y.Z  ↔  ghcr.io/2002brian/nf-rna:X.Y.Z
 ```
 
-The `sed` command is a v1.0.0-only compatibility step. It is not part of the canonical next-patch Quick Start and does not modify the v1.0.0 tag.
+New projects use the image that matches the installed CLI version. A prerelease CLI uses its explicit matching prerelease image tag; publish and qualify that image before use. For formal analyses, use a versioned tag or an immutable digest rather than `:latest`.
 
-## Runtime identity and reproducibility
+`rnaseq doctor PROJECT` reports requested and Docker-observed image identity. Run provenance records the requested image, observed image ID/repository digest, OCI revision label when available, CLI version, and executed workflow hashes.
 
-`rnaseq doctor PROJECT` reports requested and Docker-observed image identity. Use a versioned tag for normal reproducible work, or the qualified v1.0.0 digest for an immutable identity:
+## v1.0.0 compatibility
+
+The immutable `v1.0.0` release predates the version-matched project default. Its `rnaseq new` wizard writes `execution_image: nf-rna:latest`. Users running that historical release with the official GHCR image should set this field before planning or running:
+
+```yaml
+runtime:
+  execution_image: ghcr.io/2002brian/nf-rna:1.0.0
+```
+
+For example, update the generated `project.yaml` in an editor after creating the project. This is a v1.0.0 compatibility note only; it is not part of the normal Quick Start.
+
+The qualified immutable v1.0.0 image identity is:
 
 ```text
 ghcr.io/2002brian/nf-rna@sha256:ee60405181783ff075a1f4a9f452990c651e91152f5a9837c2a5df44a838decb
 ```
-
-`ghcr.io/2002brian/nf-rna:latest` is only a convenience tag. The run provenance records the requested reference, Docker-observed image ID/repository digest, OCI revision label when available, CLI version, and executed workflow hashes.
