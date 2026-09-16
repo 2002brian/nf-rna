@@ -375,6 +375,26 @@ def test_featurecounts_staging_aligns_different_matrix_order_to_frozen_metadata(
     assert matrix.read_bytes() == upstream_before
 
 
+def test_featurecounts_delivery_preserves_immutable_order_after_staging(project_factory):
+    """Delivery keeps upstream provenance while the staged input feeds R in metadata order."""
+
+    run, matrix = _featurecounts_staging_run(project_factory, ["gene_id", "B", "A"])
+    (run.run_dir / "frozen" / "metadata.csv").write_text(
+        "sample_id,condition\nA,Control\nB,Treatment\n", encoding="utf-8"
+    )
+    matrix.write_text("gene_id,B,A\nGeneA,2,1\n", encoding="utf-8")
+
+    staged = resolve_downstream_inputs(run)
+    delivery = assemble_delivery(run)
+
+    staged_matrix = staged.root / "source" / "canonical_counts.csv"
+    delivered_matrix = delivery / "counts" / "raw_counts.csv"
+    assert staged_matrix.read_text(encoding="utf-8") == "gene_id,A,B\nGeneA,1,2\n"
+    assert delivered_matrix.read_bytes() == matrix.read_bytes()
+    artifact = json.loads((delivery / "counts" / "artifact_manifest.json").read_text(encoding="utf-8"))["artifacts"][0]
+    assert artifact["ordered_sample_ids"] == ["B", "A"]
+
+
 def test_featurecounts_staging_preserves_an_already_aligned_matrix(project_factory):
     header = ["gene_id", "C1", "C2", "C3", "T1", "T2", "T3"]
     run, matrix = _featurecounts_staging_run(project_factory, header)

@@ -985,7 +985,8 @@ def _run_command(command: list[str], *, cwd: Path, stdout_path: Path, stderr_pat
 
 def _validate_delivery_count_matrix(
     path: Path, samples: tuple[str, ...], *, integer_required: bool, nonnegative: bool = True, delimiter: str = ",",
-) -> tuple[int, int]:
+    require_metadata_order: bool = True,
+) -> tuple[int, int, tuple[str, ...]]:
     """Validate a source matrix before exposing it as a delivery count artifact."""
 
     try:
@@ -993,7 +994,23 @@ def _validate_delivery_count_matrix(
             rows = list(csv.reader(handle, delimiter=delimiter))
     except (OSError, UnicodeError, csv.Error) as exc:
         raise UpstreamExecutionError(f"Delivery count matrix is unreadable: {path}: {exc}") from exc
-    if len(rows) < 2 or rows[0] != ["gene_id", *samples]:
+    if len(rows) < 2 or not rows[0] or rows[0][0] != "gene_id":
+        raise UpstreamExecutionError(f"Delivery count matrix has unexpected gene/sample columns: {path}")
+    matrix_samples = rows[0][1:]
+    if (
+        not matrix_samples
+        or any(not sample for sample in matrix_samples)
+        or len(set(matrix_samples)) != len(matrix_samples)
+    ):
+        raise UpstreamExecutionError(f"Delivery count matrix has invalid sample identifiers: {path}")
+    missing = sorted(set(samples) - set(matrix_samples))
+    extra = sorted(set(matrix_samples) - set(samples))
+    if missing or extra:
+        raise UpstreamExecutionError(
+            "Delivery count matrix sample IDs disagree with frozen metadata: "
+            f"missing={missing!r}; extra={extra!r}: {path}"
+        )
+    if require_metadata_order and tuple(matrix_samples) != samples:
         raise UpstreamExecutionError(f"Delivery count matrix has unexpected gene/sample columns: {path}")
     genes: set[str] = set()
     for row in rows[1:]:
@@ -1009,10 +1026,10 @@ def _validate_delivery_count_matrix(
                 raise UpstreamExecutionError(f"Delivery matrix contains a non-finite or invalid value: {path}")
             if integer_required and not numeric.is_integer():
                 raise UpstreamExecutionError(f"Delivery raw-count matrix contains a non-integer value: {path}")
-    return len(rows) - 1, len(samples)
+    return len(rows) - 1, len(samples), tuple(matrix_samples)
 
 
-def _delivery_count_source(run: CaseRun) -> tuple[Path, str, bool, str, str, str] | None:
+def _delivery_count_source(run: CaseRun) -> tuple[Path, str, bool, str, str, str, bool] | None:
     """Resolve the exact untransformed matrix used by this newly-created run."""
 
     contract = _read_json_mapping(run.run_dir / "frozen" / "downstream_contract.json", "frozen downstream contract")
@@ -1024,18 +1041,21 @@ def _delivery_count_source(run: CaseRun) -> tuple[Path, str, bool, str, str, str
     if not isinstance(construction, str):
         raise UpstreamExecutionError("Frozen downstream contract has no source construction method.")
     if source_type == "raw_counts":
-        return run.run_dir / "frozen" / "input" / "counts.csv", "raw_counts.csv", True, "integer_raw_counts", construction, ","
+        return run.run_dir / "frozen" / "input" / "counts.csv", "raw_counts.csv", True, "integer_raw_counts", construction, ",", True
     if source_type == "featurecounts_raw_counts":
         handoff = _read_yaml_mapping(run.run_dir / "frozen" / "upstream_handoff_manifest.yaml", "frozen upstream handoff")
         featurecounts = handoff.get("featurecounts")
         if not isinstance(featurecounts, dict):
             raise UpstreamExecutionError("Frozen upstream handoff has no featureCounts count matrix.")
         matrix = _safe_existing_under(run.run_dir, featurecounts.get("canonical_matrix"), "featurecounts.canonical_matrix", allowed_root=run.run_dir / "upstream" / "hisat2_featurecounts")
-        return matrix, "raw_counts.csv", True, "integer_raw_counts", construction, ","
+        # Delivery deliberately exposes the immutable upstream matrix.  It is
+        # validated by sample-set identity here; only the staged downstream
+        # copy is required to use frozen metadata order.
+        return matrix, "raw_counts.csv", True, "integer_raw_counts", construction, ",", False
     if source_type == "salmon_tximport":
         l1 = run.run_dir / "downstream" / "l1" / "source_counts.csv"
         if l1.is_file():
-            return l1, "estimated_counts.csv", False, "salmon_estimated_counts", construction, ","
+            return l1, "estimated_counts.csv", False, "salmon_estimated_counts", construction, ",", True
         # QC-only has no L1/tximport task. Deliver the canonical upstream
         # estimate as explicitly upstream-only, never as raw counts.
         handoff = _read_yaml_mapping(run.run_dir / "frozen" / "upstream_handoff_manifest.yaml", "frozen upstream handoff")
@@ -1046,7 +1066,7 @@ def _delivery_count_source(run: CaseRun) -> tuple[Path, str, bool, str, str, str
         if not isinstance(gene_counts, dict):
             return None
         matrix = _safe_existing_under(run.run_dir, gene_counts.get("path"), "salmon.gene_level_counts", allowed_root=run.run_dir / "upstream" / "nfcore_rnaseq")
-        return matrix, "estimated_counts.csv", False, "salmon_estimated_counts", construction, "\t"
+        return matrix, "estimated_counts.csv", False, "salmon_estimated_counts", construction, "\t", True
     raise UpstreamExecutionError(f"Unsupported delivery count source: {source_type!r}")
 
 
@@ -1256,8 +1276,11 @@ def assemble_delivery(run: CaseRun) -> Path:
     source = _delivery_count_source(run)
     samples = _frozen_sample_ids(run.run_dir / "frozen" / "metadata.csv")
     if source is not None:
-        matrix, filename, integer_required, semantics, construction, delimiter = source
-        rows, columns = _validate_delivery_count_matrix(matrix, samples, integer_required=integer_required, delimiter=delimiter)
+        matrix, filename, integer_required, semantics, construction, delimiter, require_metadata_order = source
+        rows, columns, ordered_samples = _validate_delivery_count_matrix(
+            matrix, samples, integer_required=integer_required, delimiter=delimiter,
+            require_metadata_order=require_metadata_order,
+        )
         target = counts_dir / filename
         _copy_matrix_as_csv(matrix, target, delimiter=delimiter)
         declared_files.append(target)
@@ -1266,18 +1289,18 @@ def assemble_delivery(run: CaseRun) -> Path:
             "filename": f"counts/{filename}", "source_type": _read_json_mapping(run.run_dir / "frozen" / "downstream_contract.json", "frozen downstream contract")["source"]["type"],
             "value_semantics": semantics, "normalized": False, "integer_required": integer_required,
             "deseq2_construction_method": construction, "sha256": _delivery_sha256(target), "rows": rows, "columns": columns,
-            "ordered_sample_ids": list(samples), "gene_identifier_namespace": "gene_id",
+            "ordered_sample_ids": list(ordered_samples), "gene_identifier_namespace": "gene_id",
         })
     vst = run.run_dir / "downstream" / "l1" / "vst.csv"
     if vst.is_file():
-        rows, columns = _validate_delivery_count_matrix(vst, samples, integer_required=False, nonnegative=False)
+        rows, columns, ordered_samples = _validate_delivery_count_matrix(vst, samples, integer_required=False, nonnegative=False)
         target = counts_dir / "vst.csv"
         copy_declared(vst, target)
         artifacts.append({
             "role": "visualization", "filename": "counts/vst.csv", "source_type": "downstream_l1",
             "value_semantics": "variance_stabilized_expression", "normalized": True, "integer_required": False,
             "deseq2_construction_method": "varianceStabilizingTransformation_or_vst", "sha256": _delivery_sha256(target),
-            "rows": rows, "columns": columns, "ordered_sample_ids": list(samples), "gene_identifier_namespace": "gene_id",
+            "rows": rows, "columns": columns, "ordered_sample_ids": list(ordered_samples), "gene_identifier_namespace": "gene_id",
         })
     if artifacts:
         _write_delivery_count_manifest(delivery, artifacts)
