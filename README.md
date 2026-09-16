@@ -12,6 +12,45 @@ English | [繁體中文](README_zh-TW.md)
 - Raw-count projects with validated metadata, explicit contrasts, QC, differential expression, and optional preranked GSEA.
 - Immutable runs with frozen configuration, execution-image identity, workflow hashes, and curated delivery artifacts.
 
+## Architecture
+
+nf-rna separates project control from scientific execution. The `rnaseq` CLI validates the declared project, freezes an immutable run, records provenance, and assembles delivery. It starts Nextflow but does not schedule individual analysis containers. Nextflow is the single execution plane; Docker supplies the runtime for its analysis processes.
+
+```mermaid
+flowchart LR
+    A[Project inputs] --> B["rnaseq CLI<br/>control plane"]
+    B --> C["Validated project<br/>immutable run"]
+    C --> D["Nextflow<br/>single execution plane"]
+    D --> E["Docker task containers<br/>process runtime"]
+    E --> F["FASTQ quantification<br/>or count-matrix staging"]
+    F --> G["L1 expression QC"]
+    G --> H{L2 selected?}
+    H -- Yes --> I["DESeq2 and optional<br/>preranked GSEA"]
+    H -- No --> J["Technical report,<br/>delivery, and provenance"]
+    I --> J
+```
+
+L1 provides quality control and exploratory expression analysis. L2 is an explicit project choice: it adds differential expression for declared contrasts and can enable preranked GSEA. A project does not infer L2 from the presence of metadata or contrasts.
+
+## Inputs and outputs
+
+### Inputs
+
+- **FASTQ:** place reads in `input/fastq/`. FASTQ projects quantify with the selected Salmon/tximport or HISAT2 + featureCounts route and require an execution-ready reference compatible with that route.
+- **Count matrix:** place an imported gene-count matrix in `input/counts.csv` when quantification was completed elsewhere and nf-rna should perform the validated downstream analysis.
+- **Design files:** `metadata.csv` provides sample IDs and design variables; `contrasts.csv` declares the directional contrasts used by L2.
+- **References:** FASTQ projects declare the selected reference route explicitly. Reference identity and checksums are validated and frozen with the run rather than inferred from local files.
+
+### Outputs
+
+Every authorized execution creates an immutable run under `runs/<case-id>/<run-id>/`. The run keeps frozen inputs and configuration, execution-image and workflow identity, and provenance alongside its analysis artifacts.
+
+- **Upstream count data:** FASTQ projects retain upstream QC and the Salmon/tximport or featureCounts count handoff; count-matrix projects retain their validated imported count source.
+- **L1 QC:** filtering and normalization records, transformed expression for visualization, PCA, sample correlation, and QC tables and figures.
+- **L2 results:** when selected, DESeq2 results for each declared contrast, with associated tables and figures.
+- **Enrichment:** when enabled for L2, preranked GO (BP, MF, CC) and KEGG GSEA results; over-representation analysis is not part of this production path.
+- **Delivery:** a technical HTML report and a curated delivery package of figures, tables, methods/version records, provenance, and a delivery manifest.
+
 ## Requirements
 
 Use a supported Linux or WSL workstation with:

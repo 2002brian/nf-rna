@@ -12,6 +12,45 @@
 - Raw-count 專案提供已驗證 metadata、明確 contrast、QC、differential expression 與選用的 preranked GSEA。
 - Immutable run 會凍結設定、execution-image identity、workflow hash，並建立 curated delivery artifact。
 
+## 架構
+
+nf-rna 將專案控制與科學執行分開。`rnaseq` CLI 會驗證已宣告的專案、凍結 immutable run、記錄 provenance，並組裝 delivery。它會啟動 Nextflow，但不會排程個別的分析 container。Nextflow 是唯一的 execution plane；Docker 則提供其分析 process 的 runtime。
+
+```mermaid
+flowchart LR
+    A[專案輸入] --> B["rnaseq CLI<br/>control plane"]
+    B --> C["已驗證專案<br/>immutable run"]
+    C --> D["Nextflow<br/>single execution plane"]
+    D --> E["Docker task container<br/>process runtime"]
+    E --> F["FASTQ quantification<br/>或 count-matrix staging"]
+    F --> G["L1 expression QC"]
+    G --> H{是否選擇 L2？}
+    H -- 是 --> I["DESeq2 與選用的<br/>preranked GSEA"]
+    H -- 否 --> J["Technical report、<br/>delivery 與 provenance"]
+    I --> J
+```
+
+L1 提供品質控制與探索性表現分析。L2 是明確的專案選擇：它會針對已宣告的 contrast 加入 differential expression，並可啟用 preranked GSEA。專案不會因為存在 metadata 或 contrast 而推測應執行 L2。
+
+## 輸入與輸出
+
+### 輸入
+
+- **FASTQ：** 將 reads 放入 `input/fastq/`。FASTQ 專案會使用所選的 Salmon/tximport 或 HISAT2 + featureCounts route 進行 quantification，並需要與該 route 相容且 execution-ready 的 reference。
+- **Count matrix：** 若 quantification 已在其他地方完成，且希望 nf-rna 執行已驗證的 downstream analysis，請將 imported gene-count matrix 放入 `input/counts.csv`。
+- **Design 檔案：** `metadata.csv` 提供 sample ID 與 design variable；`contrasts.csv` 宣告 L2 使用的 directional contrast。
+- **Reference：** FASTQ 專案明確宣告所選 reference route。reference identity 與 checksum 會在 run 中驗證並凍結，而不會從本機檔案推測。
+
+### 輸出
+
+每次授權執行都會在 `runs/<case-id>/<run-id>/` 建立 immutable run。run 會保留凍結的 inputs 與 configuration、execution-image 與 workflow identity，以及 provenance 和分析 artifact。
+
+- **Upstream count data：** FASTQ 專案保留 upstream QC 與 Salmon/tximport 或 featureCounts 的 count handoff；count-matrix 專案保留已驗證的 imported count source。
+- **L1 QC：** filtering 與 normalization 記錄、用於 visualization 的 transformed expression、PCA、sample correlation，以及 QC table 與 figure。
+- **L2 結果：** 選擇 L2 時，針對每個已宣告 contrast 的 DESeq2 result，以及相關 table 與 figure。
+- **Enrichment：** 在 L2 啟用時，提供 preranked GO（BP、MF、CC）與 KEGG GSEA result；over-representation analysis 不屬於這條 production path。
+- **Delivery：** technical HTML report，以及包含 figure、table、methods/version record、provenance 與 delivery manifest 的 curated delivery package。
+
 ## 系統需求
 
 請使用支援的 Linux 或 WSL workstation，並準備：
