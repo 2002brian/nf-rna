@@ -8,7 +8,10 @@ nextflow.enable.dsl=2
 params.contract = null
 params.inputs = null
 params.outdir = null
-params.first_party_image = 'nf-rna:latest'
+// The rnaseq control plane writes this required value into a frozen per-run
+// config.  Do not put a release tag here: Nextflow cannot import Python's
+// package version, and a second version string could silently drift.
+params.first_party_image = null
 params.r_scripts = '/opt/nf-rna/r'
 params.enrichment = ''
 params.analysis_level = null
@@ -125,6 +128,7 @@ process ENRICHMENT_ANALYSIS {
 
 workflow {
     if( !params.contract || !params.inputs || !params.outdir || !params.analysis_level ) error 'Specify --contract, --inputs, --outdir and --analysis_level'
+    if( !params.first_party_image ) error 'Specify --first_party_image through rnaseq; direct downstream Nextflow execution is not a supported user entry point'
     if( !(params.analysis_level in ['L1', 'L2']) ) error 'analysis_level must be L1 or L2'
     contract = Channel.value(file(params.contract))
     inputs = Channel.value(file(params.inputs))

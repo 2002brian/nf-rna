@@ -2,25 +2,23 @@
 
 ## Required local components
 
-- Python 3.11+ and the supplied Conda environment. The shared environment is
-  portable across Linux/WSL and macOS arm64; it has no Linux-only `procps-ng`
-  dependency. The Linux-image-only `environment.docker.yml` overlay supplies
-  GNU/procps `ps`, which Nextflow requires for task metrics.
+- Python 3.11+ for the `rnaseq` control plane. A normal release installation
+  uses its own virtual environment and does not need the repository Conda
+  environment.
 - Docker Desktop or a compatible running Docker daemon.
-- Nextflow for FASTQ execution.
+- Bash, Java 17+, and Nextflow for host-side workflow execution.
 - A first-party execution image selected by `runtime.execution_image`.
 - Sufficient local disk for Nextflow cache/work and the selected reference.
 
 ## Official container images
 
-Official release images are distributed through GitHub Container Registry once
-release publishing is enabled:
+Official release images are distributed through GitHub Container Registry:
 
 ```bash
-docker pull ghcr.io/2002brian/nf-rna:<version>
+docker pull ghcr.io/2002brian/nf-rna:1.0.0
 ```
 
-Use an explicit version tag (for example, `1.0.1`) or a digest for a
+Use an explicit version tag (for example, `1.0.0`) or a digest for a
 reproducible analysis. `ghcr.io/2002brian/nf-rna:latest` is a convenience tag
 that advances only for stable releases; it is never moved by prereleases.
 The release workflow publishes a `linux/amd64`-only manifest, matching the
@@ -34,21 +32,15 @@ and the published Release before building from that tag. It must never be used
 to manufacture an official image from unreleased code, and it does not create,
 edit, move, or republish a Git tag or GitHub Release.
 
-The source-build path remains available for developer and offline use:
-
-```bash
-conda env create -f environment.yml
-conda activate nf-rna
-python -m pip install -e '.[dev]'
-docker build --build-arg NF_RNA_SOURCE_REVISION="$(git rev-parse HEAD)" -t nf-rna:latest .
-rnaseq doctor
-```
+Building an image from source is a developer/offline workflow; see
+[Development installation](development.md). It is not part of normal user
+installation.
 
 The image runtime is intentionally verified with a non-login shell, matching
 the environment Nextflow task containers inherit:
 
 ```bash
-docker run --rm nf-rna:latest \
+docker run --rm ghcr.io/2002brian/nf-rna:1.0.0 \
   sh -c 'command -v ps && ps --version'
 ```
 
@@ -165,7 +157,7 @@ Run `rnaseq doctor <PROJECT>` before an authorized FASTQ run. It checks the runt
 
 Only the local execution profile is implemented. Workstation/HPC and SLURM execution remain deferred to the resource-profile milestone.
 
-`runtime.execution_image: nf-rna:latest` is allowed only for non-production development. Production acceptance requires a versioned tag or digest plus a Docker-observed image ID/digest. `rnaseq doctor <PROJECT>` reports requested and observed identities. Each run freezes those identities, the OCI build revision label when supplied, the Git commit resolved from the control-plane checkout when available, and SHA-256 values for the executed first-party workflow files. `runtime.control_plane_image` remains a read-only compatibility alias for existing projects; newly created and serialized configuration uses `runtime.execution_image`.
+The released v1.0.0 CLI retains its historic `nf-rna:latest` project default; the Quick Start explicitly replaces it with the official GHCR tag. This v1.0.x source changes subsequent new projects to `runtime.execution_image: ghcr.io/2002brian/nf-rna:1.0.0`. A local `nf-rna:latest` image remains allowed only for non-production development. Production acceptance requires a versioned tag or digest plus a Docker-observed image ID/digest. `rnaseq doctor <PROJECT>` reports requested and observed identities. Each run freezes those identities, the OCI build revision label when supplied, the Git commit resolved from the control-plane checkout when available, and SHA-256 values for the executed first-party workflow files. `runtime.control_plane_image` remains a read-only compatibility alias for existing projects; newly created and serialized configuration uses `runtime.execution_image`.
 
 `rnaseq` validates, freezes, and launches Nextflow; it does not launch downstream analysis containers. Nextflow owns Docker container launch through explicit process-level `container params.first_party_image` directives. The one first-party execution image contains the installed `rnaseq.workflow_support` package and `/opt/nf-rna/r` scripts used by L1, L2, GSEA, and technical-report tasks. Docker is the current local process runtime; an Apptainer/Singularity profile can be added later without moving scientific execution into Python.
 

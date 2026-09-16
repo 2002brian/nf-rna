@@ -13,6 +13,7 @@ import yaml
 
 from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
 from rnaseq.execution import RuntimeCheck, load_run_states
+from rnaseq.models import DEFAULT_EXECUTION_IMAGE
 from rnaseq.planner import generate_plan
 from rnaseq.service import (
     FrozenInputs,
@@ -713,7 +714,7 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     downstream_command = observed[1][0]
     assert downstream_command[downstream_command.index("--inputs") + 1] == str(execution_inputs.resolve())
     runtime_config = run.run_dir / "frozen" / "downstream.runtime.config"
-    assert runtime_config.read_text(encoding="utf-8") == 'params.first_party_image = "nf-rna:latest"\n'
+    assert runtime_config.read_text(encoding="utf-8") == f'params.first_party_image = "{DEFAULT_EXECUTION_IMAGE}"\n'
     assert str(runtime_config.resolve()) in downstream_command
     assert "/Volumes/KOXIA" not in downstream_command
     provenance = yaml.safe_load((run.run_dir / "provenance" / "run_provenance.yaml").read_text(encoding="utf-8"))
@@ -725,7 +726,7 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     assert provenance["salmon_tx2gene"]["mapping_type"] == "nfcore_tx2gene_augmented"
     assert provenance["salmon_tx2gene"]["path"].endswith("salmon.merged.tx2gene_augmented.tsv")
     assert len(provenance["salmon_tx2gene"]["sha256"]) == 64
-    assert provenance["execution_image"]["reference"] == "nf-rna:latest"
+    assert provenance["execution_image"]["reference"] == DEFAULT_EXECUTION_IMAGE
     assert provenance["container_image"] == provenance["execution_image"]
     assert provenance["production_intended"] is False
     assert set(provenance["workflow_sha256"]) == {"workflow/main.nf", "workflow/hisat2_featurecounts.nf"}

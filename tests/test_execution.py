@@ -40,6 +40,7 @@ from rnaseq.execution import (
     effective_resource_budget,
     validate_effective_resource_budget,
 )
+from rnaseq.models import DEFAULT_EXECUTION_IMAGE
 from rnaseq.planner import generate_plan
 from rnaseq.validators import validate_project
 
@@ -270,7 +271,7 @@ def test_container_runtime_probe_requires_procps_python_r_and_r_packages(monkeyp
     assert result.state == "FOUND"
     assert calls[0][:3] == ["docker", "image", "inspect"]
     probe = calls[1]
-    assert probe[:6] == ["docker", "run", "--rm", "nf-rna:latest", "sh", "-c"]
+    assert probe[:6] == ["docker", "run", "--rm", DEFAULT_EXECUTION_IMAGE, "sh", "-c"]
     assert "--entrypoint" not in probe
     # Docker image ENV is the task runtime contract; a login shell can replace
     # PATH via profile startup files and is deliberately not representative.

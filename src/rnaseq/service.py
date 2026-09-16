@@ -745,11 +745,13 @@ def _provenance(
     resources: EffectiveResourceBudget | None = None,
 ) -> dict[str, Any]:
     git_commit: str | None = None
+    source_root = Path(__file__).resolve().parents[2]
+    source_checkout = source_root if (source_root / ".git").exists() else None
     try:
-        source_root = Path(__file__).resolve().parents[2]
-        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=source_root, capture_output=True, text=True, check=False)
-        if result.returncode == 0:
-            git_commit = result.stdout.strip() or None
+        if source_checkout is not None:
+            result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=source_checkout, capture_output=True, text=True, check=False)
+            if result.returncode == 0:
+                git_commit = result.stdout.strip() or None
     except OSError:
         pass
     nextflow = check_nextflow()
@@ -761,7 +763,6 @@ def _provenance(
         return {"version": version, **inspect_container_image(image)}
 
     execution_image = inspect_container_image(requested_image)
-    source_root = Path(__file__).resolve().parents[2]
     workflow_hashes = {
         "workflow/main.nf": _sha256(workflow_asset_path("main.nf")),
         "workflow/hisat2_featurecounts.nf": _sha256(HISAT2_WORKFLOW),
@@ -774,7 +775,7 @@ def _provenance(
         "started_at": run.started_at,
         "pipeline_version": PIPELINE_VERSION,
         "git_commit": git_commit,
-        "source_checkout": str(source_root),
+        "source_checkout": str(source_checkout) if source_checkout is not None else None,
         "workflow_sha256": workflow_hashes,
         "python_version": sys.version.split()[0],
         "nextflow_version": nextflow.detail if nextflow.state == "FOUND" else None,

@@ -13,6 +13,22 @@ from rnaseq import __version__
 SUPPORTED_SCHEMA_VERSION = "1.2"
 LEGACY_SCHEMA_VERSION = "1.0"
 PIPELINE_VERSION = __version__
+OFFICIAL_EXECUTION_IMAGE_REPOSITORY = "ghcr.io/2002brian/nf-rna"
+
+
+def execution_image_for_version(version: str) -> str:
+    """Return the official execution image paired with one CLI version.
+
+    The package version is the sole release identity for the control plane.
+    Keeping this mapping here makes stable and prerelease builds use the same
+    explicit tag (for example, ``1.0.1rc1``) rather than falling back to a
+    mutable convenience tag.
+    """
+
+    return f"{OFFICIAL_EXECUTION_IMAGE_REPOSITORY}:{version}"
+
+
+DEFAULT_EXECUTION_IMAGE = execution_image_for_version(PIPELINE_VERSION)
 NFCORE_RNASEQ_VERSION = "3.26.0"
 PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -373,7 +389,7 @@ class ReferenceConfig(StrictModel):
 class RuntimeConfig(StrictModel):
     """Requested first-party execution image for downstream Nextflow tasks."""
 
-    execution_image: StrictStr = "nf-rna:latest"
+    execution_image: StrictStr = DEFAULT_EXECUTION_IMAGE
 
     @model_validator(mode="before")
     @classmethod

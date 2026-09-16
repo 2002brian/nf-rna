@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing published semantic-version release tag (for example, v1.0.0)
+        description: Existing published PEP 440 release tag (for example, v1.0.0 or v1.0.1rc1)
         required: true
         type: string
 
@@ -42,8 +42,8 @@ jobs:
               ;;
           esac
 
-          if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
-            echo "Release tag is not a supported semantic version: $release_tag" >&2
+          if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]]; then
+            echo "Release tag is not a supported PEP 440 release version: $release_tag" >&2
             exit 1
           fi
           echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
@@ -78,8 +78,8 @@ jobs:
           RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
         run: |
           set -euo pipefail
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
-            echo "Published release tag is not a supported semantic version: $RELEASE_TAG" >&2
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]]; then
+            echo "Published release tag is not a supported PEP 440 release version: $RELEASE_TAG" >&2
             exit 1
           fi
 
@@ -92,7 +92,7 @@ jobs:
 
           version="${RELEASE_TAG#v}"
           stable=false
-          if [[ "$version" != *-* ]]; then
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             stable=true
           fi
 

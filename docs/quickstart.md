@@ -1,147 +1,80 @@
-# Quick start
+# nf-rna Quick Start
 
-## 1. Install and inspect the runtime
+This document distinguishes the intended next-release installation UX from the immutable historical `v1.0.0` release. It does not create or announce a new release.
+
+## Canonical path for the next published patch release
+
+On Linux or WSL, install Python 3.11+, Git, Docker with a running daemon, Bash, Java 17+, and Nextflow before starting. Nextflow executes on the host; Docker executes analysis tasks. Follow the [official Nextflow installation guide](https://docs.seqera.io/nextflow/install) for Java and Nextflow.
+
+When a patch release containing this change is published, substitute its actual version for `RELEASE_VERSION`:
 
 ```bash
-conda env create -f environment.yml
-conda activate nf-rna
-python -m pip install -e '.[dev]'
-docker build --build-arg NF_RNA_SOURCE_REVISION="$(git rev-parse HEAD)" -t nf-rna:latest .
+RELEASE_VERSION=<published-version>
+python3.11 -m venv ~/.venvs/nf-rna-${RELEASE_VERSION}
+source ~/.venvs/nf-rna-${RELEASE_VERSION}/bin/activate
+python -m pip install --upgrade pip
+python -m pip install "git+https://github.com/2002brian/nf-rna.git@v${RELEASE_VERSION}"
+docker pull ghcr.io/2002brian/nf-rna:${RELEASE_VERSION}
+rnaseq --version
 rnaseq doctor
 ```
 
-`rnaseq new` is an interactive reviewed, scaffold-first wizard. It limits species to Human or Mouse, offers FASTQ or raw counts, Salmon or HISAT2 + featureCounts when FASTQ is selected, and QC-only/L1/L2 scopes. It automatically offers one compatible registered production managed reference after species and backend are known; otherwise the existing iGenomes, manual local, and custom reference choices remain available. It never overwrites a populated target.
+No PyPI distribution exists. This is a non-editable Git installation and the installed package contains the required workflow assets. `doctor` is read-only: it does not pull or build an image.
+
+Create, configure, inspect, and run a project:
 
 ```bash
+mkdir -p ~/projects/rnaseq-projects
 cd ~/projects/rnaseq-projects
-conda activate nf-rna
 rnaseq new
-```
-
-It creates `project.yaml`, `metadata.csv`, `contrasts.csv`, `input/`, and `planning/` without importing data. Then add FASTQs beneath `input/fastq/` or a raw matrix at `input/counts.csv`, complete `metadata.csv` and `contrasts.csv`, and run:
-
-```bash
 cd <new-project>
+# Add FASTQs to input/fastq/, or a count matrix to input/counts.csv.
+# Complete metadata.csv and contrasts.csv.
 rnaseq validate .
 rnaseq plan .
 rnaseq doctor .
 rnaseq run . --case-id CASE-001 --profile local --yes
+rnaseq status .
 ```
 
-The scaffold deliberately remains invalid until real inputs and analytical metadata are supplied. Explicit `--fastq-samplesheet` or `--counts --metadata --contrasts` flags retain the strict import/copy workflow for automation; `--scaffold` remains available for fully non-interactive template creation.
+The CLI maps its package version directly to the initial project image: CLI `X.Y.Z` writes `ghcr.io/2002brian/nf-rna:X.Y.Z`. A prerelease CLI such as `1.0.1rc1` writes its equally explicit prerelease image tag; publish and qualify that image before offering the prerelease to users. No manual YAML replacement is part of this path.
 
-The exact same interface is scriptable without prompts:
+## References and inputs
 
-```bash
-rnaseq new --name demo --destination projects --species mouse \
-  --input-type raw_counts --counts source/counts.csv \
-  --metadata source/metadata.csv --contrasts source/contrasts.csv \
-  --preset L2 --design-type two_group --condition-column condition --yes
-```
-
-For FASTQ import, pass `--fastq-samplesheet` with exact columns `sample,fastq_1,fastq_2,strandedness`. The wizard retains source lane filenames, infers layout, rejects mixed layouts or strandedness, and requires explicit strandedness for HISAT2 + featureCounts.
-
-## 2. Configure a raw-count project
-
-Place a CSV count matrix at `input/counts.csv`, with `gene_id` as its first column. Populate metadata and strict contrasts, then use a project definition such as:
-
-```yaml
-schema_version: "1.1"
-project: {id: demo_counts, pipeline: bulk_rnaseq, preset: L2}
-organism: {species: Mus musculus}
-input: {type: raw_counts, path: input/counts.csv}
-design: {type: two_group, formula: "~ condition"}
-metadata_file: metadata.csv
-contrasts_file: contrasts.csv
-upstream: {engine: external, provider: external_provider, quantification_method: unknown}
-reference: {source: igenomes, genome: null}
-thresholds: {padj: 0.05, abs_log2fc: 1.0}
-analysis: {enrichment: []}
-```
-
-## 3. Configure a FASTQ project
-
-Place matching reads under `input/fastq/` using supported `*_R1` / `*_R2` names. Set `preprocessing` accurately:
-
-```yaml
-input:
-  type: fastq
-  path: input/fastq
-  layout: paired_end
-  preprocessing: pretrimmed
-```
-
-`pretrimmed` is appropriate only when the reads were already adapter/quality trimmed; it causes nf-core trimming to be skipped. Use `raw` otherwise. Configure an execution-ready iGenomes or managed local reference; do not commit a real reference root, index, or FASTQs.
-
-For a biological paired two-group design, declare the block explicitly, for example `design: {type: paired_two_group, formula: "~ patient + condition", pair_id: patient}`. Each pair must contain exactly one sample at each requested contrast level, and L2 requires at least two complete pairs. This is unrelated to `input.layout: paired_end`; biological pairing is never inferred.
-
-For a final production-intended run, use a reviewed managed reference and immutable runtime selection:
-
-```yaml
-reference:
-  source: local
-  root: /absolute/reference-root
-  manifest: reference_manifest.yaml
-  acceptance: production
-runtime:
-  execution_image: nf-rna:1.0.0
-```
-
-The managed manifest must use schema 1.1 with deliberate `purpose: production`. The initial human identity contract is Ensembl 116, GRCh38.p14; an unpatched assembly such as mouse GRCm39 uses `assembly_patch: null` (or omits it) and displays simply as `GRCm39`. Assets are not downloaded by this project.
-
-### Register a reusable managed reference
-
-After preparing or adopting a valid prebuilt index, register the reference once
-on the workstation:
+The wizard creates `project.yaml`, `metadata.csv`, `contrasts.csv`, `input/`, and `planning/`; it does not import data unless explicit import flags are used. FASTQ projects require an execution-ready reference. Register an existing checksum-bound managed reference once:
 
 ```bash
 rnaseq reference register /absolute/reference-root
 ```
 
-Registration reuses the normal manifest loader and validation; it never builds
-or copies assets. It writes a user-local pointer registry at
-`$XDG_CONFIG_HOME/nf-rna/references.yaml` (or `~/.config/nf-rna/references.yaml`)
-on Linux/WSL, and `~/Library/Application Support/nf-rna/references.yaml` on
-macOS. The registry contains root/manifest locations and display identity only;
-the reference manifest remains authoritative for checksums and backend assets.
-Re-run `register` after intentionally revising a manifest to refresh its saved
-display metadata.
+Registration validates and records a local pointer to the existing manifest; it does not download, copy, or build assets. If you need to create an index rather than adopt one, use the optional builder workflow in [Runtime](runtime.md#managed-reference-builder-host-native).
 
-## 4. Validate and plan
+For `input/counts.csv`, the first column is `gene_id` and remaining columns are sample IDs. For FASTQ, accurately declare `input.layout`, `input.preprocessing`, `upstream.strandedness`, the selected quantification backend, and a matching reference. HISAT2 + featureCounts requires explicit `unstranded`, `forward`, or `reverse` strandedness.
 
-```bash
-rnaseq validate path/to/project
-rnaseq plan path/to/project
-```
+Only `--profile local` is implemented. HPC, SLURM, and Apptainer are not currently supported.
 
-Validation is read-only. Planning emits deterministic artifacts only after a valid project. Review warnings, contrast direction, readiness, and planning artifacts before executing.
+## Historical v1.0.0 compatibility
 
-## 5. Run deliberately
+The currently published `v1.0.0` release is installable and qualified with `ghcr.io/2002brian/nf-rna:1.0.0`, but its project wizard predates the version-matched default. Use the following only for that released version:
 
 ```bash
-rnaseq doctor path/to/project
-rnaseq run path/to/project --case-id CASE-001 --profile local --yes
-rnaseq status path/to/project
+python3.11 -m venv ~/.venvs/nf-rna-1.0.0
+source ~/.venvs/nf-rna-1.0.0/bin/activate
+python -m pip install "git+https://github.com/2002brian/nf-rna.git@v1.0.0"
+docker pull ghcr.io/2002brian/nf-rna:1.0.0
+rnaseq new
+cd <new-project>
+sed -i 's|execution_image: nf-rna:latest|execution_image: ghcr.io/2002brian/nf-rna:1.0.0|' project.yaml
 ```
 
-This creates a new immutable case/run directory. QC-only FASTQ projects stop after the upstream backend and MultiQC delivery. L1 projects stop after L1 and the L1 report. L2 projects may run L2 and explicitly selected GSEA. Never use a small fixture or an unreplicated comparison to draw biological conclusions.
+The `sed` command is a v1.0.0-only compatibility step. It is not part of the canonical next-patch Quick Start and does not modify the v1.0.0 tag.
 
-To retry a failed execution without changing its source run, use:
+## Runtime identity and reproducibility
 
-```bash
-rnaseq retry PROJECT --retry-of CASE-ID/RUN-ID [--nextflow-resume] [--yes]
+`rnaseq doctor PROJECT` reports requested and Docker-observed image identity. Use a versioned tag for normal reproducible work, or the qualified v1.0.0 digest for an immutable identity:
+
+```text
+ghcr.io/2002brian/nf-rna@sha256:ee60405181783ff075a1f4a9f452990c651e91152f5a9837c2a5df44a838decb
 ```
 
-Only `FAILED` runs are eligible. A retry creates a new immutable attempt, reuses the failed run's frozen scientific intent, and never modifies the original run. `--nextflow-resume` is only an opt-in Nextflow cache hint; it does not define retry identity. A missing, changed, or unsafe frozen reference identity fails closed rather than being silently replaced.
-
-## Public smoke fixture
-
-The bundled smoke fixture is intentionally small and public:
-
-```bash
-rnaseq validate examples/nfcore_smoke_test
-rnaseq plan examples/nfcore_smoke_test
-rnaseq run examples/nfcore_smoke_test --case-id SMOKE-001 --profile local --yes
-```
-
-It is an integration check, not a biological dataset. It may pull containers and consume local resources. Do not run it automatically in CI without making those costs explicit.
+`ghcr.io/2002brian/nf-rna:latest` is only a convenience tag. The run provenance records the requested reference, Docker-observed image ID/repository digest, OCI revision label when available, CLI version, and executed workflow hashes.

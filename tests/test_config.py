@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from conftest import base_config
+from rnaseq.models import DEFAULT_EXECUTION_IMAGE, execution_image_for_version
 from rnaseq.project import load_project
 from rnaseq.validators import validate_project
 
@@ -64,6 +65,16 @@ def test_runtime_execution_image_is_canonical_and_legacy_control_plane_image_is_
     loaded_legacy = load_project(project_factory(config=legacy)).config
     assert loaded_legacy.runtime.execution_image == "rnaseq-control-plane:0.9.0"
     assert loaded_legacy.runtime.model_dump() == {"execution_image": "rnaseq-control-plane:0.9.0"}
+
+
+def test_runtime_default_is_the_version_matched_official_image(project_factory):
+    loaded = load_project(project_factory()).config
+    assert loaded.runtime.execution_image == DEFAULT_EXECUTION_IMAGE
+
+
+def test_execution_image_mapping_preserves_stable_and_prerelease_versions():
+    assert execution_image_for_version("1.0.1") == "ghcr.io/2002brian/nf-rna:1.0.1"
+    assert execution_image_for_version("1.0.1rc1") == "ghcr.io/2002brian/nf-rna:1.0.1rc1"
 
 
 def test_invalid_preset_fails(project_factory):

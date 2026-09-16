@@ -21,7 +21,7 @@ from typing import Any
 import yaml
 
 from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
-from rnaseq.models import FastqPreprocessing, InputType, NFCORE_RNASEQ_VERSION, PIPELINE_VERSION, ReferenceConfig
+from rnaseq.models import DEFAULT_EXECUTION_IMAGE, FastqPreprocessing, InputType, NFCORE_RNASEQ_VERSION, PIPELINE_VERSION, ReferenceConfig
 from rnaseq.hisat2_featurecounts import COUNTING_POLICY, HISAT2_VERSION, SAMTOOLS_VERSION, SUBREAD_VERSION
 from rnaseq.planner import render_manifest, render_samplesheet
 from rnaseq.references import LocalReferenceError, load_local_reference, sha256_file
@@ -32,7 +32,7 @@ LOCAL_PROFILE = "local"
 CONTAINER_PROFILE = "docker"
 RUN_STATES = {"CREATED", "RUNNING", "SUCCESS", "FAILED"}
 EXECUTION_ROOT_ENV = "RNASEQ_EXECUTION_ROOT"
-FIRST_PARTY_EXECUTION_IMAGE = "nf-rna:latest"
+FIRST_PARTY_EXECUTION_IMAGE = DEFAULT_EXECUTION_IMAGE
 HISAT2_WORKFLOW = workflow_asset_path("hisat2_featurecounts.nf")
 CONTAINER_R_PACKAGES = (
     "DESeq2", "tximport", "ggplot2", "pheatmap", "yaml", "jsonlite",
@@ -524,7 +524,7 @@ def runtime_resource_checks(snapshot: RuntimeSnapshot, budget: ResourceContract 
         )
     checks: list[RuntimeCheck] = [host, docker]
     if snapshot.first_party_image_architecture is None:
-        checks.append(RuntimeCheck("First-party execution image architecture", "NOT FOUND", "Image architecture is unavailable; build or inspect nf-rna:latest.", "WARN"))
+        checks.append(RuntimeCheck("First-party execution image architecture", "NOT FOUND", f"Image architecture is unavailable; pull or inspect {FIRST_PARTY_EXECUTION_IMAGE}.", "WARN"))
     elif snapshot.host_architecture == "arm64" and snapshot.first_party_image_architecture == "amd64":
         checks.append(RuntimeCheck("First-party execution image architecture", "FOUND", "amd64 image on arm64 host; Docker/Rosetta emulation may reduce throughput.", "WARN"))
     else:
@@ -624,7 +624,7 @@ def check_container_runtime(image: str = FIRST_PARTY_EXECUTION_IMAGE) -> Runtime
     if present.returncode != 0:
         return RuntimeCheck(
             "First-party execution image", "NOT FOUND",
-            f"Required image {image} is not available locally; build or resolve it before execution.",
+            f"Required image {image} is not available locally; run 'docker pull {image}' before execution.",
         )
     packages = ", ".join(repr(package) for package in CONTAINER_R_PACKAGES)
     probe = (
@@ -1266,11 +1266,13 @@ def execute_prepared_run(prepared: PreparedRun) -> RunResult:
     runtime = runtime_snapshot(requested_image)
     resources = prepared.resource_budget or effective_resource_budget(runtime, project_execution_budget(prepared.report.config))
     source_root = Path(__file__).resolve().parents[2]
+    source_checkout = source_root if (source_root / ".git").exists() else None
     git_commit: str | None = None
     try:
-        git_result = _run_capture(["git", "-C", str(source_root), "rev-parse", "HEAD"])
-        if git_result.returncode == 0 and isinstance(getattr(git_result, "stdout", None), str):
-            git_commit = git_result.stdout.strip() or None
+        if source_checkout is not None:
+            git_result = _run_capture(["git", "-C", str(source_checkout), "rev-parse", "HEAD"])
+            if git_result.returncode == 0 and isinstance(getattr(git_result, "stdout", None), str):
+                git_commit = git_result.stdout.strip() or None
     except (OSError, ValueError, AttributeError):
         pass
     provenance = {
@@ -1281,7 +1283,7 @@ def execute_prepared_run(prepared: PreparedRun) -> RunResult:
         "container_image": inspect_container_image(requested_image),
         "production_intended": prepared.report.config.reference.acceptance == "production",
         "git_commit": git_commit,
-        "source_checkout": str(source_root),
+        "source_checkout": str(source_checkout) if source_checkout is not None else None,
         "workflow_sha256": {
             "workflow/main.nf": sha256_file(workflow_asset_path("main.nf")),
             "workflow/hisat2_featurecounts.nf": sha256_file(HISAT2_WORKFLOW),
