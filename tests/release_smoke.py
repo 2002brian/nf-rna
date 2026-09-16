@@ -31,12 +31,12 @@ def main() -> None:
         if help_result.returncode != 0 or "Create, validate, and plan" not in help_result.stdout:
             raise SystemExit(help_result.stderr or help_result.stdout)
 
-        expected_version = "1.0.0rc1"
+        expected_version = "1.0.0"
         version_result = _run([str(executable), "--version"], cwd=temporary)
         if version_result.returncode != 0 or version_result.stdout.strip() != expected_version:
             raise SystemExit(version_result.stderr or version_result.stdout)
         if rnaseq.__version__ != expected_version or version("nf-rna") != expected_version:
-            raise SystemExit("Installed package and distribution metadata disagree on the RC version.")
+            raise SystemExit("Installed package and distribution metadata disagree on the release version.")
 
         assets = required_workflow_assets()
         if not all(path.is_file() for path in assets.values()):

@@ -84,7 +84,7 @@ reference:
   manifest: reference_manifest.yaml
   acceptance: production
 runtime:
-  execution_image: nf-rna:1.0.0rc1
+  execution_image: nf-rna:1.0.0
 ```
 
 The managed manifest must use schema 1.1 with deliberate `purpose: production`. The initial human identity contract is Ensembl 116, GRCh38.p14; an unpatched assembly such as mouse GRCm39 uses `assembly_patch: null` (or omits it) and displays simply as `GRCm39`. Assets are not downloaded by this project.

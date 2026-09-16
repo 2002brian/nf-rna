@@ -6,7 +6,7 @@ English | [繁體中文](README_zh-TW.md)
 
 For FASTQ projects, nf-rna supports pinned nf-core/rnaseq 3.26.0 + Salmon/tximport and an explicitly configured first-party HISAT2 + featureCounts route, both feeding first-party DESeq2 and clusterProfiler analysis. Scientific and execution settings are explicit rather than inferred, so the same declared project can be reviewed and rerun with a clear record of its inputs and choices.
 
-The current release candidate is `1.0.0rc1`. Its stable CLI and Python namespace are both `rnaseq`. `rnaseq` is the control plane; Nextflow owns process scheduling and Docker task launch. Development runs may use `nf-rna:latest`; production-intended runs must request a digest or a versioned tag whose observed Docker image ID/digest and build revision label are frozen in provenance.
+The current release is `1.0.0`. Its stable CLI and Python namespace are both `rnaseq`. `rnaseq` is the control plane; Nextflow owns process scheduling and Docker task launch. Development runs may use `nf-rna:latest`; production-intended runs must request a digest or a versioned tag whose observed Docker image ID/digest and build revision label are frozen in provenance.
 
 ## Overview
 
@@ -348,4 +348,4 @@ These are software and regression checks. They demonstrate that implemented work
 
 ## Citation and license
 
-nf-rna version metadata is prepared for `v1.0.0rc1` under the [MIT License](LICENSE). Cite the specific tagged release you use; the machine-readable record is [CITATION.cff](CITATION.cff).
+nf-rna version metadata is prepared for `v1.0.0` under the [MIT License](LICENSE). Cite the specific tagged release you use; the machine-readable record is [CITATION.cff](CITATION.cff).

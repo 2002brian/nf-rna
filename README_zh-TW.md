@@ -8,7 +8,7 @@
 
 對於 FASTQ 專案，nf-rna 將固定版本的 nf-core/rnaseq 3.26.0、Salmon 與 tximport，結合 first-party 的 DESeq2 和 clusterProfiler 分析。科學與執行設定都必須明確宣告，而非由系統猜測；因此，同一個已宣告的專案可以被審查與重跑，並保有清楚的輸入與設定紀錄。
 
-目前 release candidate 版本為 `1.0.0rc1`，穩定的 CLI 與 Python namespace 都是 `rnaseq`。`rnaseq` 是 control plane；Nextflow 負責 process 排程與 Docker task 啟動。開發模式可使用 `nf-rna:latest`；production-intended run 必須指定 digest 或 versioned tag，並將 Docker 實際觀察到的 image ID/digest 與 build revision label 凍結於 provenance。
+目前 release 版本為 `1.0.0`，穩定的 CLI 與 Python namespace 都是 `rnaseq`。`rnaseq` 是 control plane；Nextflow 負責 process 排程與 Docker task 啟動。開發模式可使用 `nf-rna:latest`；production-intended run 必須指定 digest 或 versioned tag，並將 Docker 實際觀察到的 image ID/digest 與 build revision label 凍結於 provenance。
 
 ## 概覽
 
@@ -316,4 +316,4 @@ unit/regression suite 涵蓋 project contract、validation、planning、provenan
 
 ## Citation 與 license
 
-nf-rna 的版本 metadata 已準備為 `v1.0.0rc1`，採用 [MIT License](LICENSE)。請引用實際使用的 tagged release；機器可讀紀錄位於 [CITATION.cff](CITATION.cff)。
+nf-rna 的版本 metadata 已準備為 `v1.0.0`，採用 [MIT License](LICENSE)。請引用實際使用的 tagged release；機器可讀紀錄位於 [CITATION.cff](CITATION.cff)。

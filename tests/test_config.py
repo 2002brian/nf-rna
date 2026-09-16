@@ -54,10 +54,10 @@ def test_unknown_nested_key_fails(project_factory):
 
 def test_runtime_execution_image_is_canonical_and_legacy_control_plane_image_is_read_compatible(project_factory):
     canonical = base_config()
-    canonical["runtime"] = {"execution_image": "nf-rna:1.0.0rc1"}
+    canonical["runtime"] = {"execution_image": "nf-rna:1.0.0"}
     loaded = load_project(project_factory(config=canonical)).config
-    assert loaded.runtime.execution_image == "nf-rna:1.0.0rc1"
-    assert loaded.runtime.model_dump() == {"execution_image": "nf-rna:1.0.0rc1"}
+    assert loaded.runtime.execution_image == "nf-rna:1.0.0"
+    assert loaded.runtime.model_dump() == {"execution_image": "nf-rna:1.0.0"}
 
     legacy = base_config()
     legacy["runtime"] = {"control_plane_image": "rnaseq-control-plane:0.9.0"}

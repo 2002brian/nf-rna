@@ -2,8 +2,11 @@
 
 All notable changes to this project are documented here.
 
-## Unreleased
+## 1.0.0 — 2026-09-16
 
+- Finalized Nextflow-owned downstream execution with a local first-party Docker runtime, immutable runs/retry/upstream reuse, managed-reference provenance, and curated report/delivery artifacts.
+- Released the HISAT2 + featureCounts and nf-core/rnaseq Salmon/tximport routes, L1 expression QC, L2 DESeq2 differential expression, and optional GO/KEGG preranked GSEA.
+- Qualified the paired-end Mouse HISAT2 + featureCounts path through reuse, metadata-ordered staging, L1, L2, no-enrichment technical reporting, delivery, and SUCCESS.
 - Added a delivery-wide SHA-256 integrity manifest for final curated delivery packages.
 
 ## 1.0.0rc1 — 2026-09-12

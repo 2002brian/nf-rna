@@ -18,7 +18,7 @@ runner = CliRunner()
 def test_version_reports_the_authoritative_package_version():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0, result.output
-    assert result.output == "1.0.0rc1\n"
+    assert result.output == "1.0.0\n"
 
 
 def test_wizard_completion_candidates_match_only_canonical_prefixes():
@@ -484,7 +484,7 @@ def test_plan_is_deterministic_and_records_schema_version():
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     assert manifest["schema"]["project_schema_version"] == "1.0"
     assert isinstance(manifest["schema"]["project_schema_version"], str)
-    assert manifest["pipeline"]["version"] == "1.0.0rc1"
+    assert manifest["pipeline"]["version"] == "1.0.0"
 
     second = runner.invoke(app, ["plan", str(example)])
     assert second.exit_code == 0, second.output
