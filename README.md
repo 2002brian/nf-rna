@@ -142,6 +142,18 @@ See the [quick start](docs/quickstart.md) and [scientific contract](docs/scienti
 
 ### 1. Install
 
+For an official release runtime, pull a specific GHCR version (for example,
+the next stable release after this workflow is enabled):
+
+```bash
+docker pull ghcr.io/2002brian/nf-rna:<version>
+```
+
+Use an explicit version tag or digest for reproducible work. `:latest` is a
+convenience tag updated only by stable releases; prereleases do not move it.
+The release workflow publishes `linux/amd64` only. The existing source build
+is retained as the developer/offline fallback:
+
 ```bash
 git clone https://github.com/2002brian/nf-rna.git
 cd nf-rna

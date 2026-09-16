@@ -11,6 +11,31 @@
 - A first-party execution image selected by `runtime.execution_image`.
 - Sufficient local disk for Nextflow cache/work and the selected reference.
 
+## Official container images
+
+Official release images are distributed through GitHub Container Registry once
+release publishing is enabled:
+
+```bash
+docker pull ghcr.io/2002brian/nf-rna:<version>
+```
+
+Use an explicit version tag (for example, `1.0.1`) or a digest for a
+reproducible analysis. `ghcr.io/2002brian/nf-rna:latest` is a convenience tag
+that advances only for stable releases; it is never moved by prereleases.
+The release workflow publishes a `linux/amd64`-only manifest, matching the
+qualified release runtime. An arm64 image must be independently
+release-qualified before it is published.
+
+Normal GHCR publication starts automatically when a GitHub Release is
+published. Maintainers may use `workflow_dispatch` only as a recovery/bootstrap
+path for an already published GitHub Release: it verifies both the existing tag
+and the published Release before building from that tag. It must never be used
+to manufacture an official image from unreleased code, and it does not create,
+edit, move, or republish a Git tag or GitHub Release.
+
+The source-build path remains available for developer and offline use:
+
 ```bash
 conda env create -f environment.yml
 conda activate nf-rna

@@ -1,0 +1,170 @@
+name: Publish GHCR execution image
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing published semantic-version release tag (for example, v1.0.0)
+        required: true
+        type: string
+
+# A published release is the normal publication authority. Manual dispatch is
+# restricted below to recovery/bootstrap of an already published release tag.
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ghcr-release-${{ github.event.release.tag_name || inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build, validate, and publish release image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Normalize and validate source release tag
+        id: release_tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_EVENT_TAG: ${{ github.event.release.tag_name }}
+          DISPATCH_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            release) release_tag="$RELEASE_EVENT_TAG" ;;
+            workflow_dispatch) release_tag="$DISPATCH_RELEASE_TAG" ;;
+            *)
+              echo "Unsupported publication event: $EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+
+          if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "Release tag is not a supported semantic version: $release_tag" >&2
+            exit 1
+          fi
+          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Verify manual bootstrap release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The tag ref check and release lookup are deliberately separate:
+          # a GitHub Release alone is not proof that its tag still exists.
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" >/dev/null
+
+          release_state="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '[.tag_name, (.draft | tostring), (.published_at // "")] | @tsv')"
+          IFS=$'\t' read -r api_tag is_draft published_at <<< "$release_state"
+          if [[ "$api_tag" != "$RELEASE_TAG" || "$is_draft" != "false" || -z "$published_at" ]]; then
+            echo "Manual publishing requires an existing published GitHub Release for $RELEASE_TAG." >&2
+            exit 1
+          fi
+
+      - name: Check out the release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.release_tag.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Resolve and verify release identity
+        id: release
+        env:
+          RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "Published release tag is not a supported semantic version: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          source_revision="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
+          checked_out_revision="$(git rev-parse HEAD)"
+          if [[ "$source_revision" != "$checked_out_revision" ]]; then
+            echo "Checkout ($checked_out_revision) does not match $RELEASE_TAG ($source_revision)." >&2
+            exit 1
+          fi
+
+          version="${RELEASE_TAG#v}"
+          stable=false
+          if [[ "$version" != *-* ]]; then
+            stable=true
+          fi
+
+          {
+            echo "version=$version"
+            echo "stable=$stable"
+            echo "sha=$source_revision"
+            echo "image=ghcr.io/${GITHUB_REPOSITORY}:$version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Compute image metadata
+        id: metadata
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ steps.release.outputs.version }}
+            type=raw,value=latest,enable=${{ steps.release.outputs.stable }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.release.outputs.sha }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+
+      - name: Build release image for validation
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          push: false
+          platforms: linux/amd64
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          build-args: |
+            NF_RNA_SOURCE_REVISION=${{ steps.release.outputs.sha }}
+
+      - name: Validate the exact image to be published
+        env:
+          IMAGE: ${{ steps.release.outputs.image }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          SOURCE_REVISION: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          reported_version="$(docker run --rm "$IMAGE" rnaseq --version)"
+          if [[ "$reported_version" != "$RELEASE_VERSION" ]]; then
+            echo "rnaseq reports $reported_version; expected $RELEASE_VERSION." >&2
+            exit 1
+          fi
+          docker run --rm "$IMAGE" python -m rnaseq.workflow_support report --help
+          docker run --rm "$IMAGE" test -f /opt/nf-rna/r/l1_analysis.R
+
+          revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE")"
+          if [[ "$revision" != "$SOURCE_REVISION" ]]; then
+            echo "OCI revision label is $revision; expected $SOURCE_REVISION." >&2
+            exit 1
+          fi
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish validated image tags
+        env:
+          IMAGE_TAGS: ${{ steps.metadata.outputs.tags }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r image; do
+            [[ -n "$image" ]] || continue
+            docker push "$image"
+          done <<< "$IMAGE_TAGS"
