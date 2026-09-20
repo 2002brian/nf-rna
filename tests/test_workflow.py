@@ -32,9 +32,9 @@ def test_downstream_workflow_allows_independent_gsea_backends_to_share_the_budge
     assert "TECHNICAL_REPORT_NO_ENRICHMENT(l1, l2, contract, inputs)" in text
     assert "TECHNICAL_REPORT_L1(l1, contract, inputs)" in text
     assert "--enrichment $enrichment_dirs" in text
-    assert set(_ENRICHMENT_REQUIRED_PATHS) == {"gsea-go", "gsea-kegg"}
-    assert "allowedEnrichment = ['gsea-go', 'gsea-kegg']" in text
-    assert "go_analysis.R" not in text
+    assert set(_ENRICHMENT_REQUIRED_PATHS) == {"go", "kegg", "gsea-go", "gsea-kegg"}
+    assert "allowedEnrichment = ['go', 'kegg', 'gsea-go', 'gsea-kegg']" in text
+    assert "go_analysis.R" in text
 
 
 def test_downstream_workflow_keeps_l1_l2_and_report_persistence_contracts():

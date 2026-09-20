@@ -9,7 +9,7 @@ English | [繁體中文](README_zh-TW.md)
 ## Features
 
 - FASTQ projects using nf-core/rnaseq with Salmon/tximport or first-party HISAT2 + featureCounts.
-- Raw-count projects with validated metadata, explicit contrasts, QC, differential expression, and optional preranked GSEA.
+- Raw-count projects with validated metadata, explicit contrasts, QC, differential expression, and optional GO/KEGG ORA and preranked GSEA.
 - Immutable runs with frozen configuration, execution-image identity, workflow hashes, and curated delivery artifacts.
 
 ## Architecture
@@ -23,12 +23,12 @@ flowchart LR
     B --> D
     D --> E["L1<br/>Expression QC, PCA,<br/>sample correlation"]
     E --> F{L2 selected?}
-    F -- Yes --> G["L2: DESeq2<br/>optional preranked<br/>GO/KEGG GSEA"]
+    F -- Yes --> G["L2: DESeq2<br/>optional GO/KEGG ORA<br/>and preranked GSEA"]
     F -- No --> H["Outputs<br/>figures and tables<br/>technical report<br/>curated delivery<br/>frozen provenance"]
     G --> H
 ```
 
-L1 provides expression quality control and exploration. L2 is explicitly selected: it performs DESeq2 for declared contrasts and may be followed by supported preranked GO/KEGG GSEA; it is never inferred from metadata or contrasts. Each route produces figures, tables, a technical report, curated delivery artifacts, and frozen provenance.
+L1 provides expression quality control and exploration. L2 is explicitly selected: it performs DESeq2 for declared contrasts and may be followed independently by GO ORA, KEGG ORA, and preranked GO/KEGG GSEA; it is never inferred from metadata or contrasts. Each route produces figures, tables, a technical report, curated delivery artifacts, and frozen provenance.
 
 ## Inputs and outputs
 
@@ -46,7 +46,7 @@ Every authorized execution creates an immutable run under `runs/<case-id>/<run-i
 - **Upstream count data:** FASTQ projects retain upstream QC and the Salmon/tximport or featureCounts count handoff; count-matrix projects retain their validated imported count source.
 - **L1 QC:** filtering and normalization records, transformed expression for visualization, PCA, sample correlation, and QC tables and figures.
 - **L2 results:** when selected, DESeq2 results for each declared contrast, with associated tables and figures.
-- **Enrichment:** when enabled for L2, preranked GO (BP, MF, CC) and KEGG GSEA results; over-representation analysis is not part of this production path.
+- **Enrichment:** independently enabled GO ORA, KEGG ORA, and preranked GO (BP, MF, CC)/KEGG GSEA results. ORA uses the mapped statistically tested-gene universe for each contrast.
 - **Delivery:** a technical HTML report and a curated delivery package of figures, tables, methods/version records, provenance, and a delivery manifest.
 
 ## Requirements

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "nf-rna"
 dynamic = ["version"]
-description = "Production-oriented bulk RNA-seq workflow with DESeq2 and preranked GO/KEGG GSEA"
+description = "Production-oriented bulk RNA-seq workflow with DESeq2, GO/KEGG ORA, and preranked GSEA"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

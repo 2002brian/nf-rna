@@ -1,6 +1,6 @@
 FROM mambaorg/micromamba:2.0.5
 
-ARG NF_RNA_SOURCE_REVISION=unknown
+ARG NF_RNA_SOURCE_REVISION=unlabeled-development-image
 LABEL org.opencontainers.image.title="nf-rna first-party execution image" \
       org.opencontainers.image.source="https://github.com/nf-rna/nf-rna" \
       org.opencontainers.image.revision="${NF_RNA_SOURCE_REVISION}"

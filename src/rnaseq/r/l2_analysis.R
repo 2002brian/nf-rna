@@ -1,5 +1,8 @@
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) != 2 || args[[1]] != "--config") stop("usage: l2_analysis.R --config CONFIG.json")
+script_arg <- commandArgs(trailingOnly = FALSE)
+script_file <- sub("^--file=", "", script_arg[grep("^--file=", script_arg)][[1]])
+source(file.path(dirname(normalizePath(script_file)), "provenance.R"))
 suppressPackageStartupMessages({ library(jsonlite); library(DESeq2); library(ggplot2); library(pheatmap) })
 cfg <- fromJSON(args[[2]], simplifyVector = FALSE)
 dir.create(cfg$output_dir, recursive = TRUE, showWarnings = FALSE)
@@ -11,6 +14,7 @@ if (!is.null(cfg$pair_id)) {
   if (!(cfg$pair_id %in% colnames(metadata))) stop("configured pair_id is absent from metadata")
   metadata[[cfg$pair_id]] <- factor(metadata[[cfg$pair_id]])
 }
+nf_rna_write_provenance(cfg, cfg$output_dir, "L2", "SUCCESS", c("DESeq2", "tximport", "ggplot2", "pheatmap", "jsonlite"), list(contrast_count=length(cfg$contrasts), independent_filtering=TRUE))
 for (factor_name in unique(vapply(cfg$contrasts, function(item) item$factor, character(1)))) {
   if (!(factor_name %in% colnames(metadata))) stop(paste("contrast factor is absent from metadata:", factor_name))
   metadata[[factor_name]] <- factor(metadata[[factor_name]])

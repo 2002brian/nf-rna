@@ -10,7 +10,7 @@ local Docker profile 會呼叫外部且已固定版本的 `nf-core/rnaseq 3.26.0
 rnaseq CLI → nf-core/rnaseq → standardized upstream outputs → downstream Nextflow workflow → R modules
 ```
 
-Python control plane 會凍結 version-pinned input contract，並記錄穩定的 nf-core handoff boundary。凍結的 `analysis_level` 是 graph selector：`L1` 專案只執行 L1 與 L1 technical report；`L2` 專案執行 L1、L2、選用的 GO preranked GSEA（BP/MF/CC）與 KEGG preranked GSEA，接著產生 technical HTML report。graph 絕不會從 contrast、metadata 或可用 workflow module 推斷 L2。production 中不會執行 GO 或 KEGG ORA。server executor setting 仍刻意延後決定。
+Python control plane 會凍結 version-pinned input contract，並記錄穩定的 nf-core handoff boundary。凍結的 `analysis_level` 是 graph selector：`L1` 專案只執行 L1 與 L1 technical report；`L2` 專案執行 L1、L2，以及獨立選用的 GO ORA、KEGG ORA、GO preranked GSEA（BP/MF/CC）與 KEGG preranked GSEA，接著產生 technical HTML report。graph 絕不會從 contrast、metadata 或可用 workflow module 推斷 L2。server executor setting 仍刻意延後決定。
 
 每個 downstream computational process 都明確宣告 `container params.first_party_image`。Python 會為 immutable run 凍結該 parameter 並啟動 Nextflow；Docker task container 僅由 Nextflow 啟動。image 內含已安裝的 `rnaseq.workflow_support` package 與 `/opt/nf-rna/r` scripts，因此 task execution 不依賴 host checkout。
 

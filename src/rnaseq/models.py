@@ -276,41 +276,53 @@ class AnnotationConfig(StrictModel):
         return self
 
 
+PUBLIC_ENRICHMENT_METHODS = ("go", "kegg", "gsea")
+# Retained for callers that used the former single-method public constant.
 PUBLIC_ENRICHMENT_METHOD = "gsea"
 LEGACY_ENRICHMENT_MODULES = frozenset({"go", "gsea-go", "kegg", "gsea-kegg"})
-INTERNAL_GSEA_BACKENDS = ("gsea-go", "gsea-kegg")
+INTERNAL_ENRICHMENT_BACKENDS = {
+    "go": ("go",),
+    "kegg": ("kegg",),
+    "gsea": ("gsea-go", "gsea-kegg"),
+}
 
 
 def normalize_enrichment_selection(value: object) -> tuple[str, ...]:
-    """Normalize only the documented public method and complete legacy scope."""
+    """Normalize the public enrichment selection and the former complete scope.
 
-    if value == PUBLIC_ENRICHMENT_METHOD:
-        return (PUBLIC_ENRICHMENT_METHOD,)
+    GO ORA, KEGG ORA, and preranked GSEA are independently selectable public
+    methods. Public selections are deduplicated into their canonical order so
+    a repeated selection cannot schedule a backend twice. The historical
+    four-backend spelling remains a lossless alias.
+    """
+
+    if isinstance(value, str) and value in PUBLIC_ENRICHMENT_METHODS:
+        return (value,)
     if isinstance(value, (list, tuple)):
         selected = tuple(value)
         if not selected:
             return ()
-        if selected == (PUBLIC_ENRICHMENT_METHOD,):
-            return selected
+        if all(isinstance(item, str) and item in PUBLIC_ENRICHMENT_METHODS for item in selected):
+            return tuple(method for method in PUBLIC_ENRICHMENT_METHODS if method in selected)
         if len(selected) == len(LEGACY_ENRICHMENT_MODULES) and set(selected) == LEGACY_ENRICHMENT_MODULES:
-            return (PUBLIC_ENRICHMENT_METHOD,)
+            return PUBLIC_ENRICHMENT_METHODS
         if any(item in LEGACY_ENRICHMENT_MODULES for item in selected):
             raise ValueError(
                 "Legacy analysis.enrichment is accepted only when it contains exactly "
-                "go, gsea-go, kegg, gsea-kegg; use analysis.enrichment: gsea."
+                "go, gsea-go, kegg, gsea-kegg; use public methods go, kegg, and/or gsea."
             )
     return value  # Pydantic reports invalid types or unsupported public values.
 
 
 def production_enrichment_backends(value: object) -> tuple[str, ...]:
-    """Expand the one public production method into its two internal backends."""
+    """Expand selected public methods into their stable runtime backends."""
 
     selected = normalize_enrichment_selection(value)
     if selected == ():
         return ()
-    if selected == (PUBLIC_ENRICHMENT_METHOD,):
-        return INTERNAL_GSEA_BACKENDS
-    raise ValueError("analysis.enrichment must be empty or the public method: gsea.")
+    if all(item in INTERNAL_ENRICHMENT_BACKENDS for item in selected):
+        return tuple(backend for item in selected for backend in INTERNAL_ENRICHMENT_BACKENDS[item])
+    raise ValueError("analysis.enrichment must contain only go, kegg, and/or gsea.")
 
 
 class AnalysisConfig(StrictModel):
@@ -320,19 +332,13 @@ class AnalysisConfig(StrictModel):
     gains an enrichment step merely because the CLI happened to use a flag.
     """
 
-    enrichment: tuple[Literal["gsea"], ...] = ()
+    enrichment: tuple[Literal["go", "kegg", "gsea"], ...] = ()
 
     @field_validator("enrichment", mode="before")
     @classmethod
     def normalize_legacy_enrichment(cls, value: object) -> object:
         return normalize_enrichment_selection(value)
 
-    @field_validator("enrichment")
-    @classmethod
-    def validate_unique_enrichment(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(set(value)) != len(value):
-            raise ValueError("analysis.enrichment must not contain duplicate modules.")
-        return value
 
 
 class UpstreamConfig(StrictModel):

@@ -136,3 +136,5 @@ def test_production_figure_export_contract_is_png_and_300dpi_tiff():
         assert ".svg" not in text
         assert ".pdf" not in text
         assert "600" not in text
+        assert "provenance.R" in text
+    assert (root / "provenance.R").is_file()

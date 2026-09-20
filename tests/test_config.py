@@ -103,7 +103,7 @@ def test_path_escape_fails(project_factory):
     assert "inside the project directory" in issue_messages(report)
 
 
-def test_public_enrichment_accepts_only_gsea_and_normalizes_the_complete_legacy_scope(project_factory):
+def test_public_enrichment_accepts_independent_methods_and_normalizes_the_complete_legacy_scope(project_factory):
     config = base_config()
     config["schema_version"] = "1.1"
     config["annotation"] = {"organism": "Mus musculus", "input_id_type": "ENSEMBL"}
@@ -112,7 +112,15 @@ def test_public_enrichment_accepts_only_gsea_and_normalizes_the_complete_legacy_
 
     legacy = deepcopy(config)
     legacy["analysis"] = {"enrichment": ["go", "gsea-go", "kegg", "gsea-kegg"]}
-    assert load_project(project_factory(config=legacy)).config.analysis.enrichment == ("gsea",)
+    assert load_project(project_factory(config=legacy)).config.analysis.enrichment == ("go", "kegg", "gsea")
+
+    independent = deepcopy(config)
+    independent["analysis"] = {"enrichment": ["go", "kegg"]}
+    assert load_project(project_factory(config=independent)).config.analysis.enrichment == ("go", "kegg")
+
+    duplicate_and_unordered = deepcopy(config)
+    duplicate_and_unordered["analysis"] = {"enrichment": ["gsea", "go", "gsea", "kegg", "go"]}
+    assert load_project(project_factory(config=duplicate_and_unordered)).config.analysis.enrichment == ("go", "kegg", "gsea")
 
     partial = deepcopy(config)
     partial["analysis"] = {"enrichment": ["gsea-go"]}

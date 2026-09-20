@@ -17,7 +17,7 @@ def test_gsea_plan_reports_only_the_public_method_and_its_gene_set_resources(pro
     generate_plan(report)
     plan = (root / "planning" / "analysis_plan.md").read_text(encoding="utf-8")
     manifest = (root / "planning" / "manifest.preview.yaml").read_text(encoding="utf-8")
-    assert "Enrichment method: `GSEA`" in plan
+    assert "Enrichment methods: `gsea`" in plan
     assert "`GO BP`, `GO MF`, `GO CC`, `KEGG`" in plan
     assert "go, gsea-go, kegg, gsea-kegg" not in plan
     assert "enrichment:\n  - gsea\n" in manifest
