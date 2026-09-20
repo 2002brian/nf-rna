@@ -62,7 +62,9 @@ Java and Nextflow run on the host. R, DESeq2, HISAT2, featureCounts, SAMtools, a
 
 ## Installation
 
-nf-rna has no PyPI distribution. Install a released CLI from its Git tag and pull the matching official image. Replace `X.Y.Z` with the released version you intend to use:
+nf-rna has no PyPI distribution. Starting with `v1.1.0`, install a released CLI
+from its Git tag and pull the matching official image. Replace `X.Y.Z` with the
+released version you intend to use:
 
 ```bash
 RELEASE_VERSION=X.Y.Z
@@ -80,6 +82,15 @@ The release contract is deliberate:
 ```text
 CLI X.Y.Z  ↔  Git tag vX.Y.Z  ↔  ghcr.io/2002brian/nf-rna:X.Y.Z
 ```
+
+Prereleases use one canonical identity: Git tag `vX.Y.Z-rcN` (or `-aN`/`-bN`),
+package version `X.Y.ZrcN` (or `aN`/`bN`), and explicit image tag
+`X.Y.Z-rcN`. Prereleases never update `latest`; alternate prerelease tag
+spellings are rejected to keep immutable package and image identities unique.
+
+`v1.0.0` is an immutable historical GitHub Release and predates GHCR
+publication; it has no official container image. Build from source only when
+working with that historical release or developing the project.
 
 `rnaseq doctor` is read-only: it verifies the host environment and locally available image but does not pull or build images.
 
