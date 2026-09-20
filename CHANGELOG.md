@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here.
 
+## 1.1.0 — 2026-09-20
+
+- Added production GO and KEGG over-representation analysis (ORA) through the supported Nextflow graph, including stable GO terminal-state artifacts and term accounting.
+- Corrected ORA to use the finite-p-value, statistically tested-gene universe for each contrast and deduplicated enrichment selections.
+- Added structured scientific provenance, complete R session records, and OCI source-revision propagation through downstream outputs.
+- Added guarded, release-only GHCR publication for the first official image, `ghcr.io/2002brian/nf-rna:1.1.0`; the official image is qualified for `linux/amd64` only. `linux/arm64` is not yet independently qualified.
+
 ## 1.0.0 — 2026-09-16
 
 - Finalized Nextflow-owned downstream execution with a local first-party Docker runtime, immutable runs/retry/upstream reuse, managed-reference provenance, and curated report/delivery artifacts.
