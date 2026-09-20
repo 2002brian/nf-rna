@@ -6,6 +6,7 @@ import argparse
 import base64
 import csv
 import json
+import os
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,19 @@ img.report-figure {
 
 
 _ENRICHMENT_REQUIRED_PATHS = {
+    "go": (
+        "annotation.organism", "annotation.input_id_type", "annotation.target_id_type",
+        "annotation.mapping_warning_rate", "annotation.minimum_mapping_rate",
+        "annotation.enrichment.go.pvalue_cutoff", "annotation.enrichment.go.qvalue_cutoff",
+        "annotation.enrichment.go.p_adjust_method",
+    ),
+    "kegg": (
+        "annotation.organism", "annotation.input_id_type", "annotation.target_id_type",
+        "annotation.mapping_warning_rate", "annotation.minimum_mapping_rate",
+        "annotation.enrichment.kegg.resource_provider", "annotation.enrichment.kegg.ora.pvalue_cutoff",
+        "annotation.enrichment.kegg.ora.qvalue_cutoff", "annotation.enrichment.kegg.ora.p_adjust_method",
+        "annotation.enrichment.kegg.ora.min_gs_size", "annotation.enrichment.kegg.ora.max_gs_size",
+    ),
     "gsea-go": (
         "annotation.organism", "annotation.input_id_type", "annotation.target_id_type",
         "annotation.mapping_warning_rate", "annotation.minimum_mapping_rate",
@@ -160,6 +174,19 @@ def _source_import_label(source_type: object) -> str:
         raise ValueError(f"unsupported report source type: {source_type!r}") from exc
 
 
+def _runtime_provenance(contract: dict[str, Any], script: str, module: str) -> dict[str, Any]:
+    """Pass stable runtime identity to R without leaking task-local paths."""
+
+    execution = contract.get("execution") if isinstance(contract.get("execution"), dict) else {}
+    return {
+        "module": module,
+        "script": script,
+        "container_image": os.environ.get("NF_RNA_CONTAINER_IMAGE") or execution.get("image"),
+        "source_revision": execution.get("source_revision"),
+        "output_schema": "nf-rna.scientific-provenance.v1",
+    }
+
+
 def _contrasts(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
@@ -224,6 +251,7 @@ def l1_config(contract_path: Path, inputs: Path, output: Path) -> dict[str, Any]
         "samples": _samples(inputs),
         "output_dir": str(output),
         "filter": FILTER,
+        "runtime": _runtime_provenance(contract, "l1_analysis.R", "L1"),
     }
 
 
@@ -246,6 +274,7 @@ def l2_config(contract_path: Path, inputs: Path, l1: Path, output: Path) -> dict
         "contrasts": contrasts,
         "l1_vst": str(l1 / "vst.tsv"),
         "heatmap_top_n": 50,
+        "runtime": _runtime_provenance(contract, "l2_analysis.R", "L2"),
     }
 
 
@@ -325,6 +354,15 @@ def _pipeline_provenance_line(execution: object, project_pipeline: object) -> st
     if project_pipeline:
         return f"Pipeline: {escape(str(project_pipeline))}; version: not available."
     return "Pipeline version: not available."
+
+
+def _source_revision_line(execution: object) -> str:
+    """Render the frozen execution-image revision without a host fallback."""
+
+    revision = execution.get("source_revision") if isinstance(execution, dict) else None
+    if revision:
+        return f"Execution-image source revision: {escape(str(revision))}."
+    return "Execution-image source revision: not available."
 
 
 def _value(mapping: dict[str, Any], name: str) -> str:
@@ -424,6 +462,7 @@ def _report_l1_only(
         "<li>Differential expression and GSEA were not requested for this L1 project.</li>"
         f"<li>R: {escape(str(package_versions.get('R', 'not available')))}; DESeq2: {escape(str(package_versions.get('DESeq2', 'not available')))}.</li>"
         f"<li>{_pipeline_provenance_line(execution, project.get('project', {}).get('pipeline') if isinstance(project.get('project'), dict) else None)}</li>"
+        f"<li>{_source_revision_line(execution)}</li>"
         "</ul>",
         "<p>This automated report contains technical/statistical results only and no biological interpretation.</p>",
         "</body></html>",
@@ -512,8 +551,44 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
             _image_html(root / "heatmap.png", f"DEG heatmap: {contrast_id}"),
         ])
 
-    if selected == ("gsea",):
-        indexed = {path.name: path for path in enrichment_dirs}
+    indexed = {path.name: path for path in enrichment_dirs}
+    if "go" in selected or "kegg" in selected:
+        sections.extend([
+            "<h2>L2 — over-representation analysis</h2>",
+            "<p>ORA uses the successfully mapped subset of statistically tested genes (finite DESeq2 p-value) as its universe. NA, NaN, Inf, and -Inf p-values are excluded; tested genes with an NA adjusted p-value remain eligible.</p>",
+        ])
+        for module, label, summary_name in (("go", "GO ORA", "go_backend_summary.json"), ("kegg", "KEGG ORA", "kegg_backend_summary.json")):
+            if module not in selected:
+                continue
+            root = indexed.get(module)
+            if root is None:
+                raise ValueError(f"final report requires enabled {label} artifacts")
+            summary = _read_json_artifact(root / summary_name, f"{label} backend summary")
+            sections.append(f"<h3>{label}</h3><p>Module state: <strong>{escape(str(summary.get('status', 'not available')))}</strong>.</p>")
+            by_contrast = {str(item.get("contrast_id")): item for item in summary.get("contrasts", []) if isinstance(item, dict)}
+            for contrast in contrasts:
+                item = by_contrast.get(contrast["contrast_id"])
+                if not isinstance(item, dict):
+                    continue
+                universe = item.get("universe", {})
+                sections.extend([
+                    f"<h4>{escape(contrast['contrast_id'])}</h4>",
+                    "<ul>"
+                    f"<li>Post-L1 retained genes: {_value(universe, 'post_l1_retained_genes')}</li>"
+                    f"<li>Statistically tested genes: {_value(universe, 'statistically_tested_genes')}</li>"
+                    f"<li>Mapped tested-gene universe: {_value(universe, 'successfully_mapped_tested_genes')}</li>"
+                    "</ul>",
+                ])
+                for foreground, outcome in (item.get("foregrounds") or {}).items():
+                    if not isinstance(outcome, dict):
+                        continue
+                    sections.append(
+                        f"<p>{escape(str(foreground))}: state <strong>{escape(str(outcome.get('status', 'not available')))}</strong>; "
+                        f"foreground genes {_value(outcome, 'foreground_significant_genes')}; mapped foreground genes {_value(outcome, 'successfully_mapped_foreground_genes')}; "
+                        f"evaluated terms {_value(outcome, 'evaluated_term_count')}; significant terms {_value(outcome, 'significant_term_count')}.</p>"
+                    )
+
+    if "gsea" in selected:
         missing = sorted({"gsea_go", "gsea_kegg"} - set(indexed))
         if missing:
             raise ValueError("final report requires enabled GSEA backend artifacts: " + ", ".join(missing))
@@ -622,6 +697,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
         f"<li>DEG thresholds: padj &lt; {escape(str(thresholds['padj']))}; |log2FC| ≥ {escape(str(thresholds['abs_log2fc']))}.</li>"
         f"<li>R: {escape(str(package_versions.get('R', 'not available')))}; DESeq2: {escape(str(package_versions.get('DESeq2', 'not available')))}.</li>"
         f"<li>{_pipeline_provenance_line(execution, project.get('project', {}).get('pipeline') if isinstance(project.get('project'), dict) else None)}</li>"
+        f"<li>{_source_revision_line(execution)}</li>"
         "<li>GO GSEA evaluates BP, MF, and CC; KEGG GSEA uses the configured KEGG provider.</li>"
         "</ul>",
         "<p>This automated report contains technical/statistical results only and no biological interpretation.</p>",
@@ -646,12 +722,20 @@ def enrichment_config(contract_path: Path, inputs: Path, l2: Path, kind: str, ou
         contrasts.append({
             "contrast_id": item["contrast_id"],
             "all_genes": str(root / "all_genes.tsv"),
+            "significant": str(root / "significant.tsv"),
+            "up": str(root / "upregulated.tsv"),
+            "down": str(root / "downregulated.tsv"),
         })
-    names = {"gsea-go": "gsea_go", "gsea-kegg": "gsea_kegg"}
-    cfg: dict[str, Any] = {"output_dir": str(output / "enrichment" / names[kind]), "annotation": annotation, "orgdb_package": orgdb, "contrasts": contrasts}
-    if kind == "gsea-kegg":
+    names = {"go": "go", "kegg": "kegg", "gsea-go": "gsea_go", "gsea-kegg": "gsea_kegg"}
+    script = {"go": "go_analysis.R", "kegg": "kegg_analysis.R", "gsea-go": "gsea_analysis.R", "gsea-kegg": "kegg_analysis.R"}[kind]
+    cfg: dict[str, Any] = {
+        "output_dir": str(output / "enrichment" / names[kind]), "annotation": annotation,
+        "orgdb_package": orgdb, "contrasts": contrasts,
+        "runtime": _runtime_provenance(contract, script, kind),
+    }
+    if kind in {"kegg", "gsea-kegg"}:
         code = {"Homo sapiens": "hsa", "Mus musculus": "mmu"}[organism]
-        cfg.update({"mode": "gsea", "kegg": {"organism_code": code, "provider": annotation["enrichment"]["kegg"]["resource_provider"], "probe_endpoint": f"https://rest.kegg.jp/list/pathway/{code}"}})
+        cfg.update({"mode": "ora" if kind == "kegg" else "gsea", "kegg": {"organism_code": code, "provider": annotation["enrichment"]["kegg"]["resource_provider"], "probe_endpoint": f"https://rest.kegg.jp/list/pathway/{code}"}})
     return cfg
 
 

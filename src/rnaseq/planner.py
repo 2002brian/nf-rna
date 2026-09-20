@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 
-from rnaseq.models import FastqPreprocessing, InputType, PIPELINE_VERSION, Preset
+from rnaseq.models import FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, production_enrichment_backends
 from rnaseq.hisat2_featurecounts import HISAT2_VERSION, SAMTOOLS_VERSION, SUBREAD_VERSION
 from rnaseq.validators import ValidationReport
 
@@ -218,9 +218,9 @@ def render_analysis_plan(report: ValidationReport) -> str:
         lines.append(f"- {label}: **{status}**")
     if selected_enrichment:
         lines.extend([
-            "", "## Functional enrichment", "", "- Enrichment method: `GSEA`",
+            "", "## Functional enrichment", "", f"- Enrichment methods: {', '.join(f'`{item}`' for item in config.analysis.enrichment)}",
             "- Gene-set resources: `GO BP`, `GO MF`, `GO CC`, `KEGG`",
-            "- Internal backends: `gsea-go`, `gsea-kegg`", "",
+            f"- Internal backends: {', '.join(f'`{backend}`' for backend in production_enrichment_backends(config.analysis.enrichment))}", "",
         ])
     lines.extend(["", "## Warnings", ""])
     if report.warnings:

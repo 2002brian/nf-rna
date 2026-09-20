@@ -8,7 +8,7 @@ The local Docker profile invokes the external, pinned `nf-core/rnaseq 3.26.0` pi
 rnaseq CLI → nf-core/rnaseq → standardized upstream outputs → downstream Nextflow workflow → R modules
 ```
 
-The Python control plane freezes a version-pinned input contract and records the stable nf-core handoff boundary. Its frozen `analysis_level` is the graph selector: an `L1` project runs L1 and the L1 technical report only; an `L2` project runs L1, L2, optional GO preranked GSEA (BP/MF/CC) and KEGG preranked GSEA, then the technical HTML report. The graph never infers L2 from contrasts, metadata, or available workflow modules. It does not invoke GO or KEGG ORA in production. Server executor settings remain intentionally deferred.
+The Python control plane freezes a version-pinned input contract and records the stable nf-core handoff boundary. Its frozen `analysis_level` is the graph selector: an `L1` project runs L1 and the L1 technical report only; an `L2` project runs L1, L2, then any independently selected GO ORA, KEGG ORA, GO preranked GSEA (BP/MF/CC), and KEGG preranked GSEA before the technical HTML report. The graph never infers L2 from contrasts, metadata, or available workflow modules. Server executor settings remain intentionally deferred.
 
 Each downstream computational process explicitly declares `container params.first_party_image`. Python freezes that parameter for the immutable run and starts Nextflow; Nextflow alone launches Docker task containers. The image contains the installed `rnaseq.workflow_support` package and `/opt/nf-rna/r` scripts, so task execution does not depend on the host checkout.
 
@@ -17,8 +17,8 @@ CPU and memory requests fit the effective aggregate local budget. Nextflow's
 local executor provides this scheduling guard without a fixed `maxForks` cap.
 
 Each enrichment task publishes its own backend directory below the immutable
-L2 output: `downstream/l2/enrichment/gsea_go/` and
-`downstream/l2/enrichment/gsea_kegg/`. The process never publishes their shared
+L2 output: `downstream/l2/enrichment/go/`, `kegg/`, `gsea_go/`, and
+`gsea_kegg/`. The process never publishes their shared
 `enrichment/` directory as a task output. Instead, each task publishes its
 module-specific `enrichment/*` output relative to the L2 publish root, so one
 successful backend cannot mask the other when `overwrite: false` is enforced.

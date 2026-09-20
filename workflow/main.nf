@@ -28,6 +28,7 @@ process L1_ANALYSIS {
     path 'l1'
     script:
     """
+    export NF_RNA_CONTAINER_IMAGE='${params.first_party_image}'
     python -m rnaseq.workflow_support l1-config --contract $contract --inputs $inputs --out l1-config.json
     Rscript ${params.r_scripts}/l1_analysis.R --config l1-config.json
     """
@@ -46,6 +47,7 @@ process L2_ANALYSIS {
     path 'l2'
     script:
     """
+    export NF_RNA_CONTAINER_IMAGE='${params.first_party_image}'
     python -m rnaseq.workflow_support l2-config --contract $contract --inputs $inputs --l1 $l1 --out l2-config.json
     Rscript ${params.r_scripts}/l2_analysis.R --config l2-config.json
     """
@@ -119,8 +121,9 @@ process ENRICHMENT_ANALYSIS {
     output:
     tuple val(module), path('enrichment/*')
     script:
-    def rScript = module == 'gsea-go' ? 'gsea_analysis.R' : 'kegg_analysis.R'
+    def rScript = module == 'go' ? 'go_analysis.R' : module == 'gsea-go' ? 'gsea_analysis.R' : 'kegg_analysis.R'
     """
+    export NF_RNA_CONTAINER_IMAGE='${params.first_party_image}'
     python -m rnaseq.workflow_support enrichment-config --kind ${module} --contract $contract --inputs $inputs --l2 $l2 --out enrichment-config.json
     Rscript ${params.r_scripts}/${rScript} --config enrichment-config.json
     """
@@ -134,8 +137,8 @@ workflow {
     inputs = Channel.value(file(params.inputs))
     l1 = L1_ANALYSIS(contract, inputs)
     modules = params.enrichment ? params.enrichment.split(',').findAll { it } : []
-    allowedEnrichment = ['gsea-go', 'gsea-kegg']
-    if( modules.any { !(it in allowedEnrichment) } ) error 'Only internal GSEA backends gsea-go and gsea-kegg are supported'
+    allowedEnrichment = ['go', 'kegg', 'gsea-go', 'gsea-kegg']
+    if( modules.any { !(it in allowedEnrichment) } ) error 'Unsupported enrichment backend'
     if( params.analysis_level == 'L1' ) {
         if( modules ) error 'L1 analysis_level cannot enable enrichment'
         TECHNICAL_REPORT_L1(l1, contract, inputs)

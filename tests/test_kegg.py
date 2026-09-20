@@ -48,6 +48,41 @@ def test_kegg_gsea_summary_distinguishes_significance_from_calculation_cutoffs()
     assert "calculation_pvalue_cutoff=1" in script
 
 
+def test_kegg_ora_has_the_same_tested_universe_and_foreground_subset_contract():
+    """KEGG is network-dependent at runtime; its deterministic preflight is shared with GO."""
+
+    script = (Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "kegg_analysis.R").read_text(encoding="utf-8")
+    go_script = (Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "go_analysis.R").read_text(encoding="utf-8")
+    assert '"ora_helpers.R"' in script and '"ora_helpers.R"' in go_script
+    assert "gene_sets<-nf_rna_ora_gene_sets(tab)" in script
+    assert "gene_sets <- nf_rna_ora_gene_sets(all_table)" in go_script
+    assert "is not a subset of statistically tested genes" in script
+    assert "pvalueCutoff=1" in script and "qvalueCutoff=1" in script
+
+
+def test_shared_ora_helper_has_exact_finite_membership_and_nonfinite_counts():
+    import subprocess
+
+    require_rscript()
+    helper = Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "ora_helpers.R"
+    code = f'''source("{helper}")
+tab <- data.frame(gene_id=c("finite", "na", "nan", "pos_inf", "neg_inf", "finite"),
+                  pvalue=c("0.01", NA, "NaN", "Inf", "-Inf", "0.02"), stringsAsFactors=FALSE)
+sets <- nf_rna_ora_gene_sets(tab)
+stopifnot(
+  identical(sets$retained, c("finite", "na", "nan", "pos_inf", "neg_inf")),
+  identical(sets$tested, c("finite")),
+  sets$counts$statistically_tested_genes == 1L,
+  sets$counts$pvalue_na_excluded_genes == 1L,
+  sets$counts$pvalue_nan_excluded_genes == 1L,
+  sets$counts$pvalue_infinite_excluded_genes == 2L,
+  sets$counts$pvalue_nonfinite_excluded_genes == 4L
+)
+'''
+    result = subprocess.run(["Rscript", "-e", code], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
 def test_kegg_requires_annotation_and_rejects_unsupported_organism(project_factory):
     with pytest.raises(DownstreamExecutionError, match="explicit annotation contract"):
         prepare_kegg(validate_project(project_factory()), run_id=None, mode="ora")

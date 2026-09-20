@@ -71,6 +71,7 @@ RUN_ID_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}\+[0-9]{4}(?:-[0-9]{2,3})?$")
 TAIPEI = ZoneInfo("Asia/Taipei")
 FINAL_STATES = {"SUCCESS", "FAILED"}
 DELIVERY_MANIFEST_FILENAME = "delivery_manifest.yaml"
+UNLABELED_CONTAINER_SOURCE_REVISION = "unlabeled-container-image"
 
 
 @dataclass(frozen=True)
@@ -165,6 +166,22 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _execution_source_revision(image: str) -> str:
+    """Return the OCI revision observed for the exact execution image.
+
+    The frozen execution contract is the sole source passed to every R module.
+    A container without an OCI revision label is recorded explicitly rather
+    than guessed from the host checkout or a mutable tag.
+    """
+
+    observed = inspect_container_image(image)
+    labels = observed.get("labels")
+    revision = labels.get("org.opencontainers.image.revision") if isinstance(labels, dict) else None
+    if isinstance(revision, str) and revision.strip() and revision.strip().lower() != "unknown":
+        return revision.strip()
+    return UNLABELED_CONTAINER_SOURCE_REVISION
 
 
 def _salmon_mapping_contract(run_dir: Path, value: object) -> tuple[Path, dict[str, str]]:
@@ -582,6 +599,7 @@ def freeze_case_inputs(
     """Copy every mutable analysis input into the run before any compute starts."""
 
     assert report.loaded is not None and report.config is not None
+    source_revision = _execution_source_revision(report.config.runtime.execution_image)
     frozen = run.run_dir / "frozen"
     for source, target in (
         (report.loaded.config_path, frozen / "project.yaml"),
@@ -672,6 +690,8 @@ def freeze_case_inputs(
         "run_id": run.run_id,
         "timezone": "Asia/Taipei",
         "profile": profile,
+        "execution_image": report.config.runtime.execution_image,
+        "source_revision": source_revision,
         "execution_budget": report.config.execution.model_dump(),
         "command": command,
         "pipeline": {"name": report.config.project.pipeline, "version": PIPELINE_VERSION},
@@ -719,6 +739,10 @@ def freeze_case_inputs(
         # Downstream tasks must never infer L2 from contrasts or metadata.
         "analysis_level": report.config.project.preset.value,
         "analysis": report.config.analysis.model_dump(mode="json") if report.config.analysis else {"enrichment": []},
+        "execution": {
+            "image": report.config.runtime.execution_image,
+            "source_revision": source_revision,
+        },
         "design": {
             "type": report.config.design.type.value,
             "formula": report.config.design.formula,
@@ -763,6 +787,8 @@ def _provenance(
         return {"version": version, **inspect_container_image(image)}
 
     execution_image = inspect_container_image(requested_image)
+    frozen_contract = _read_json_mapping(run.run_dir / "frozen" / "downstream_contract.json", "frozen downstream contract")
+    frozen_execution = frozen_contract.get("execution") if isinstance(frozen_contract.get("execution"), dict) else {}
     workflow_hashes = {
         "workflow/main.nf": _sha256(workflow_asset_path("main.nf")),
         "workflow/hisat2_featurecounts.nf": _sha256(HISAT2_WORKFLOW),
@@ -794,6 +820,7 @@ def _provenance(
         ),
         "container_runtime": "docker",
         "execution_image": execution_image,
+        "source_revision": frozen_execution.get("source_revision"),
         # Compatibility for consumers of pre-migration provenance.  New
         # consumers should use execution_image, whose name reflects that
         # Nextflow—not the Python control plane—owns task container launch.
@@ -1321,6 +1348,9 @@ def assemble_delivery(run: CaseRun) -> Path:
             copy_declared(path, figures[suffix] / relative)
         elif suffix in {".tsv", ".csv"}:
             copy_declared(path, tables / relative)
+        elif path.name in {"scientific_provenance.json", "r_session_info.txt"}:
+            # These are module-produced scientific records, not task logs.
+            copy_declared(path, delivery / "methods_and_versions" / relative)
     handoff = run.run_dir / "frozen" / "upstream_handoff_manifest.yaml"
     if handoff.is_file():
         payload = yaml.safe_load(handoff.read_text(encoding="utf-8"))

@@ -52,6 +52,22 @@ def _frozen_run(project_factory) -> tuple[Path, object, object]:
     return root, report, run
 
 
+def test_freeze_uses_observed_oci_revision_without_host_fallback(monkeypatch, project_factory):
+    from rnaseq import service
+
+    report = validate_project(project_factory())
+    generate_plan(report)
+    monkeypatch.setattr(service, "inspect_container_image", lambda _image: {
+        "labels": {"org.opencontainers.image.revision": "abc123-dirty"},
+    })
+    run = create_case_run(report, "CASE-REVISION", moment=datetime(2026, 9, 20, 12, 0, 0))
+    frozen = freeze_case_inputs(report, run, profile="local", command=["rnaseq", "run"])
+    contract = json.loads(frozen.contract.read_text(encoding="utf-8"))
+    execution = yaml.safe_load((run.run_dir / "frozen" / "execution_manifest.yaml").read_text(encoding="utf-8"))
+    assert contract["execution"]["source_revision"] == "abc123-dirty"
+    assert execution["source_revision"] == "abc123-dirty"
+
+
 def _fastq_handoff_run(tmp_path: Path):
     """Create only the documented upstream handoff artifacts; no workflow runs."""
 
@@ -255,6 +271,8 @@ def test_downstream_command_is_argument_array_and_delivery_is_allowlisted(projec
     (downstream / "l2" / "contrasts" / "a" / "volcano.svg").write_bytes(b"svg")
     (downstream / "l2" / "logs").mkdir()
     (downstream / "l2" / "logs" / "r.stderr.log").write_text("internal", encoding="utf-8")
+    (downstream / "l2" / "scientific_provenance.json").write_text('{"schema_version":"nf-rna.scientific-provenance.v1"}\n', encoding="utf-8")
+    (downstream / "l2" / "r_session_info.txt").write_text("R version fixture\n", encoding="utf-8")
     (downstream / "l2" / "enrichment" / "gsea_go" / "BP").mkdir(parents=True)
     (downstream / "l2" / "enrichment" / "gsea_go" / "BP" / "all_terms.tsv").write_text("ID\tDescription\nGO:1\tterm\n", encoding="utf-8")
     (downstream / "l2" / "enrichment" / "gsea_go" / "BP" / "dotplot.png").write_bytes(b"png")
@@ -282,6 +300,8 @@ def test_downstream_command_is_argument_array_and_delivery_is_allowlisted(projec
     assert (delivery / "methods_and_versions" / "upstream_handoff_manifest_20260828.yaml").is_file()
     assert (delivery / "methods_and_versions" / "run_state_20260828.json").is_file()
     assert (delivery / "methods_and_versions" / "run_provenance_20260828.yaml").is_file()
+    assert (delivery / "methods_and_versions" / "l2" / "scientific_provenance.json").is_file()
+    assert (delivery / "methods_and_versions" / "l2" / "r_session_info.txt").is_file()
     assert (delivery / "multiqc" / "multiqc_report_20260828.html").is_file()
     assert not any("115111" in path.name or "+0800" in path.name for path in delivery.rglob("*"))
     assert load_run_states(run.run_dir.parents[2])[0]["delivery_available"] is True
@@ -592,7 +612,7 @@ def test_public_gsea_selection_expands_to_only_the_two_internal_backends(project
         json.dumps(legacy, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     migrated_command = build_downstream_nextflow_command(run)
-    assert migrated_command[migrated_command.index("--enrichment") + 1] == "gsea-go,gsea-kegg"
+    assert migrated_command[migrated_command.index("--enrichment") + 1] == "go,kegg,gsea-go,gsea-kegg"
 
 
 def test_downstream_command_rejects_an_invalid_frozen_enrichment_module(project_factory):
