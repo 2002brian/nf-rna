@@ -12,13 +12,15 @@
 
 ## Official container images
 
-Official release images are distributed through GitHub Container Registry:
+The historical `v1.0.0` release predates GHCR, so no official image exists
+yet. Official release images begin with the planned `v1.1.0` release and are
+then distributed through GitHub Container Registry:
 
 ```bash
-docker pull ghcr.io/2002brian/nf-rna:1.0.0
+docker pull ghcr.io/2002brian/nf-rna:X.Y.Z
 ```
 
-Use an explicit version tag (for example, `1.0.0`) or a digest for a
+Use an explicit version tag (for example, `1.1.0`) or a digest for a
 reproducible analysis. `ghcr.io/2002brian/nf-rna:latest` is a convenience tag
 that advances only for stable releases; it is never moved by prereleases.
 The release workflow publishes a `linux/amd64`-only manifest, matching the
@@ -26,11 +28,38 @@ qualified release runtime. An arm64 image must be independently
 release-qualified before it is published.
 
 Normal GHCR publication starts automatically when a GitHub Release is
-published. Maintainers may use `workflow_dispatch` only as a recovery/bootstrap
-path for an already published GitHub Release: it verifies both the existing tag
-and the published Release before building from that tag. It must never be used
-to manufacture an official image from unreleased code, and it does not create,
-edit, move, or republish a Git tag or GitHub Release.
+published. Stable tags are `vX.Y.Z`. The only prerelease tag spellings are
+`vX.Y.Z-rcN`, `vX.Y.Z-aN`, and `vX.Y.Z-bN`; they map respectively to PEP 440
+package versions `X.Y.ZrcN`, `X.Y.ZaN`, and `X.Y.ZbN`, while preserving the
+hyphenated suffix in the explicit container tag. This prevents two Git-tag
+spellings from identifying the same immutable image.
+
+Before push, the workflow resolves the tag to a commit, checks the checked-out
+commit and package version, validates the loaded image's non-root runtime, OCI
+source/revision/version labels, bundled workflow and R assets, and lightweight
+runtime dependencies. It uses the OCI Distribution API with authenticated,
+structured manifest responses: `MANIFEST_UNKNOWN` and `NAME_UNKNOWN` 404
+responses permit first publication; a present manifest, authentication or
+authorization failure, rate limit, timeout, malformed response, or any other
+status fails closed. `NAME_UNKNOWN` explicitly represents a GHCR package that
+does not yet exist. The immutable version tag is pushed before `latest`.
+Per-release-tag workflow concurrency prevents ordinary duplicate runs, but an
+external registry mutation between the read-only existence check and push is an
+unavoidable TOCTOU risk.
+
+The validation obtains the canonical installed Nextflow files through
+`rnaseq.workflow_assets.required_workflow_assets()` (`main.nf`,
+`hisat2_featurecounts.nf`, and `nextflow.config`) and the report CLI through
+the installed `rnaseq.workflow_support` module. The canonical R installation
+directory is `/opt/nf-rna/r`; validation requires `l1_analysis.R`,
+`l2_analysis.R`, `go_analysis.R`, `gsea_analysis.R`, `kegg_analysis.R`,
+`annotation_mapping_qc.R`, `gsea_core_members.R`, `gsea_term_filtering.R`,
+`kegg_core_members.R`, `ora_helpers.R`, and `provenance.R` there.
+
+The workflow does not create, edit, move, or republish a Git tag or GitHub
+Release. The immutable historical `v1.0.0` GitHub Release predates this
+workflow and has no official GHCR image; the first planned official image is
+`v1.1.0`.
 
 Building an image from source is a developer/offline workflow; see
 [Development installation](development.md). It is not part of normal user
@@ -40,7 +69,7 @@ The image runtime is intentionally verified with a non-login shell, matching
 the environment Nextflow task containers inherit:
 
 ```bash
-docker run --rm ghcr.io/2002brian/nf-rna:1.0.0 \
+docker run --rm ghcr.io/2002brian/nf-rna:X.Y.Z \
   sh -c 'command -v ps && ps --version'
 ```
 

@@ -4,7 +4,8 @@ This guide is for production users on Linux or WSL. Install Python 3.11+, Git, D
 
 ## Install a released nf-rna version
 
-nf-rna is installed from Git tags; it is not published to PyPI. Replace `X.Y.Z` with the released version you intend to use:
+nf-rna is installed from Git tags; it is not published to PyPI. Starting with
+`v1.1.0`, replace `X.Y.Z` with the released version you intend to use:
 
 ```bash
 RELEASE_VERSION=X.Y.Z
@@ -65,17 +66,15 @@ New projects use the image that matches the installed CLI version. A prerelease 
 
 ## v1.0.0 compatibility
 
-The immutable `v1.0.0` release predates the version-matched project default. Its `rnaseq new` wizard writes `execution_image: nf-rna:latest`. Users running that historical release with the official GHCR image should set this field before planning or running:
+The immutable `v1.0.0` release predates both GHCR publication and the
+version-matched project default. It has no official GHCR image. Its `rnaseq
+new` wizard writes `execution_image: nf-rna:latest`; users working from that
+historical source release should build that local development image before
+planning or running:
 
 ```yaml
 runtime:
-  execution_image: ghcr.io/2002brian/nf-rna:1.0.0
+  execution_image: nf-rna:latest
 ```
 
 For example, update the generated `project.yaml` in an editor after creating the project. This is a v1.0.0 compatibility note only; it is not part of the normal Quick Start.
-
-The qualified immutable v1.0.0 image identity is:
-
-```text
-ghcr.io/2002brian/nf-rna@sha256:ee60405181783ff075a1f4a9f452990c651e91152f5a9837c2a5df44a838decb
-```

@@ -46,6 +46,7 @@ def test_container_runtime_path_contract_uses_non_login_shell():
     assert "python -c \"import rnaseq.models, rnaseq.workflow_support" in dockerfile
     assert "python -m rnaseq.workflow_support report --help" in dockerfile
     assert "org.opencontainers.image.revision" in dockerfile
+    assert 'org.opencontainers.image.source="https://github.com/2002brian/nf-rna"' in dockerfile
     assert "sh -lc" not in dockerfile
     for command in ("command -v ps", "ps --version", "command -v python", "command -v Rscript"):
         assert command in dockerfile
