@@ -12,9 +12,9 @@
 
 ## Official container images
 
-The historical `v1.0.0` release predates GHCR, so no official image exists
-yet. Official release images begin with the planned `v1.1.0` release and are
-then distributed through GitHub Container Registry:
+The historical `v1.0.0` release predates GHCR and has no official image.
+Beginning with the `v1.1.0` release, official images are published through
+GitHub Container Registry as:
 
 ```bash
 docker pull ghcr.io/2002brian/nf-rna:X.Y.Z
@@ -23,9 +23,8 @@ docker pull ghcr.io/2002brian/nf-rna:X.Y.Z
 Use an explicit version tag (for example, `1.1.0`) or a digest for a
 reproducible analysis. `ghcr.io/2002brian/nf-rna:latest` is a convenience tag
 that advances only for stable releases; it is never moved by prereleases.
-The release workflow publishes a `linux/amd64`-only manifest, matching the
-qualified release runtime. An arm64 image must be independently
-release-qualified before it is published.
+Official release images are qualified for `linux/amd64`. `linux/arm64` is not
+yet independently qualified.
 
 Normal GHCR publication starts automatically when a GitHub Release is
 published. Stable tags are `vX.Y.Z`. The only prerelease tag spellings are
@@ -58,8 +57,8 @@ directory is `/opt/nf-rna/r`; validation requires `l1_analysis.R`,
 
 The workflow does not create, edit, move, or republish a Git tag or GitHub
 Release. The immutable historical `v1.0.0` GitHub Release predates this
-workflow and has no official GHCR image; the first planned official image is
-`v1.1.0`.
+workflow and has no official GHCR image. The first official image is published
+with the `v1.1.0` release.
 
 Building an image from source is a developer/offline workflow; see
 [Development installation](development.md). It is not part of normal user

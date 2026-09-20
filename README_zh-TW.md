@@ -62,8 +62,9 @@ Java 與 Nextflow 在 host 執行。R、DESeq2、HISAT2、featureCounts、SAMtoo
 
 ## 安裝
 
-nf-rna 沒有 PyPI distribution。自 `v1.1.0` 起，請從 Git tag 安裝已發布的
-CLI，並 pull 對應的 official image。將 `X.Y.Z` 換成想使用的已發布版本：
+nf-rna 沒有 PyPI distribution。自 `v1.1.0` release 起，official image 會以
+`ghcr.io/2002brian/nf-rna:X.Y.Z` 發布；請從 Git tag 安裝已發布的 CLI，並 pull
+對應 image。將 `X.Y.Z` 換成想使用的已發布版本：
 
 ```bash
 RELEASE_VERSION=X.Y.Z
