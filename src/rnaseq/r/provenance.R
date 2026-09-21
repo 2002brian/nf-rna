@@ -33,7 +33,7 @@ nf_rna_contrast_identity <- function(contrasts) {
   })
 }
 
-nf_rna_write_provenance <- function(cfg, output_dir, module, result_state, packages, extra=list()) {
+nf_rna_write_provenance <- function(cfg, output_dir, module, result_state, packages, extra=list(), design_details=list()) {
   dir.create(output_dir, recursive=TRUE, showWarnings=FALSE)
   session_path <- file.path(output_dir, "r_session_info.txt")
   writeLines(capture.output(sessionInfo()), session_path, useBytes=TRUE)
@@ -50,7 +50,10 @@ nf_rna_write_provenance <- function(cfg, output_dir, module, result_state, packa
     r_version=R.version.string,
     package_versions=nf_rna_package_versions(packages),
     organism=if (is.list(cfg$annotation)) list(organism=cfg$annotation$organism, input_id_type=cfg$annotation$input_id_type, target_id_type=cfg$annotation$target_id_type) else NULL,
-    design=list(formula=cfg$formula %||% NULL, contrasts=nf_rna_contrast_identity(cfg$contrasts)),
+    design=c(
+      list(formula=cfg$formula %||% NULL, contrasts=nf_rna_contrast_identity(cfg$contrasts)),
+      design_details
+    ),
     normalized_configuration=nf_rna_normalized_config(cfg),
     output_schema=runtime$output_schema %||% "nf-rna.scientific-provenance.v1",
     result=extra

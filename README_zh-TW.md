@@ -115,6 +115,26 @@ rnaseq run . --case-id CASE-001 --profile local --yes
 
 wizard 只建立 project scaffold，不會推測科學輸入。FASTQ 專案還需要 execution-ready reference；可用 `rnaseq reference register /absolute/reference-root` 註冊既有的 checksum-bound managed reference，或設定支援的 reference route。詳細內容請見 [Quick Start](docs/quickstart.md)。
 
+## 支援 covariate 的 DESeq2 design
+
+新的 schema 1.3 專案會明確宣告每個 additive formula variable 的型別。`categorical` 在 R 中會成為 factor；`continuous` 則是必須為有限數值的調整 covariate。既有 schema 1.0–1.2 專案仍可讀取，並保留原本的 categorical／明確數值行為。
+
+```yaml
+design:
+  type: multi_group
+  formula: "~ batch + age + condition"
+  variables:
+    batch: categorical
+    age: continuous
+    condition: categorical
+```
+
+支援的 additive 範例包括 `~ condition`、`~ age + condition`、`~ batch + condition` 與 `~ batch + age + condition`。contrast 仍是 categorical 且有方向性，例如 `Treatment_vs_Control,condition,Treatment,Control`；continuous variable 只會調整估計值，不能作為 numerator/denominator contrast。
+
+使用 `rnaseq new` 匯入 metadata 時，categorical adjustment 用 `--covariate batch`，numeric adjustment 用 `--continuous-covariate age`；wizard 對每個選取的 covariate 也會詢問相同的型別。
+
+已知的 batch effect 應放入 DESeq2 design（`~ batch + condition`），而不是先修改 raw count matrix。nf-rna 會保留原始 counts 進行 inferential analysis、在 provenance 和 report 記錄 typed design，並在 VST exploratory QC 提供 batch metadata（若 `batch` 宣告為 categorical，另輸出 batch-colored PCA）。continuous effect 的 hypothesis test 不屬於本 milestone。
+
 ## 可重現性
 
 新專案使用與已安裝 CLI 版本相符的 execution image。prerelease CLI 也使用明確相符的 prerelease tag；使用 prerelease 前必須先發布並驗證該 image。

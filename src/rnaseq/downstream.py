@@ -163,6 +163,7 @@ def prepare_l1(report: ValidationReport, *, run_id: str | None) -> PreparedL1:
                 "source_type": "raw_counts",
                 "counts": str(report.counts.path.resolve()),
                 "pair_id": config.design.pair_id,
+                "design_variable_types": dict(report.design_variable_types),
             },
         )
     if not run_id:
@@ -238,6 +239,10 @@ def prepare_l1(report: ValidationReport, *, run_id: str | None) -> PreparedL1:
             "tx2gene": str(tx2gene),
             "tx2gene_mapping": mapping_metadata,
             "pair_id": frozen_config.design.pair_id,
+            "design_variable_types": (
+                {name: variable_type.value for name, variable_type in (frozen_config.design.variables or {}).items()}
+                or dict(report.design_variable_types)
+            ),
         },
     )
 

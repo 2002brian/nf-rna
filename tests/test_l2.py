@@ -34,6 +34,85 @@ def _rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle, delimiter="\t"))
 
 
+def _typed_design_project(
+    tmp_path: Path, *, formula: str, variables: dict[str, str], paired: bool = False,
+) -> Path:
+    """Create a deterministic real-DESeq2 fixture from the 100-gene example."""
+
+    root = _example_copy(tmp_path)
+    config = yaml.safe_load((root / "project.yaml").read_text(encoding="utf-8"))
+    config["schema_version"] = "1.3"
+    config["analysis"] = {"enrichment": []}
+    design: dict[str, object] = {"type": "paired_two_group" if paired else "two_group", "formula": formula, "variables": variables}
+    if paired:
+        design["pair_id"] = "pair_id"
+        (root / "metadata.csv").write_text(
+            "sample_id,pair_id,condition\n"
+            "C1,P1,Control\nC2,P2,Control\nC3,P3,Control\n"
+            "T1,P1,Treatment\nT2,P2,Treatment\nT3,P3,Treatment\n",
+            encoding="utf-8",
+        )
+    config["design"] = design
+    (root / "project.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return root
+
+
+def test_l2_scientific_provenance_records_actual_typed_model(tmp_path):
+    require_r_packages("jsonlite", "DESeq2", "ggplot2", "pheatmap")
+    root = _typed_design_project(
+        tmp_path,
+        formula="~ batch + age + condition",
+        variables={"batch": "categorical", "age": "continuous", "condition": "categorical"},
+    )
+    result = execute_l2(prepare_l2(validate_project(root), run_id=None))
+    provenance = json.loads((result.output_dir / "scientific_provenance.json").read_text())
+    design = provenance["design"]
+    assert design["formula"] == "~ batch + age + condition"
+    assert design["declared_variable_types"] == {
+        "batch": "categorical", "age": "continuous", "condition": "categorical",
+    }
+    assert design["variables"]["batch"] == {"type": "categorical", "levels": ["B1", "B2"]}
+    assert design["variables"]["condition"] == {"type": "categorical", "levels": ["Control", "Treatment"]}
+    assert design["variables"]["age"] == {
+        "type": "continuous", "n": 6, "min": 8, "max": 10, "mean": pytest.approx(8.666666666666666, abs=1e-4),
+    }
+    assert design["model_matrix"] == {
+        "rank": 4,
+        "column_count": 4,
+        "full_rank": True,
+        "column_names": ["(Intercept)", "batchB2", "age", "conditionTreatment"],
+    }
+    backend = json.loads((result.output_dir / "contrasts" / "Treatment_vs_Control" / "backend_summary.json").read_text())
+    assert provenance["result"]["fit_method"] == backend["fit_method"]
+
+
+@pytest.mark.parametrize(
+    ("formula", "variables", "paired", "expected_columns"),
+    (
+        ("~ condition", {"condition": "categorical"}, False, ["(Intercept)", "conditionTreatment"]),
+        ("~ pair_id + condition", {"pair_id": "categorical", "condition": "categorical"}, True, ["(Intercept)", "pair_idP2", "pair_idP3", "conditionTreatment"]),
+    ),
+)
+def test_l2_scientific_provenance_covers_simple_and_paired_models(
+    tmp_path, formula, variables, paired, expected_columns,
+):
+    require_r_packages("jsonlite", "DESeq2", "ggplot2", "pheatmap")
+    root = _typed_design_project(tmp_path, formula=formula, variables=variables, paired=paired)
+    result = execute_l2(prepare_l2(validate_project(root), run_id=None))
+    design = json.loads((result.output_dir / "scientific_provenance.json").read_text())["design"]
+    assert design["formula"] == formula
+    assert design["model_matrix"] == {
+        "rank": len(expected_columns),
+        "column_count": len(expected_columns),
+        "full_rank": True,
+        "column_names": expected_columns,
+    }
+    assert design["variables"]["condition"] == {"type": "categorical", "levels": ["Control", "Treatment"]}
+    if paired:
+        assert design["pair_id"] == "pair_id"
+        assert design["variables"]["pair_id"] == {"type": "categorical", "levels": ["P1", "P2", "P3"]}
+
+
 def test_real_l2_replicated_raw_counts_outputs_and_determinism(tmp_path):
     require_r_packages("jsonlite", "DESeq2", "ggplot2", "pheatmap")
     root = _example_copy(tmp_path)

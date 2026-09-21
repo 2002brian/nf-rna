@@ -746,6 +746,7 @@ def freeze_case_inputs(
         "design": {
             "type": report.config.design.type.value,
             "formula": report.config.design.formula,
+            "variables": dict(report.design_variable_types),
             **({"pair_id": report.config.design.pair_id, "pairing": pairing_contract(report)} if report.config.design.pair_id else {}),
         },
         # This is the immutable, normalized enrichment input for downstream
@@ -851,6 +852,7 @@ def _provenance(
         "design": {
             "type": report.config.design.type.value,
             "formula": report.config.design.formula,
+            "variables": dict(report.design_variable_types),
             **({"pair_id": report.config.design.pair_id, "pairing": pairing_contract(report)} if report.config.design.pair_id else {}),
         } if report.config is not None else None,
         "frozen_project_sha256": _sha256(run.run_dir / "frozen" / "project.yaml"),

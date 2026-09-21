@@ -10,6 +10,16 @@ metadata <- read.csv(cfg$metadata, check.names = FALSE, stringsAsFactors = FALSE
 rownames(metadata) <- metadata$sample_id
 samples <- unlist(cfg$samples, use.names = FALSE)
 metadata <- metadata[samples, , drop = FALSE]
+if (!is.null(cfg$design_variable_types)) {
+  for (variable in names(cfg$design_variable_types)) {
+    if (!(variable %in% colnames(metadata))) stop(paste("configured design variable is absent from metadata:", variable))
+    if (cfg$design_variable_types[[variable]] == "categorical") metadata[[variable]] <- factor(metadata[[variable]])
+    if (cfg$design_variable_types[[variable]] == "continuous") {
+      metadata[[variable]] <- as.numeric(metadata[[variable]])
+      if (any(!is.finite(metadata[[variable]]))) stop(paste("continuous design variable is not finite:", variable))
+    }
+  }
+}
 if (!is.null(cfg$pair_id)) {
   if (!(cfg$pair_id %in% colnames(metadata))) stop("configured pair_id is absent from metadata")
   metadata[[cfg$pair_id]] <- factor(metadata[[cfg$pair_id]])
@@ -59,6 +69,7 @@ write.table(library_size, file.path(cfg$output_dir, "library_size_qc.tsv"), sep 
 pca <- prcomp(t(vst_matrix), center = TRUE, scale. = FALSE)
 variance <- pca$sdev^2 / sum(pca$sdev^2)
 scores <- data.frame(sample_id = samples, PC1 = pca$x[, 1], PC2 = if (ncol(pca$x) >= 2) pca$x[, 2] else 0, check.names = FALSE)
+if (!is.null(cfg$design_variable_types)) for (variable in names(cfg$design_variable_types)) scores[[variable]] <- metadata[scores$sample_id, variable]
 write.table(scores, file.path(cfg$output_dir, "pca_scores.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
 write.table(data.frame(component = paste0("PC", seq_along(variance)), proportion_variance = variance), file.path(cfg$output_dir, "pca_variance.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
 color_name <- tail(all.vars(formula), 1)
@@ -66,6 +77,12 @@ scores$group <- as.factor(metadata[scores$sample_id, color_name])
 p <- ggplot(scores, aes(x = PC1, y = PC2, color = group, label = sample_id)) + geom_point(size = 3) + geom_text(vjust = -0.8, show.legend = FALSE) + labs(color = color_name, x = sprintf("PC1 (%.1f%%)", 100 * variance[[1]]), y = sprintf("PC2 (%.1f%%)", 100 * ifelse(length(variance) >= 2, variance[[2]], 0))) + theme_minimal()
 ggsave(file.path(cfg$output_dir, "pca.png"), p, width = 7, height = 5, dpi = 150)
 ggsave(file.path(cfg$output_dir, "pca.tiff"), p, width = 7, height = 5, dpi = 300, compression = "lzw")
+if (!is.null(cfg$design_variable_types) && identical(cfg$design_variable_types[["batch"]], "categorical")) {
+  scores$batch <- metadata[scores$sample_id, "batch"]
+  batch_p <- ggplot(scores, aes(x = PC1, y = PC2, color = batch, label = sample_id)) + geom_point(size = 3) + geom_text(vjust = -0.8, show.legend = FALSE) + labs(color = "batch", x = sprintf("PC1 (%.1f%%)", 100 * variance[[1]]), y = sprintf("PC2 (%.1f%%)", 100 * ifelse(length(variance) >= 2, variance[[2]], 0))) + theme_minimal()
+  ggsave(file.path(cfg$output_dir, "pca_by_batch.png"), batch_p, width = 7, height = 5, dpi = 150)
+  ggsave(file.path(cfg$output_dir, "pca_by_batch.tiff"), batch_p, width = 7, height = 5, dpi = 300, compression = "lzw")
+}
 corr <- cor(vst_matrix, method = "pearson")
 write.table(data.frame(sample_id = rownames(corr), corr, check.names = FALSE), file.path(cfg$output_dir, "sample_correlation.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
 png(file.path(cfg$output_dir, "sample_correlation.png"), width = 1050, height = 900, res = 150)

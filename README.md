@@ -116,6 +116,26 @@ rnaseq run . --case-id CASE-001 --profile local --yes
 
 The wizard creates a project scaffold; it does not infer scientific inputs. FASTQ projects also need an execution-ready reference. Register an existing checksum-bound managed reference with `rnaseq reference register /absolute/reference-root`, or configure a supported reference route. See the [detailed Quick Start](docs/quickstart.md).
 
+## Covariate-aware DESeq2 designs
+
+New schema 1.3 projects declare the type of every additive formula variable. Categorical variables are fitted as R factors; continuous variables are finite numeric adjustment covariates. Existing schema 1.0–1.2 projects remain readable with their historical categorical/clearly numeric behavior.
+
+```yaml
+design:
+  type: multi_group
+  formula: "~ batch + age + condition"
+  variables:
+    batch: categorical
+    age: continuous
+    condition: categorical
+```
+
+Supported additive examples are `~ condition`, `~ age + condition`, `~ batch + condition`, and `~ batch + age + condition`. Contrasts remain categorical and directional—for example `Treatment_vs_Control,condition,Treatment,Control`; a continuous variable adjusts the estimate and cannot be used as a numerator/denominator contrast.
+
+When importing metadata with `rnaseq new`, use `--covariate batch` for categorical adjustments and `--continuous-covariate age` for numeric adjustments; the wizard asks for the same choice for each selected covariate.
+
+Known batch belongs in the DESeq2 design (`~ batch + condition`), not in a batch-corrected raw count matrix. nf-rna preserves original counts for inference, records the fitted typed design in provenance and reports, and adds batch metadata (plus a batch-colored PCA when `batch` is declared categorical) to exploratory VST QC. Continuous-effect hypothesis tests are outside this milestone.
+
 ## Reproducibility
 
 New projects use the execution image that matches the installed CLI version. A prerelease CLI likewise uses its explicit matching prerelease tag; publish and qualify that image before using the prerelease.

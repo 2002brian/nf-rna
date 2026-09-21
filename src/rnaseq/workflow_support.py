@@ -133,6 +133,25 @@ def _project(inputs: Path) -> dict[str, Any]:
     return value
 
 
+def _experimental_design_html(project: dict[str, Any], contrasts: list[dict[str, str]]) -> list[str]:
+    """Render the compact typed-design contract without claiming batch removal."""
+
+    design = project.get("design", {})
+    variables = design.get("variables", {}) if isinstance(design, dict) else {}
+    rows = ["<h2>Experimental design</h2>", f"<p>Design: <code>{escape(str(design.get('formula', 'not available')))}</code></p>"]
+    if isinstance(variables, dict) and variables:
+        rows.extend(["<table><thead><tr><th>Variable</th><th>Type</th></tr></thead><tbody>"])
+        rows.extend(f"<tr><td>{escape(str(name))}</td><td>{escape(str(kind))}</td></tr>" for name, kind in variables.items())
+        rows.append("</tbody></table>")
+    for contrast in contrasts:
+        adjustments = [name for name in variables if name != contrast["factor"]] if isinstance(variables, dict) else []
+        adjustment_text = f", adjusted for {', '.join(adjustments)}" if adjustments else ""
+        rows.append(f"<p>Differential expression: {escape(contrast['numerator'])} vs {escape(contrast['denominator'])}{escape(adjustment_text)}.</p>")
+    if isinstance(variables, dict) and variables.get("batch") == "categorical":
+        rows.append("<p>Known batch was included as a categorical DESeq2 adjustment covariate; raw counts were not batch-corrected before inference.</p>")
+    return rows
+
+
 def _samples(inputs: Path) -> list[str]:
     inputs_root, manifest = _read_execution_inputs(inputs)
     samples = manifest.get("samples")
@@ -248,6 +267,7 @@ def l1_config(contract_path: Path, inputs: Path, output: Path) -> dict[str, Any]
         "metadata": str(_staged_file(root, manifest.get("metadata"), "metadata")),
         "formula": project["design"]["formula"],
         "pair_id": project["design"].get("pair_id", project["design"].get("pairing_column")),
+        "design_variable_types": project["design"].get("variables", {}),
         "samples": _samples(inputs),
         "output_dir": str(output),
         "filter": FILTER,
@@ -267,6 +287,7 @@ def l2_config(contract_path: Path, inputs: Path, l1: Path, output: Path) -> dict
         "metadata": str(metadata),
         "formula": project["design"]["formula"],
         "pair_id": project["design"].get("pair_id", project["design"].get("pairing_column")),
+        "design_variable_types": project["design"].get("variables", {}),
         "samples": _samples(inputs),
         "output_dir": str(output),
         "filter": FILTER,
@@ -436,6 +457,7 @@ def _report_l1_only(
         f"<li>Configured contrasts: {len(contrasts)}</li>"
         "<li>Requested analysis level: L1</li>"
         "</ul>",
+        *_experimental_design_html(project, contrasts),
         "<h2>L1 — quality control</h2>",
         "<ul>"
         f"<li>Genes input: {_value(l1_summary, 'genes_input')}</li>"
@@ -448,6 +470,7 @@ def _report_l1_only(
         "<li>Samples are never automatically excluded by this pipeline.</li>"
         "</ul>",
         _image_html(l1 / "pca.png", "PCA"),
+        _image_html(l1 / "pca_by_batch.png", "PCA colored by batch"),
         _top_table_html(l1 / "pca_variance.tsv", ("component", "proportion_variance"), top_n=2),
         _top_table_html(l1 / "library_size_qc.tsv", ("sample_id", "input_total", "retained_total", "size_factor", "normalized_total"), top_n=20),
         _image_html(l1 / "sample_correlation.png", "Sample correlation (blind VST)"),
@@ -509,6 +532,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
         f"<li>Design: <code>{escape(str(project['design']['formula']))}</code></li>"
         f"<li>Configured contrasts: {len(contrasts)}</li>"
         "</ul>",
+        *_experimental_design_html(project, contrasts),
         "<h2>L1 — quality control</h2>",
         "<ul>"
         f"<li>Genes input: {_value(l1_summary, 'genes_input')}</li>"
@@ -521,6 +545,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
         "<li>Samples are never automatically excluded by this pipeline.</li>"
         "</ul>",
         _image_html(l1 / "pca.png", "PCA"),
+        _image_html(l1 / "pca_by_batch.png", "PCA colored by batch"),
         _top_table_html(l1 / "pca_variance.tsv", ("component", "proportion_variance"), top_n=2),
         _top_table_html(l1 / "library_size_qc.tsv", ("sample_id", "input_total", "retained_total", "size_factor", "normalized_total"), top_n=20),
         _image_html(l1 / "sample_correlation.png", "Sample correlation (blind VST)"),

@@ -13,7 +13,14 @@ from pathlib import Path
 from typing import Iterable
 
 from rnaseq.errors import ProjectConfigError
-from rnaseq.models import DesignType, InputType, Preset, ProjectConfig, SequencingLayout
+from rnaseq.models import (
+    DesignType,
+    InputType,
+    MetadataVariableType,
+    Preset,
+    ProjectConfig,
+    SequencingLayout,
+)
 from rnaseq.project import LoadedProject, load_project
 from rnaseq.references import (
     LOCAL_REFERENCE_MANIFEST_VERSION,
@@ -128,6 +135,7 @@ class ValidationReport:
     project_dir: Path
     loaded: LoadedProject | None = None
     formula_variables: tuple[str, ...] = ()
+    design_variable_types: OrderedDict[str, str] = field(default_factory=OrderedDict)
     counts: CountsSummary | None = None
     fastq: FastqSummary | None = None
     local_reference: LocalReference | None = None
@@ -445,6 +453,7 @@ def validate_fastq(
 def validate_metadata(
     path: Path,
     required_variables: Iterable[str],
+    declared_variable_types: dict[str, MetadataVariableType] | None,
     report: ValidationReport,
 ) -> MetadataSummary | None:
     if not path.exists():
@@ -507,6 +516,17 @@ def validate_metadata(
                         f"Metadata value for required design variable {variable!r} is missing "
                         f"at line {line_number}.",
                     )
+                elif declared_variable_types and declared_variable_types.get(variable) is MetadataVariableType.CONTINUOUS:
+                    try:
+                        number = float(record[variable])
+                    except ValueError:
+                        number = float("nan")
+                    if not math.isfinite(number):
+                        report.error(
+                            "invalid_continuous_value",
+                            f"Continuous design variable {variable!r} must contain finite numeric values; "
+                            f"sample {sample_id!r} at line {line_number} has {record[variable]!r}.",
+                        )
             rows.append(record)
 
     if not rows:
@@ -518,6 +538,7 @@ def validate_contrasts(
     path: Path,
     metadata: MetadataSummary | None,
     formula_variables: tuple[str, ...],
+    design_variable_types: dict[str, str],
     report: ValidationReport,
 ) -> ContrastsSummary | None:
     if not path.exists():
@@ -572,6 +593,11 @@ def validate_contrasts(
                 report.error(
                     "contrast_factor_not_in_design",
                     f"Contrast factor {factor!r} is not present in the design formula.",
+                )
+            elif design_variable_types.get(factor) == MetadataVariableType.CONTINUOUS.value:
+                report.error(
+                    "continuous_contrast_factor",
+                    f"Contrast factor {factor!r} is continuous. Numerator/denominator contrasts require a categorical variable.",
                 )
             if metadata is not None:
                 if factor not in metadata.columns:
@@ -806,6 +832,61 @@ def _numeric_column(values: list[str]) -> list[float] | None:
     return parsed
 
 
+def _resolve_design_variable_types(report: ValidationReport) -> None:
+    """Resolve explicit types, retaining the legacy numeric heuristic only when absent."""
+
+    if report.config is None or report.metadata is None:
+        return
+    declared = report.config.design.variables
+    formula = report.formula_variables
+    if declared is not None:
+        extras = sorted(set(declared) - set(formula))
+        missing = sorted(set(formula) - set(declared))
+        if extras:
+            report.error(
+                "declared_design_variable_not_in_formula",
+                "design.variables declares variable(s) not used by the formula: " + ", ".join(extras),
+            )
+        if missing:
+            report.error(
+                "undeclared_design_variable_type",
+                "design.variables must declare every formula variable: " + ", ".join(missing),
+            )
+        resolved = OrderedDict((variable, declared[variable].value) for variable in formula if variable in declared)
+    else:
+        contrast_factors = {
+            contrast.factor for contrast in report.contrasts.contrasts
+        } if report.contrasts is not None else set()
+        resolved = OrderedDict()
+        for variable in formula:
+            values = [record[variable] for record in report.metadata.rows]
+            if variable == report.config.design.pair_id or variable in contrast_factors:
+                resolved[variable] = MetadataVariableType.CATEGORICAL.value
+            else:
+                resolved[variable] = (
+                    MetadataVariableType.CONTINUOUS.value
+                    if _numeric_column(values) is not None
+                    else MetadataVariableType.CATEGORICAL.value
+                )
+    report.design_variable_types = resolved
+
+
+def _confounded_categorical_variables(
+    metadata: MetadataSummary, variable_types: dict[str, str], formula_variables: tuple[str, ...]
+) -> tuple[str, str] | None:
+    categorical = [name for name in formula_variables if variable_types.get(name) == MetadataVariableType.CATEGORICAL.value]
+    for index, left in enumerate(categorical):
+        for right in categorical[index + 1:]:
+            left_to_right: dict[str, set[str]] = {}
+            right_to_left: dict[str, set[str]] = {}
+            for record in metadata.rows:
+                left_to_right.setdefault(record[left], set()).add(record[right])
+                right_to_left.setdefault(record[right], set()).add(record[left])
+            if all(len(values) == 1 for values in left_to_right.values()) and all(len(values) == 1 for values in right_to_left.values()):
+                return left, right
+    return None
+
+
 def _matrix_rank(matrix: list[list[float]], *, tolerance: float = 1e-10) -> int:
     """Return numeric rank using deterministic Gaussian elimination."""
 
@@ -840,14 +921,23 @@ def _validate_model_matrix(report: ValidationReport) -> None:
         return
     if any(variable not in report.metadata.columns for variable in report.formula_variables):
         return
-    categorical = {contrast.factor for contrast in report.contrasts.contrasts}
-    if report.config.design.pair_id:
-        categorical.add(report.config.design.pair_id)
+    variable_types = report.design_variable_types
+    if set(variable_types) != set(report.formula_variables):
+        return
     columns: list[tuple[str, list[float]]] = [("(Intercept)", [1.0] * len(report.metadata.rows))]
     for variable in report.formula_variables:
         values = [record[variable] for record in report.metadata.rows]
-        numeric = None if variable in categorical else _numeric_column(values)
-        if numeric is not None:
+        if variable_types[variable] == MetadataVariableType.CONTINUOUS.value:
+            numeric = _numeric_column(values)
+            if numeric is None:
+                # Explicit continuous data was already diagnosed in metadata validation.
+                return
+            if len(set(numeric)) < 2:
+                report.error(
+                    "zero_variance_continuous_variable",
+                    f"Continuous design variable {variable!r} has no usable variation and cannot be estimated.",
+                )
+                return
             columns.append((variable, numeric))
             continue
         levels = sorted(set(values))
@@ -866,11 +956,17 @@ def _validate_model_matrix(report: ValidationReport) -> None:
     matrix = [[column[row] for _name, column in columns] for row in range(len(report.metadata.rows))]
     rank = _matrix_rank(matrix)
     if rank < len(columns):
+        confounded = _confounded_categorical_variables(report.metadata, variable_types, report.formula_variables)
+        detail = (
+            f"Variables {confounded[0]!r} and {confounded[1]!r} are confounded in the supplied metadata."
+            if confounded is not None
+            else "Remove a confounded or redundant covariate, or correct the biological pairing/condition assignments."
+        )
         report.error(
             "rank_deficient_design",
-            "The additive DESeq2 design matrix is rank deficient "
-            f"(rank {rank} for {len(columns)} columns). Remove a confounded or redundant "
-            "covariate, or correct the biological pairing/condition assignments.",
+            "Design matrix is not full rank "
+            f"(rank {rank} for {len(columns)} columns). {detail} "
+            "Remove a confounded or redundant covariate rather than attempting automatic repair.",
         )
 
 
@@ -942,15 +1038,25 @@ def validate_project(project_dir: Path | str) -> ValidationReport:
     # incomplete until a project is promoted to L1/L2.
     if report.config.project.preset is Preset.QC:
         return report
+    declared_types = report.config.design.variables
     report.metadata = validate_metadata(
-        report.loaded.metadata_path, report.formula_variables, report
+        report.loaded.metadata_path, report.formula_variables, declared_types, report
     )
+    # Explicit declarations are authoritative and can be checked immediately.
+    # Legacy contrast factors remain categorical even when their labels happen
+    # to look numeric, so defer their historical inference until contrasts load.
+    if declared_types is not None:
+        _resolve_design_variable_types(report)
     report.contrasts = validate_contrasts(
         report.loaded.contrasts_path,
         report.metadata,
         report.formula_variables,
+        report.design_variable_types,
         report,
     )
+    # Legacy projects classify contrast factors categorically once contrasts load.
+    if declared_types is None:
+        _resolve_design_variable_types(report)
     if report.counts is not None and report.metadata is not None:
         _validate_sample_agreement(report.counts, report.metadata, report)
     if report.fastq is not None and report.metadata is not None:

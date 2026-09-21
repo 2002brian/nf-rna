@@ -144,6 +144,10 @@ def render_analysis_plan(report: ValidationReport) -> str:
         "Only variables explicitly present in the formula are part of the planned design. Additional metadata columns are preserved but are not added automatically.",
         "", "## Contrasts", "",
         ])
+        if report.design_variable_types:
+            lines.extend(["### Variable types", ""])
+            lines.extend(f"- `{name}`: `{variable_type}`" for name, variable_type in report.design_variable_types.items())
+            lines.append("")
         lines.extend(_contrast_lines(report))
         if report.pairing is not None:
             lines.extend([
@@ -293,6 +297,7 @@ def render_manifest(report: ValidationReport) -> str:
         "design": {
             "type": config.design.type.value,
             "formula": config.design.formula,
+            "variables": dict(report.design_variable_types),
             **({"pair_id": config.design.pair_id, "pairing": pairing_contract(report)} if config.design.pair_id else {}),
         },
         "planned_downstream": {
