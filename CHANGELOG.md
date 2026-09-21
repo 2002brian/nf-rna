@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## 1.1.2 — 2026-09-21
+
+- Replaced the custom GHCR registry preflight with standard GitHub and Docker publishing actions for stable release tags.
+- `v1.1.0` and `v1.1.1` remain valid source releases, but neither has an official GHCR image because publication stopped before image build or push. Official GHCR distribution begins with `v1.1.2`.
+- This release contains no scientific-analysis, R, or Nextflow changes.
+
 ## 1.1.1 — 2026-09-21
 
 - Fixed the fail-closed GHCR registry check to normalize case-insensitive HTTP challenge field names before validating the exact trusted GHCR Bearer challenge.

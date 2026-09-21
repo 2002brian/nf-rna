@@ -62,7 +62,7 @@ Java 與 Nextflow 在 host 執行。R、DESeq2、HISAT2、featureCounts、SAMtoo
 
 ## 安裝
 
-nf-rna 沒有 PyPI distribution。自 `v1.1.1` release 起，official image 會以
+nf-rna 沒有 PyPI distribution。自 `v1.1.2` release 起，official image 會以
 `ghcr.io/2002brian/nf-rna:X.Y.Z` 發布；請從 Git tag 安裝已發布的 CLI，並 pull
 對應 image。將 `X.Y.Z` 換成想使用的已發布版本：
 
@@ -83,30 +83,18 @@ release contract 為：
 CLI X.Y.Z  ↔  Git tag vX.Y.Z  ↔  ghcr.io/2002brian/nf-rna:X.Y.Z
 ```
 
-prerelease 只使用一種 canonical identity：Git tag 為 `vX.Y.Z-rcN`（或
-`-aN`／`-bN`）、package version 為 `X.Y.ZrcN`（或 `aN`／`bN`），explicit
-image tag 為 `X.Y.Z-rcN`。prerelease 絕不更新 `latest`；其他 prerelease tag
-拼寫會被拒絕，以確保 immutable package 與 image identity 唯一。
-
-發布前，workflow 會以 OCI Distribution API 檢查 immutable version tag。
-只有結構化的 `404 MANIFEST_UNKNOWN`（tag 不存在）或 `404 NAME_UNKNOWN`
-（首次發布、package 尚不存在）可以繼續；已存在的 manifest，以及
-authentication／authorization、rate limit、network、server、malformed response
-或其他不確定狀態一律 fail closed。version tag 一定先於 stable `latest` push。
-同一 release tag 的 workflow concurrency 可避免一般重複執行，但外部 registry
-仍可能在 check 與 push 間被變更；這是無法提供 registry-level atomicity 的殘餘
-TOCTOU risk。
-
-官方 GHCR 執行映像目前僅針對 `linux/amd64` 完成資格驗證。
-`linux/arm64` 尚未經獨立驗證，不應視為正式支援的平台。
-
 `v1.0.0` 是 immutable 的歷史 GitHub Release，早於 GHCR publication，
 因此沒有 official container image。若需使用該歷史版本或進行開發，請自行
 從 source build image。
 
-`v1.1.0` 仍是有效的 source release，但 fail-closed registry check 在 image
-build 或 push 前停止 publication，因此沒有 official GHCR image。official GHCR
-distribution 延後至 `v1.1.1`；此 hotfix 不改變 scientific analysis。
+`v1.1.0` 與 `v1.1.1` 仍是有效的 source release，但兩者的 publication workflow
+都在 image build 或 push 前停止，因此沒有 official GHCR image。official GHCR
+distribution 自 `v1.1.2` 開始；此 release 不改變 scientific analysis、R 或
+Nextflow。
+
+官方 GHCR 執行映像目前僅針對 `linux/amd64` 完成資格驗證。
+`linux/arm64` 尚未經獨立驗證，不應視為正式支援的平台。正式分析應使用明確的
+version tag 或 immutable digest；`latest` 僅為 convenience tag。
 
 `rnaseq doctor` 是 read-only 檢查；它會驗證 host 與本機 image，但不會 pull 或 build image。
 
