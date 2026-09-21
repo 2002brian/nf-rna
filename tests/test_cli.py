@@ -10,6 +10,7 @@ from pathlib import Path
 import yaml
 from typer.testing import CliRunner
 
+from rnaseq import __version__
 from rnaseq.cli import _prompt_toolkit_choice_prompt, _wizard_completion_candidates, _wizard_tab_completion, app
 from rnaseq.models import DEFAULT_EXECUTION_IMAGE
 
@@ -19,7 +20,7 @@ runner = CliRunner()
 def test_version_reports_the_authoritative_package_version():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0, result.output
-    assert result.output == "1.1.2\n"
+    assert result.output == f"{__version__}\n"
 
 
 def test_wizard_completion_candidates_match_only_canonical_prefixes():
@@ -486,7 +487,7 @@ def test_plan_is_deterministic_and_records_schema_version():
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     assert manifest["schema"]["project_schema_version"] == "1.0"
     assert isinstance(manifest["schema"]["project_schema_version"], str)
-    assert manifest["pipeline"]["version"] == "1.1.2"
+    assert manifest["pipeline"]["version"] == __version__
 
     second = runner.invoke(app, ["plan", str(example)])
     assert second.exit_code == 0, second.output
