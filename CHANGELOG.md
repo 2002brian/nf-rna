@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## 1.2.0 — 2026-09-21
+
+- Added explicitly typed categorical and continuous metadata covariates for generalized additive fixed-effect DESeq2 designs.
+- Added covariate-adjusted differential expression for designs such as `~ age + condition`, `~ batch + condition`, and `~ batch + age + condition`, while preserving paired designs and directional categorical contrasts.
+- Added known-batch adjustment through the DESeq2 design without modifying raw counts, together with batch-aware PCA outputs.
+- Added preflight full-rank model-matrix validation and schema 1.3 while retaining read compatibility with project schemas 1.0–1.2.
+- Extended scientific provenance with fitted categorical levels, continuous-variable summaries, model-matrix rank and columns, and the actual DESeq2 fit method.
+- Qualified the generalized-design milestone on both raw-count and Salmon/tximport Docker/Nextflow production routes, including preservation of tximport normalization offsets.
+
 ## 1.1.2 — 2026-09-21
 
 - Replaced the custom GHCR registry preflight with standard GitHub and Docker publishing actions for stable release tags.
