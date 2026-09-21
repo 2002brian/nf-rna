@@ -194,11 +194,16 @@ def _basic_authorization(username: str, token: str) -> str:
 
 
 def _open(request: Request, opener: Callable[..., object]) -> HttpResult:
+    def normalized_headers(headers: object) -> dict[str, str]:
+        """Store HTTP field names canonically; HTTP header names are case-insensitive."""
+
+        return {str(name).lower(): str(value) for name, value in headers.items()}  # type: ignore[union-attr]
+
     try:
         with opener(request, timeout=20) as response:
-            return HttpResult(response.status, dict(response.headers.items()), response.read())
+            return HttpResult(response.status, normalized_headers(response.headers), response.read())
     except HTTPError as error:
-        return HttpResult(error.code, dict(error.headers.items()), error.read())
+        return HttpResult(error.code, normalized_headers(error.headers), error.read())
 
 
 def _parse_bearer_challenge(challenge: str) -> dict[str, str]:
@@ -304,7 +309,7 @@ def check_registry_tag(
     try:
         result = _open(Request(url, headers=headers), opener)
         if result.status == 401:
-            challenge = result.headers.get("WWW-Authenticate", "")
+            challenge = result.headers.get("www-authenticate", "")
             bearer = _bearer_token(challenge, username, token, opener)
             result = _open(
                 Request(url, headers={"Accept": OCI_MANIFEST_ACCEPT, "Authorization": f"Bearer {bearer}"}),
