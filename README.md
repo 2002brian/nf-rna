@@ -62,7 +62,7 @@ Java and Nextflow run on the host. R, DESeq2, HISAT2, featureCounts, SAMtools, a
 
 ## Installation
 
-nf-rna has no PyPI distribution. Beginning with the `v1.1.1` release, official
+nf-rna has no PyPI distribution. Beginning with the `v1.1.2` release, official
 images are published as `ghcr.io/2002brian/nf-rna:X.Y.Z`; install the released
 CLI from its Git tag and pull its matching image. Replace `X.Y.Z` with the
 released version you intend to use:
@@ -84,23 +84,18 @@ The release contract is deliberate:
 CLI X.Y.Z  ↔  Git tag vX.Y.Z  ↔  ghcr.io/2002brian/nf-rna:X.Y.Z
 ```
 
-Prereleases use one canonical identity: Git tag `vX.Y.Z-rcN` (or `-aN`/`-bN`),
-package version `X.Y.ZrcN` (or `aN`/`bN`), and explicit image tag
-`X.Y.Z-rcN`. Prereleases never update `latest`; alternate prerelease tag
-spellings are rejected to keep immutable package and image identities unique.
-
 `v1.0.0` is an immutable historical GitHub Release and predates GHCR
 publication; it has no official container image. Build from source only when
 working with that historical release or developing the project.
 
-`v1.1.0` remains a valid source release, but its fail-closed registry check
-stopped publication before an image was built or pushed, so it has no official
-GHCR image. Official GHCR distribution is deferred to `v1.1.1`; that hotfix
-does not change scientific analysis.
+`v1.1.0` and `v1.1.1` remain valid source releases, but neither has an official
+GHCR image: their publication workflows stopped before image build or push.
+Official GHCR distribution begins with `v1.1.2`, which contains no scientific,
+R, or Nextflow changes.
 
 Official release images are qualified for `linux/amd64`. `linux/arm64` is not
 yet independently qualified. Prefer an explicit version tag or immutable
-digest over `:latest`.
+digest over `:latest`; `latest` is a convenience tag only.
 
 `rnaseq doctor` is read-only: it verifies the host environment and locally available image but does not pull or build images.
 
