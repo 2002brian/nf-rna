@@ -245,7 +245,8 @@ def test_new_scaffolds_explicit_paired_contract_without_biological_data(tmp_path
     assert result.exit_code == 0, result.output
     config = yaml.safe_load((tmp_path / "paired-scaffold" / "project.yaml").read_text())
     assert config["design"] == {
-        "type": "paired_two_group", "formula": "~ donor + condition", "pair_id": "donor"
+        "type": "paired_two_group", "formula": "~ donor + condition", "pair_id": "donor",
+        "variables": {"donor": "categorical", "condition": "categorical"},
     }
     assert (tmp_path / "paired-scaffold" / "metadata.csv").read_text() == "sample_id,donor,condition\n"
 

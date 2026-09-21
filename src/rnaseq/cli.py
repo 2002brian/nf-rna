@@ -523,6 +523,7 @@ def new_project(
     design_type: str | None = typer.Option(None, "--design-type", help="two_group, paired_two_group, or multi_group."),
     condition_column: str | None = typer.Option(None, "--condition-column", help="Imported metadata factor used for contrasts and the design formula."),
     covariate: list[str] | None = typer.Option(None, "--covariate", help="Additional imported metadata field; repeat as needed."),
+    continuous_covariate: list[str] | None = typer.Option(None, "--continuous-covariate", help="Imported numeric adjustment variable; repeat as needed."),
     pair_id: str | None = typer.Option(None, "--pair-id", "--pairing-column", help="Imported metadata column identifying biological pairs."),
     execution_profile: str | None = typer.Option(None, "--execution-profile", help="Only local is supported."),
     cpus: int | None = typer.Option(None, "--cpus", help="Total local Nextflow CPU ceiling, not per-task CPUs."),
@@ -532,7 +533,7 @@ def new_project(
 ) -> None:
     """Create a reviewed RNA-seq project interactively or from explicit flags."""
 
-    noninteractive = any(value is not None for value in (name, destination, species, input_type, fastq_samplesheet, counts, metadata, contrasts, layout, preprocessing, method, strandedness, reference_source, reference_root, reference_manifest, reference_fasta, reference_gtf, reference_transcript_fasta, reference_salmon_index, reference_hisat2_index, preset, design_type, condition_column, covariate, pair_id, execution_profile, cpus, memory_gb)) or scaffold or yes
+    noninteractive = any(value is not None for value in (name, destination, species, input_type, fastq_samplesheet, counts, metadata, contrasts, layout, preprocessing, method, strandedness, reference_source, reference_root, reference_manifest, reference_fasta, reference_gtf, reference_transcript_fasta, reference_salmon_index, reference_hisat2_index, preset, design_type, condition_column, covariate, continuous_covariate, pair_id, execution_profile, cpus, memory_gb)) or scaffold or yes
     selected_managed_reference: LocalReference | None = None
     try:
         if not noninteractive and not _is_interactive_terminal():
@@ -587,8 +588,11 @@ def new_project(
                 condition_column = _wizard_choice("Condition/contrast field", [(field, f"levels: {', '.join(fields_by_level[field]) or 'none'}") for field in fields], default=fields[0])
                 remaining = [field for field in fields if field != condition_column]
                 covariate = []
+                continuous_covariate = []
                 if remaining and typer.confirm("Add a covariate to the design?", default=False):
-                    covariate.append(_wizard_choice("Covariate", [(field, f"levels: {', '.join(fields_by_level[field]) or 'none'}") for field in remaining], default=remaining[0]))
+                    selected_covariate = _wizard_choice("Covariate", [(field, f"values: {', '.join(fields_by_level[field]) or 'none'}") for field in remaining], default=remaining[0])
+                    variable_type = _wizard_choice("Covariate type", [("categorical", "factor adjustment variable"), ("continuous", "finite numeric adjustment variable")], default="categorical")
+                    (continuous_covariate if variable_type == "continuous" else covariate).append(selected_covariate)
                 if design_type == "paired_two_group":
                     candidates = [field for field in fields if field != condition_column]
                     if not candidates:
@@ -620,9 +624,12 @@ def new_project(
         if normalized_design is DesignType.PAIRED_TWO_GROUP and (pair_id is None or not pair_id.strip()):
             raise ProjectCreationError("paired_two_group requires an explicit --pair-id metadata column.")
         formula: str | None = None
+        design_variables: dict[str, str] | None = None
         if normalized_preset is not Preset.QC and metadata is not None and condition_column is not None:
             fields_by_level, available_fields = _metadata_fields(metadata)
-            selected_covariates = covariate or []
+            categorical_covariates = covariate or []
+            continuous_covariates = continuous_covariate or []
+            selected_covariates = [*categorical_covariates, *continuous_covariates]
             required_fields = [*selected_covariates, condition_column]
             if normalized_design is DesignType.PAIRED_TWO_GROUP:
                 if pair_id is None:
@@ -635,6 +642,12 @@ def new_project(
             # with the contrast factor last. Pairing identity itself is stored
             # explicitly and never inferred from this ordering.
             formula = "~ " + " + ".join(dict.fromkeys(required_fields))
+            if condition_column in continuous_covariates:
+                raise ProjectCreationError("--condition-column is a categorical contrast factor and cannot be continuous.")
+            if pair_id is not None and pair_id in continuous_covariates:
+                raise ProjectCreationError("--pair-id is categorical and cannot be listed as --continuous-covariate.")
+            design_variables = {field: "categorical" for field in required_fields}
+            design_variables.update({field: "continuous" for field in continuous_covariates})
         normalized_layout = SequencingLayout(layout) if layout else (None if fastq_samplesheet else SequencingLayout.PAIRED_END)
         normalized_preprocessing = FastqPreprocessing(preprocessing or "raw")
         normalized_method = method or "salmon"
@@ -683,13 +696,13 @@ def new_project(
                     reference_source=None, reference_root=None, reference_manifest=None,
                     reference_fasta=None, reference_gtf=None, reference_transcript_fasta=None,
                     reference_salmon_index=None, reference_hisat2_index=None, preset=None,
-                    design_type=None, condition_column=None, covariate=None, pair_id=None,
+                    design_type=None, condition_column=None, covariate=None, continuous_covariate=None, pair_id=None,
                     execution_profile=None, cpus=None, memory_gb=None,
                     scaffold=False, yes=False,
                 )
             typer.echo("Project creation cancelled; no project was written.")
             return
-        target = create_project(project_name=name, destination=destination, species=normalized_species, preset=normalized_preset, design_type=normalized_design, input_type=normalized_input, layout=normalized_layout, preprocessing=normalized_preprocessing, strandedness=normalized_strand, quantification_method=normalized_method, reference=reference, fastq_samplesheet=fastq_samplesheet, counts_file=counts, metadata_file=metadata, contrasts_file=contrasts, scaffold=scaffold, formula=formula, pair_id=pair_id, execution=execution)
+        target = create_project(project_name=name, destination=destination, species=normalized_species, preset=normalized_preset, design_type=normalized_design, input_type=normalized_input, layout=normalized_layout, preprocessing=normalized_preprocessing, strandedness=normalized_strand, quantification_method=normalized_method, reference=reference, fastq_samplesheet=fastq_samplesheet, counts_file=counts, metadata_file=metadata, contrasts_file=contrasts, scaffold=scaffold, formula=formula, pair_id=pair_id, design_variables=design_variables, execution=execution)
     except (ValueError, ProjectCreationError) as exc:
         typer.echo(f"ERROR: {exc}", err=True)
         raise typer.Exit(code=1) from exc

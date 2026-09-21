@@ -10,13 +10,23 @@ metadata <- read.csv(cfg$metadata, check.names = FALSE, stringsAsFactors = FALSE
 rownames(metadata) <- metadata$sample_id
 samples <- unlist(cfg$samples, use.names = FALSE)
 metadata <- metadata[samples, , drop = FALSE]
+if (!is.null(cfg$design_variable_types)) {
+  for (variable in names(cfg$design_variable_types)) {
+    if (!(variable %in% colnames(metadata))) stop(paste("configured design variable is absent from metadata:", variable))
+    if (cfg$design_variable_types[[variable]] == "categorical") metadata[[variable]] <- factor(metadata[[variable]])
+    if (cfg$design_variable_types[[variable]] == "continuous") {
+      metadata[[variable]] <- as.numeric(metadata[[variable]])
+      if (any(!is.finite(metadata[[variable]]))) stop(paste("continuous design variable is not finite:", variable))
+    }
+  }
+}
 if (!is.null(cfg$pair_id)) {
   if (!(cfg$pair_id %in% colnames(metadata))) stop("configured pair_id is absent from metadata")
   metadata[[cfg$pair_id]] <- factor(metadata[[cfg$pair_id]])
 }
-nf_rna_write_provenance(cfg, cfg$output_dir, "L2", "SUCCESS", c("DESeq2", "tximport", "ggplot2", "pheatmap", "jsonlite"), list(contrast_count=length(cfg$contrasts), independent_filtering=TRUE))
 for (factor_name in unique(vapply(cfg$contrasts, function(item) item$factor, character(1)))) {
   if (!(factor_name %in% colnames(metadata))) stop(paste("contrast factor is absent from metadata:", factor_name))
+  if (!is.null(cfg$design_variable_types) && identical(cfg$design_variable_types[[factor_name]], "continuous")) stop(paste("continuous variable cannot be used as contrast factor:", factor_name))
   metadata[[factor_name]] <- factor(metadata[[factor_name]])
 }
 formula <- as.formula(cfg$formula)
@@ -54,6 +64,46 @@ if (inherits(fit, "error")) {
   dds <- nbinomWaldTest(dds)
   fit_method <- "DESeq2 gene-wise dispersion fallback after default trend-fit failure"
 } else dds <- fit
+
+# This is intentionally derived after DESeq2 has constructed and fitted the
+# object.  It therefore records the actual typed colData and model matrix, not
+# a parallel reconstruction in the control plane.
+model_metadata <- as.data.frame(colData(dds))
+model_variables <- all.vars(design(dds))
+variable_details <- list()
+for (variable in model_variables) {
+  values <- model_metadata[[variable]]
+  if (is.factor(values)) {
+    variable_details[[variable]] <- list(type = "categorical", levels = as.character(levels(values)))
+  } else if (is.numeric(values)) {
+    numeric_values <- as.numeric(values)
+    variable_details[[variable]] <- list(
+      type = "continuous",
+      n = length(numeric_values),
+      min = min(numeric_values),
+      max = max(numeric_values),
+      mean = mean(numeric_values)
+    )
+  } else {
+    stop(paste("fitted design variable has unsupported R representation:", variable))
+  }
+}
+model_matrix <- model.matrix(design(dds), model_metadata)
+design_details <- list(
+  declared_variable_types = cfg$design_variable_types %||% list()
+)
+if (!is.null(cfg$pair_id)) {
+  design_details$pair_id <- cfg$pair_id
+}
+design_details <- c(design_details, list(
+  variables = variable_details,
+  model_matrix = list(
+    rank = qr(model_matrix)$rank,
+    column_count = ncol(model_matrix),
+    full_rank = qr(model_matrix)$rank == ncol(model_matrix),
+    column_names = colnames(model_matrix)
+  )
+))
 vst_table <- read.delim(cfg$l1_vst, check.names = FALSE, stringsAsFactors = FALSE)
 rownames(vst_table) <- vst_table[[1]]
 vst_matrix <- as.matrix(vst_table[, samples, drop = FALSE])
@@ -96,3 +146,9 @@ for (item in cfg$contrasts) {
   summary <- list(input_genes = nrow(source_counts), filtered_genes = sum(!keep), retained_genes = sum(keep), tested_genes = tested, pvalue_na = sum(is.na(result_df$pvalue)), padj_na = sum(is.na(result_df$padj)), independent_filtering = TRUE, multiple_testing_method = "Benjamini-Hochberg (DESeq2 default)", fit_method = fit_method, heatmap_status = heatmap_status, heatmap_top_n = cfg$heatmap_top_n)
   write(toJSON(summary, auto_unbox = TRUE, pretty = TRUE), file.path(directory, "backend_summary.json"))
 }
+nf_rna_write_provenance(
+  cfg, cfg$output_dir, "L2", "SUCCESS",
+  c("DESeq2", "tximport", "ggplot2", "pheatmap", "jsonlite"),
+  list(contrast_count = length(cfg$contrasts), independent_filtering = TRUE, fit_method = fit_method),
+  design_details
+)

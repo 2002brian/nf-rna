@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, m
 
 from rnaseq import __version__
 
-SUPPORTED_SCHEMA_VERSION = "1.2"
+SUPPORTED_SCHEMA_VERSION = "1.3"
 LEGACY_SCHEMA_VERSION = "1.0"
 PIPELINE_VERSION = __version__
 OFFICIAL_EXECUTION_IMAGE_REPOSITORY = "ghcr.io/2002brian/nf-rna"
@@ -56,6 +56,13 @@ class DesignType(str, Enum):
     TWO_GROUP = "two_group"
     MULTI_GROUP = "multi_group"
     PAIRED_TWO_GROUP = "paired_two_group"
+
+
+class MetadataVariableType(str, Enum):
+    """Statistical representation of a design variable in DESeq2."""
+
+    CATEGORICAL = "categorical"
+    CONTINUOUS = "continuous"
 
 
 class InputType(str, Enum):
@@ -117,6 +124,7 @@ class InputConfig(StrictModel):
 class DesignConfig(StrictModel):
     type: DesignType
     formula: StrictStr
+    variables: dict[StrictStr, MetadataVariableType] | None = None
     pair_id: StrictStr | None = None
 
     @model_validator(mode="before")
@@ -137,12 +145,18 @@ class DesignConfig(StrictModel):
 
     @model_validator(mode="after")
     def validate_pairing_contract(self) -> "DesignConfig":
+        if self.variables is not None:
+            for name in self.variables:
+                if not name.strip():
+                    raise ValueError("design.variables cannot contain a blank variable name.")
         if self.type is DesignType.PAIRED_TWO_GROUP:
             if self.pair_id is None or not self.pair_id.strip():
                 raise ValueError(
                     "design.pair_id is required for a paired_two_group biological design; "
                     "it is independent of paired-end sequencing layout."
                 )
+            if self.variables is not None and self.variables.get(self.pair_id) not in {None, MetadataVariableType.CATEGORICAL}:
+                raise ValueError("design.pair_id must be declared categorical when listed in design.variables.")
         elif self.pair_id is not None:
             raise ValueError("design.pair_id is supported only when design.type is paired_two_group.")
         return self
@@ -449,7 +463,7 @@ class ProjectConfig(StrictModel):
     @field_validator("schema_version")
     @classmethod
     def validate_schema_version(cls, value: str) -> str:
-        if value not in {LEGACY_SCHEMA_VERSION, "1.1", SUPPORTED_SCHEMA_VERSION}:
+        if value not in {LEGACY_SCHEMA_VERSION, "1.1", "1.2", SUPPORTED_SCHEMA_VERSION}:
             raise ValueError(
                 f"Unsupported project schema version: {value}. "
                 f"Supported schema versions: {LEGACY_SCHEMA_VERSION}, 1.1, {SUPPORTED_SCHEMA_VERSION}"
@@ -494,8 +508,8 @@ class ProjectConfig(StrictModel):
                     "Production acceptance requires an immutable runtime.execution_image: "
                     "use an image digest or a versioned tag, never latest or an untagged reference."
                 )
-        if self.schema_version == SUPPORTED_SCHEMA_VERSION and self.analysis is None:
-            raise ValueError(f"schema_version {SUPPORTED_SCHEMA_VERSION} requires an explicit analysis.enrichment list (it may be empty).")
+        if self.schema_version in {"1.2", SUPPORTED_SCHEMA_VERSION} and self.analysis is None:
+            raise ValueError(f"schema_version {self.schema_version} requires an explicit analysis.enrichment list (it may be empty).")
         selected = self.analysis.enrichment if self.analysis is not None else ()
         if selected and self.annotation is None:
             raise ValueError("analysis.enrichment requires an explicit annotation contract.")

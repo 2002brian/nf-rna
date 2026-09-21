@@ -122,7 +122,7 @@ def test_new_creates_versioned_project_without_placeholder_counts(tmp_path):
     assert result.exit_code == 0, result.output
     root = tmp_path / "created_project"
     config = yaml.safe_load((root / "project.yaml").read_text(encoding="utf-8"))
-    assert config["schema_version"] == "1.2"
+    assert config["schema_version"] == "1.3"
     assert config["runtime"]["execution_image"] == DEFAULT_EXECUTION_IMAGE
     assert isinstance(config["schema_version"], str)
     assert (root / "input").is_dir()

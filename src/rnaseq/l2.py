@@ -15,7 +15,7 @@ import yaml
 
 from rnaseq.downstream import L1_FILTER, PreparedL1, _read_yaml, _require_r, _write, execute_l1, prepare_l1
 from rnaseq.errors import DownstreamExecutionError
-from rnaseq.models import PIPELINE_VERSION, DesignType, InputType, ProjectConfig
+from rnaseq.models import PIPELINE_VERSION, DesignType, InputType, MetadataVariableType, ProjectConfig
 from rnaseq.validators import CONTRAST_HEADER, ContrastDefinition, ValidationReport
 
 RESULT_HEADER = ("gene_id", "baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj")
@@ -55,7 +55,7 @@ def _read_metadata(path: Path) -> tuple[tuple[str, ...], tuple[dict[str, str], .
     return tuple(header), rows
 
 
-def _read_contrasts(path: Path, columns: tuple[str, ...], rows: tuple[dict[str, str], ...], formula: str) -> tuple[ContrastDefinition, ...]:
+def _read_contrasts(path: Path, columns: tuple[str, ...], rows: tuple[dict[str, str], ...], formula: str, variable_types: dict[str, str]) -> tuple[ContrastDefinition, ...]:
     try:
         with path.open(encoding="utf-8", newline="") as handle:
             reader = csv.reader(handle)
@@ -77,6 +77,10 @@ def _read_contrasts(path: Path, columns: tuple[str, ...], rows: tuple[dict[str, 
         seen.add(contrast_id)
         if factor not in columns or factor not in formula_variables:
             raise DownstreamExecutionError(f"L2 contrast factor {factor!r} is not available in the validated design.")
+        if variable_types.get(factor) == MetadataVariableType.CONTINUOUS.value:
+            raise DownstreamExecutionError(
+                f"L2 contrast factor {factor!r} is continuous; numerator/denominator contrasts require a categorical variable."
+            )
         levels = {row[factor] for row in rows}
         if numerator not in levels or denominator not in levels:
             raise DownstreamExecutionError(f"L2 contrast {contrast_id} has a numerator or denominator level absent from metadata.")
@@ -136,7 +140,11 @@ def prepare_l2(report: ValidationReport, *, run_id: str | None) -> PreparedL2:
         contrasts_path = run_dir / "frozen" / "contrasts.csv"
         output = run_dir / "downstream" / "l2"
     columns, metadata_rows = _read_metadata(metadata_path)
-    contrasts = _read_contrasts(contrasts_path, columns, metadata_rows, config.design.formula)
+    variable_types = (
+        {name: variable_type.value for name, variable_type in (config.design.variables or {}).items()}
+        or dict(l1.config.get("design_variable_types", {}))
+    )
+    contrasts = _read_contrasts(contrasts_path, columns, metadata_rows, config.design.formula, variable_types)
     _guard_replicates(config, metadata_rows, contrasts)
     return PreparedL2(l1, output, config, contrasts, metadata_rows)
 
@@ -236,12 +244,24 @@ def _provenance(prepared: PreparedL2, l1_summary: dict[str, Any]) -> dict[str, A
             "unique_pair_ids": len({row[pair_id] for row in prepared.metadata_rows}),
             "contrasts": contrast_stats,
         }
+    variable_types = dict(prepared.l1.config.get("design_variable_types", {}))
+    if prepared.config.design.variables is not None:
+        variable_types = {name: item.value for name, item in prepared.config.design.variables.items()}
+    variable_summary: dict[str, Any] = {}
+    for variable, variable_type in variable_types.items():
+        values = [row[variable] for row in prepared.metadata_rows]
+        if variable_type == MetadataVariableType.CONTINUOUS.value:
+            numeric = [float(value) for value in values]
+            variable_summary[variable] = {"type": variable_type, "n": len(numeric), "min": min(numeric), "max": max(numeric), "unique_values": len(set(numeric))}
+        else:
+            variable_summary[variable] = {"type": variable_type, "levels": sorted(set(values))}
     return {
         "pipeline": {"version": PIPELINE_VERSION, "analysis_level": "L2"},
         "input": prepared.l1.config,
         "design": {
             "type": prepared.config.design.type.value,
             "formula": prepared.config.design.formula,
+            "variables": variable_summary,
             **({"pair_id": prepared.config.design.pair_id} if prepared.config.design.pair_id else {}),
             **({"pairing": pairing} if pairing is not None else {}),
         },
@@ -268,6 +288,10 @@ def execute_l2(prepared: PreparedL2) -> L2Result:
     config = {
         **prepared.l1.config, "metadata": str(prepared.l1.metadata_path.resolve()), "formula": prepared.config.design.formula,
         "pair_id": prepared.config.design.pair_id,
+        "design_variable_types": (
+            {name: item.value for name, item in (prepared.config.design.variables or {}).items()}
+            or prepared.l1.config.get("design_variable_types", {})
+        ),
         "samples": list(prepared.l1.sample_ids), "output_dir": str(output.resolve()), "filter": L1_FILTER,
         "thresholds": {"padj": prepared.config.thresholds.padj, "abs_log2fc": prepared.config.thresholds.abs_log2fc},
         "contrasts": [{"contrast_id": item.contrast_id, "factor": item.factor, "numerator": item.numerator, "denominator": item.denominator} for item in prepared.contrasts],

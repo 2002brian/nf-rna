@@ -147,6 +147,7 @@ def _project_yaml(
     execution: dict[str, object] | None = None,
     formula: str | None = None,
     pair_id: str | None = None,
+    design_variables: dict[str, str] | None = None,
 ) -> str:
     formula = formula or (
         f"~ {pair_id or 'patient'} + condition"
@@ -167,6 +168,10 @@ def _project_yaml(
         "design": {
             "type": design_type.value,
             "formula": formula,
+            "variables": design_variables or {
+                variable: "categorical"
+                for variable in re.findall(r"[A-Za-z_][A-Za-z0-9_.]*", formula.removeprefix("~"))
+            },
             **({"pair_id": pair_id or "patient"} if design_type is DesignType.PAIRED_TWO_GROUP else {}),
         },
         "metadata_file": "metadata.csv",
@@ -295,6 +300,7 @@ def create_project(
     scaffold: bool = False,
     formula: str | None = None,
     pair_id: str | None = None,
+    design_variables: dict[str, str] | None = None,
     execution: dict[str, object] | None = None,
 ) -> Path:
     """Create a new project atomically and return its final path."""
@@ -389,7 +395,7 @@ def create_project(
             _project_yaml(
                 project_name, species, preset, design_type, input_type, layout,
                 preprocessing, strandedness, quantification_method,
-                resolved_reference, execution, formula, pair_id,
+                resolved_reference, execution, formula, pair_id, design_variables,
             ),
             encoding="utf-8",
             newline="\n",
