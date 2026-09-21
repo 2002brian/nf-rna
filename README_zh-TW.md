@@ -62,7 +62,7 @@ Java 與 Nextflow 在 host 執行。R、DESeq2、HISAT2、featureCounts、SAMtoo
 
 ## 安裝
 
-nf-rna 沒有 PyPI distribution。自 `v1.1.0` release 起，official image 會以
+nf-rna 沒有 PyPI distribution。自 `v1.1.1` release 起，official image 會以
 `ghcr.io/2002brian/nf-rna:X.Y.Z` 發布；請從 Git tag 安裝已發布的 CLI，並 pull
 對應 image。將 `X.Y.Z` 換成想使用的已發布版本：
 
@@ -103,6 +103,10 @@ TOCTOU risk。
 `v1.0.0` 是 immutable 的歷史 GitHub Release，早於 GHCR publication，
 因此沒有 official container image。若需使用該歷史版本或進行開發，請自行
 從 source build image。
+
+`v1.1.0` 仍是有效的 source release，但 fail-closed registry check 在 image
+build 或 push 前停止 publication，因此沒有 official GHCR image。official GHCR
+distribution 延後至 `v1.1.1`；此 hotfix 不改變 scientific analysis。
 
 `rnaseq doctor` 是 read-only 檢查；它會驗證 host 與本機 image，但不會 pull 或 build image。
 

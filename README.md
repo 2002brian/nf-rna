@@ -62,7 +62,7 @@ Java and Nextflow run on the host. R, DESeq2, HISAT2, featureCounts, SAMtools, a
 
 ## Installation
 
-nf-rna has no PyPI distribution. Beginning with the `v1.1.0` release, official
+nf-rna has no PyPI distribution. Beginning with the `v1.1.1` release, official
 images are published as `ghcr.io/2002brian/nf-rna:X.Y.Z`; install the released
 CLI from its Git tag and pull its matching image. Replace `X.Y.Z` with the
 released version you intend to use:
@@ -92,6 +92,11 @@ spellings are rejected to keep immutable package and image identities unique.
 `v1.0.0` is an immutable historical GitHub Release and predates GHCR
 publication; it has no official container image. Build from source only when
 working with that historical release or developing the project.
+
+`v1.1.0` remains a valid source release, but its fail-closed registry check
+stopped publication before an image was built or pushed, so it has no official
+GHCR image. Official GHCR distribution is deferred to `v1.1.1`; that hotfix
+does not change scientific analysis.
 
 Official release images are qualified for `linux/amd64`. `linux/arm64` is not
 yet independently qualified. Prefer an explicit version tag or immutable

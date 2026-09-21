@@ -13,14 +13,16 @@
 ## Official container images
 
 The historical `v1.0.0` release predates GHCR and has no official image.
-Beginning with the `v1.1.0` release, official images are published through
+`v1.1.0` remains a valid source release, but its fail-closed registry check
+stopped publication before image build or push, so it also has no official
+GHCR image. Beginning with the `v1.1.1` release, official images are published through
 GitHub Container Registry as:
 
 ```bash
 docker pull ghcr.io/2002brian/nf-rna:X.Y.Z
 ```
 
-Use an explicit version tag (for example, `1.1.0`) or a digest for a
+Use an explicit version tag (for example, `1.1.1`) or a digest for a
 reproducible analysis. `ghcr.io/2002brian/nf-rna:latest` is a convenience tag
 that advances only for stable releases; it is never moved by prereleases.
 Official release images are qualified for `linux/amd64`. `linux/arm64` is not
@@ -58,7 +60,7 @@ directory is `/opt/nf-rna/r`; validation requires `l1_analysis.R`,
 The workflow does not create, edit, move, or republish a Git tag or GitHub
 Release. The immutable historical `v1.0.0` GitHub Release predates this
 workflow and has no official GHCR image. The first official image is published
-with the `v1.1.0` release.
+with the `v1.1.1` release. The `v1.1.1` hotfix changes no scientific analysis.
 
 Building an image from source is a developer/offline workflow; see
 [Development installation](development.md). It is not part of normal user

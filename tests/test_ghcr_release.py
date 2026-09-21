@@ -125,6 +125,31 @@ def test_registry_check_follows_bearer_challenge_and_sends_manifest_accept_heade
     assert calls[2].get_header("Authorization") == "Bearer registry-token"
 
 
+def test_registry_check_accepts_the_sanitized_real_ghcr_lowercase_challenge_header():
+    """GHCR/urllib supplied this lower-case field name for the failed v1.1.0 check."""
+
+    responses = iter(
+        [
+            _Response(
+                401,
+                {"www-authenticate": VALID_CHALLENGE},
+                b'{"errors":[{"code":"UNAUTHORIZED","message":"authentication required"}]}',
+            ),
+            _Response(200, {}, b'{"token":"registry-token"}'),
+            _Response(404, {}, _error("NAME_UNKNOWN")),
+        ]
+    )
+
+    def opener(request, timeout):
+        return next(responses)
+
+    result = ghcr_release.check_registry_tag("ghcr.io", "2002brian/nf-rna", "1.1.1", "actor", "token", opener)
+
+    assert result == ghcr_release.RegistryResult(
+        ghcr_release.RegistryDecision.ABSENT, "package_absent_first_publication", 404
+    )
+
+
 @pytest.mark.parametrize("failure", [TimeoutError(), URLError("network unavailable")])
 def test_registry_transport_failures_cannot_permit_publication(failure):
     def opener(request, timeout):

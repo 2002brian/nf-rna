@@ -5,7 +5,7 @@ This guide is for production users on Linux or WSL. Install Python 3.11+, Git, D
 ## Install a released nf-rna version
 
 nf-rna is installed from Git tags; it is not published to PyPI. Beginning with
-the `v1.1.0` release, official images are published as
+the `v1.1.1` release, official images are published as
 `ghcr.io/2002brian/nf-rna:X.Y.Z`. Replace `X.Y.Z` with the released version you
 intend to use:
 
@@ -26,6 +26,9 @@ Official release images are qualified for `linux/amd64`; `linux/arm64` is not
 yet independently qualified. Use an explicit version tag or immutable digest,
 not `:latest`, for a formal analysis. The historical `v1.0.0` release has no
 official GHCR image; use its source-build path when working with that release.
+`v1.1.0` remains a valid source release but also has no official GHCR image:
+its fail-closed registry check stopped before image build or push. Official
+distribution is deferred to `v1.1.1`, which has no scientific-analysis changes.
 
 ## Create and run a project
 

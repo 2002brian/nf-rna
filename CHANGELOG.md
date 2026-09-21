@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## 1.1.1 — 2026-09-21
+
+- Fixed the fail-closed GHCR registry check to normalize case-insensitive HTTP challenge field names before validating the exact trusted GHCR Bearer challenge.
+- `v1.1.0` remains a valid source release, but no official GHCR image was published for it because publication stopped before image build or push. Official GHCR distribution is deferred to `v1.1.1`.
+- This hotfix contains no scientific-analysis, R, or Nextflow changes.
+
 ## 1.1.0 — 2026-09-20
 
 - Added production GO and KEGG over-representation analysis (ORA) through the supported Nextflow graph, including stable GO terminal-state artifacts and term accounting.
