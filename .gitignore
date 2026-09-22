@@ -124,3 +124,13 @@ tests/fixtures/hisat2_paired_raw_v2/reference/hisat2/
 
 # A bundled Salmon index is never a public source fixture, even when tiny.
 examples/nfcore_smoke_test/reference/salmon.tar.gz
+
+# R local/session artifacts
+.Rhistory
+.RData
+.Rproj.user/
+*.Rout
+
+# HISAT2 generated indexes
+*.ht2
+*.ht2l

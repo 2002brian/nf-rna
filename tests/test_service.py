@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from conftest import base_config
 from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
 from rnaseq.execution import RuntimeCheck, load_run_states
 from rnaseq.models import DEFAULT_EXECUTION_IMAGE
@@ -38,6 +39,7 @@ from rnaseq.service import (
     write_downstream_observer_config,
 )
 from rnaseq.validators import validate_project
+from rnaseq.workflow_support import l1_config
 
 
 pytestmark = pytest.mark.usefixtures("production_capable_execution_capacity")
@@ -914,3 +916,36 @@ def test_raw_counts_delivery_preserves_metadata_sample_order(project_factory):
 
     assert artifact["ordered_sample_ids"] == expected_samples
     assert artifact["columns"] == 6
+
+
+def test_raw_counts_with_different_valid_metadata_order_stages_and_delivers(project_factory, tmp_path):
+    config = base_config()
+    counts = (
+        "gene_id,S3,S1,S2,T3,T1,T2\n"
+        "GeneA,3,1,2,6,4,5\n"
+        "GeneB,30,10,20,60,40,50\n"
+    )
+    metadata = (
+        "sample_id,condition\n"
+        "S1,Control\nS2,Control\nS3,Control\n"
+        "T1,Treatment\nT2,Treatment\nT3,Treatment\n"
+    )
+    root = project_factory(config=config, counts=counts, metadata=metadata)
+    validation = validate_project(root)
+    assert validation.is_valid
+    generate_plan(validation)
+    run = create_case_run(validation, "CASE-20260922-001", moment=datetime(2026, 9, 22, 10, 0, 0))
+    frozen = freeze_case_inputs(validation, run, profile="local", command=["rnaseq", "run"])
+    inputs = resolve_downstream_inputs(run)
+
+    # L1 uses frozen metadata order for analysis while raw input is immutable.
+    backend = l1_config(frozen.contract, inputs.root, tmp_path / "l1")
+    assert backend["samples"] == ["S1", "S2", "S3", "T1", "T2", "T3"]
+    source = run.run_dir / "frozen" / "input" / "counts.csv"
+    assert (inputs.root / "source" / "counts.csv").read_bytes() == source.read_bytes()
+
+    delivery = assemble_delivery(run)
+    target = delivery / "counts" / "raw_counts.csv"
+    assert target.read_bytes() == source.read_bytes()
+    artifact = json.loads((delivery / "counts" / "artifact_manifest.json").read_text(encoding="utf-8"))["artifacts"][0]
+    assert artifact["ordered_sample_ids"] == ["S3", "S1", "S2", "T3", "T1", "T2"]

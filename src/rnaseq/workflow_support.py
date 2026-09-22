@@ -133,6 +133,25 @@ def _project(inputs: Path) -> dict[str, Any]:
     return value
 
 
+def _validated_design_variable_types(contract: dict[str, Any], project: dict[str, Any]) -> dict[str, str]:
+    """Use the frozen validation result rather than re-inferring R column types.
+
+    The service freezes this map after project validation.  Keeping it as the
+    sole production bridge for L1 and L2 prevents a numeric-looking categorical
+    metadata value from acquiring a different meaning in the task container.
+    Older immutable contracts without this field retain their project-config
+    behavior for compatibility.
+    """
+
+    design = contract.get("design")
+    if isinstance(design, dict) and isinstance(design.get("variables"), dict):
+        return {str(name): str(kind) for name, kind in design["variables"].items()}
+    project_design = project.get("design")
+    if isinstance(project_design, dict) and isinstance(project_design.get("variables"), dict):
+        return {str(name): str(kind) for name, kind in project_design["variables"].items()}
+    return {}
+
+
 def _experimental_design_html(project: dict[str, Any], contrasts: list[dict[str, str]]) -> list[str]:
     """Render the compact typed-design contract without claiming batch removal."""
 
@@ -267,7 +286,7 @@ def l1_config(contract_path: Path, inputs: Path, output: Path) -> dict[str, Any]
         "metadata": str(_staged_file(root, manifest.get("metadata"), "metadata")),
         "formula": project["design"]["formula"],
         "pair_id": project["design"].get("pair_id", project["design"].get("pairing_column")),
-        "design_variable_types": project["design"].get("variables", {}),
+        "design_variable_types": _validated_design_variable_types(contract, project),
         "samples": _samples(inputs),
         "output_dir": str(output),
         "filter": FILTER,
@@ -287,7 +306,7 @@ def l2_config(contract_path: Path, inputs: Path, l1: Path, output: Path) -> dict
         "metadata": str(metadata),
         "formula": project["design"]["formula"],
         "pair_id": project["design"].get("pair_id", project["design"].get("pairing_column")),
-        "design_variable_types": project["design"].get("variables", {}),
+        "design_variable_types": _validated_design_variable_types(contract, project),
         "samples": _samples(inputs),
         "output_dir": str(output),
         "filter": FILTER,

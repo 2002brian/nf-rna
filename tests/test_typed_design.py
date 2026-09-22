@@ -35,6 +35,22 @@ def test_explicit_categorical_regression_and_legacy_inference(project_factory):
     assert dict(legacy.design_variable_types) == {"condition": "categorical"}
 
 
+@pytest.mark.parametrize(
+    "variables",
+    (None, {"batch": "categorical"}),
+)
+def test_schema_13_requires_complete_explicit_formula_variable_types(project_factory, variables):
+    config = deepcopy(base_config())
+    config["schema_version"] = "1.3"
+    config["analysis"] = {"enrichment": []}
+    config["design"] = {"type": "two_group", "formula": "~ batch + condition"}
+    if variables is not None:
+        config["design"]["variables"] = variables
+    report = validate_project(project_factory(config=config))
+    assert "invalid_project_config" in _codes(report)
+    assert "design.variables" in report.errors[0].message
+
+
 def test_legacy_numeric_looking_contrast_levels_remain_categorical(project_factory):
     metadata = """sample_id,condition
 C1,0
@@ -96,6 +112,27 @@ T3,P3,Treatment
     report = validate_project(project_factory(config=config, counts=counts, metadata=metadata))
     assert report.is_valid
     assert report.design_variable_types["pair_id"] == "categorical"
+
+
+def test_full_rank_paired_batch_design_is_valid(project_factory):
+    config = _config(
+        "~ pair_id + batch + condition",
+        {"pair_id": "categorical", "batch": "categorical", "condition": "categorical"},
+    )
+    config["design"].update({"type": "paired_two_group", "pair_id": "pair_id"})
+    metadata = """sample_id,pair_id,batch,condition
+C1,P1,B1,Control
+T1,P1,B2,Treatment
+C2,P2,B2,Control
+T2,P2,B1,Treatment
+C3,P3,B1,Control
+T3,P3,B2,Treatment
+"""
+    counts = "gene_id,C1,T1,C2,T2,C3,T3\nGeneA,10,15,11,16,9,14\nGeneB,30,25,29,24,32,27\n"
+    report = validate_project(project_factory(config=config, counts=counts, metadata=metadata))
+    assert report.is_valid, report.errors
+    prepared = prepare_l2(report, run_id=None)
+    assert prepared.config.design.formula == "~ pair_id + batch + condition"
 
 
 @pytest.mark.parametrize("value", ["bad", "NA", "NaN", "Inf", "-Inf", ""])

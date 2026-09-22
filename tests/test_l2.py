@@ -86,6 +86,31 @@ def test_l2_scientific_provenance_records_actual_typed_model(tmp_path):
     assert provenance["result"]["fit_method"] == backend["fit_method"]
 
 
+def test_real_l2_three_batch_levels_emits_only_the_biological_contrast(tmp_path):
+    require_r_packages("jsonlite", "DESeq2", "ggplot2", "pheatmap")
+    root = _example_copy(tmp_path)
+    config = yaml.safe_load((root / "project.yaml").read_text(encoding="utf-8"))
+    config["schema_version"] = "1.3"
+    config["analysis"] = {"enrichment": []}
+    config["design"] = {
+        "type": "two_group",
+        "formula": "~ batch + condition",
+        "variables": {"batch": "categorical", "condition": "categorical"},
+    }
+    (root / "project.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    (root / "metadata.csv").write_text(
+        "sample_id,batch,condition\n"
+        "C1,B1,Control\nC2,B2,Control\nC3,B3,Control\n"
+        "T1,B1,Treatment\nT2,B2,Treatment\nT3,B3,Treatment\n",
+        encoding="utf-8",
+    )
+
+    result = execute_l2(prepare_l2(validate_project(root), run_id=None))
+    contrast_dirs = sorted(path.name for path in (result.output_dir / "contrasts").iterdir() if path.is_dir())
+    assert contrast_dirs == ["Treatment_vs_Control"]
+    assert (result.output_dir / "contrasts" / "Treatment_vs_Control" / "volcano.png").is_file()
+
+
 @pytest.mark.parametrize(
     ("formula", "variables", "paired", "expected_columns"),
     (

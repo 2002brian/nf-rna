@@ -1071,7 +1071,12 @@ def _delivery_count_source(run: CaseRun) -> tuple[Path, str, bool, str, str, str
     if not isinstance(construction, str):
         raise UpstreamExecutionError("Frozen downstream contract has no source construction method.")
     if source_type == "raw_counts":
-        return run.run_dir / "frozen" / "input" / "counts.csv", "raw_counts.csv", True, "integer_raw_counts", construction, ",", True
+        # Raw counts are immutable source data.  The analysis path selects and
+        # orders columns by frozen metadata sample_id, while delivery preserves
+        # the original valid column order and its explicit sample headers.
+        # Requiring identical source/metadata order here would turn a valid,
+        # correctly analysed project into a delivery-only failure.
+        return run.run_dir / "frozen" / "input" / "counts.csv", "raw_counts.csv", True, "integer_raw_counts", construction, ",", False
     if source_type == "featurecounts_raw_counts":
         handoff = _read_yaml_mapping(run.run_dir / "frozen" / "upstream_handoff_manifest.yaml", "frozen upstream handoff")
         featurecounts = handoff.get("featurecounts")
