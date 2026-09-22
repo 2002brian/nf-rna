@@ -1,0 +1,30 @@
+# Human-readable source for the first-party downstream runtime.  This is not
+# executable production identity: each supported platform must use a reviewed
+# explicit lock derived from this file.
+name: nf-rna-downstream
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  # The downstream Nextflow processes call rnaseq.workflow_support.  These
+  # constraints mirror the nf-rna wheel metadata; the release wheel is
+  # installed separately with --no-deps and a recorded SHA-256.
+  - python=3.11
+  - click>=8.1,<9
+  - pydantic>=2.8,<3
+  - pyyaml>=6,<7
+  - prompt-toolkit>=3.0,<4
+  - typer>=0.12,<1
+  - pip
+  # First-party R backends only.  Do not add nf-core alignment/QC tools here.
+  - r-base=4.5
+  - bioconductor-deseq2
+  - bioconductor-tximport
+  - bioconductor-clusterprofiler
+  - bioconductor-annotationdbi
+  - bioconductor-org.hs.eg.db
+  - bioconductor-org.mm.eg.db
+  - r-ggplot2
+  - r-pheatmap
+  - r-yaml
+  - r-jsonlite
