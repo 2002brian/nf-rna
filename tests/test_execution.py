@@ -33,6 +33,7 @@ from rnaseq.execution import (
     load_run_states,
     prepare_run,
     render_local_resource_config,
+    render_upstream_conda_config,
     suggested_local_resources,
     validate_local_execution_budget,
     resolve_execution_workspace,
@@ -45,6 +46,29 @@ from rnaseq.planner import generate_plan
 from rnaseq.validators import validate_project
 
 runner = CliRunner()
+
+
+def test_osx_arm64_nfcore_conda_overrides_are_exact(monkeypatch, tmp_path):
+    monkeypatch.setattr("rnaseq.execution.native_platform", lambda: "osx-arm64")
+    config = render_upstream_conda_config(tmp_path / "cache")
+    assert config.count("withName:") == 2
+    assert "withName: 'NFCORE_RNASEQ:PREPARE_GENOME:EAUTILS_GTF2BED'" in config
+    assert "conda.enabled = true" in config
+    assert "docker.enabled = false" in config
+    assert "conda = 'conda-forge::perl=5.32.1=7_h4614cfb_perl5 conda-forge::gzip=1.13=hf50ae52_0'" in config
+    assert "container =" not in config
+    assert "host" not in config.lower()
+    assert "withName: 'NFCORE_RNASEQ:RNASEQ:QUANTIFY_PSEUDO_ALIGNMENT:QUANT_TXIMPORT_SUMMARIZEDEXPERIMENT:TXIMETA_TXIMPORT'" in config
+    assert "conda = 'conda-forge::r-base=4.5.3=h35b0bb1_3 bioconda::bioconductor-tximeta=1.28.2=r45hdfd78af_0 bioconda::bioconductor-tximport=1.38.2=r45hdfd78af_0 bioconda::bioconductor-summarizedexperiment=1.40.0=r45hdfd78af_0 bioconda::bioconductor-s4vectors=0.48.1=r45h6cc0085_0'" in config
+
+
+@pytest.mark.parametrize("platform", ["linux-64", "osx-64"])
+def test_non_arm64_upstream_process_environments_remain_native(monkeypatch, tmp_path, platform):
+    monkeypatch.setattr("rnaseq.execution.native_platform", lambda: platform)
+    config = render_upstream_conda_config(tmp_path / "cache")
+    assert "withName:" not in config
+    assert "process {" not in config
+    assert "conda.enabled = true" in config
 
 
 def _ready_fastq_project(tmp_path: Path) -> Path:
@@ -146,11 +170,12 @@ def test_safe_pinned_command(monkeypatch, tmp_path, production_capable_execution
         profile="local",
         work_dir=root.parent / "local-execution-root" / "work" / "upstream",
     )
-    assert command[:7] == ["nextflow", "run", "nf-core/rnaseq", "-r", "3.26.0", "-profile", "docker"]
+    assert command[:7] == ["nextflow", "run", "nf-core/rnaseq", "-r", "3.26.0", "-profile", "conda"]
     assert "--pseudo_aligner" in command and "salmon" in command
     assert "--skip_alignment" not in command
     assert command[command.index("-work-dir") + 1].endswith("local-execution-root/work/upstream")
     assert "test_reference" in command
+    assert prepared.container_runtime == "conda"
 
 
 def test_successful_mocked_execution_freezes_state_and_handoff(monkeypatch, tmp_path, production_capable_execution_capacity):

@@ -690,7 +690,8 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     local_root = tmp_path / "local-nextflow-cache"
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(local_root))
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "25.10.4"))
-    monkeypatch.setattr("rnaseq.service.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "Docker daemon is available."))
+    monkeypatch.setattr("rnaseq.service.check_docker", lambda: (_ for _ in ()).throw(AssertionError("Salmon must not query Docker")))
+    monkeypatch.setattr("rnaseq.service.check_upstream_conda", lambda: RuntimeCheck("Conda", "FOUND", "conda 25.3.1"))
     observed: list[tuple[list[str], Path]] = []
 
     def fake_nextflow(command, *, cwd, stdout_path, stderr_path):
@@ -720,10 +721,15 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     monkeypatch.setattr("rnaseq.service._run_command", fake_nextflow)
     run = execute_service_run(report, case_id="CASE-20260828-001")
     assert len(observed) == 2
+    assert observed[0][0][observed[0][0].index("-profile") + 1] == "conda"
+    assert (local_root / "cache" / "upstream-conda").is_dir()
     assert all(cwd == local_root / run.case_id / run.run_id / "launch" for _command, cwd in observed)
     assert all("-work-dir" in command for command, _cwd in observed)
     local_resource_config = run.run_dir / "frozen" / "nfcore.local.config"
     assert all(str(local_resource_config.resolve()) in command for command, _cwd in observed)
+    upstream_conda_config = run.run_dir / "frozen" / "nfcore.conda.config"
+    assert str(upstream_conda_config.resolve()) in observed[0][0]
+    assert str(upstream_conda_config.resolve()) not in observed[1][0]
     assert (local_root / run.case_id / run.run_id / "launch" / ".nextflow" / "cache" / "000003.log").is_file()
     assert not (run.run_dir / ".nextflow").exists()
     assert not (run.run_dir / "work").exists()
@@ -761,7 +767,17 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     assert len(provenance["salmon_tx2gene"]["sha256"]) == 64
     assert provenance["downstream_runtime"]["kind"] == "conda"
     assert provenance["downstream_runtime"]["wheel"]["sha256"] == "b" * 64
-    assert provenance["upstream_container_runtime"] == "docker"
+    assert provenance["upstream_container_runtime"] is None
+    assert provenance["upstream_runtime"]["kind"] == "conda"
+    assert provenance["upstream_runtime"]["version"] == "3.26.0"
+    assert provenance["upstream_runtime"]["revision"] == "e7ca46272c8f9d5ceee3f71759f4ba551d3217a4"
+    assert provenance["upstream_runtime"]["profile"] == "conda"
+    assert provenance["upstream_runtime"]["cache_dir"] == str(local_root / "cache" / "upstream-conda")
+    assert "conda.enabled = true" in upstream_conda_config.read_text(encoding="utf-8")
+    assert "docker.enabled = false" in upstream_conda_config.read_text(encoding="utf-8")
+    assert f'conda.cacheDir = "{local_root / "cache" / "upstream-conda"}"' in upstream_conda_config.read_text(encoding="utf-8")
+    assert "conda.cacheDir" not in local_resource_config.read_text(encoding="utf-8")
+    assert provenance["frozen_upstream_conda_config"]["path"] == "frozen/nfcore.conda.config"
     assert provenance["production_intended"] is False
     assert set(provenance["workflow_sha256"]) == {"workflow/main.nf", "workflow/hisat2_featurecounts.nf"}
     assert all(len(value) == 64 for value in provenance["workflow_sha256"].values())

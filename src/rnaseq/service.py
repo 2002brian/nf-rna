@@ -35,6 +35,7 @@ from rnaseq.execution import (
     build_hisat2_featurecounts_command,
     classify_execution_failure,
     check_docker,
+    check_upstream_conda,
     check_nextflow,
     generate_handoff_manifest,
     generate_hisat2_featurecounts_handoff,
@@ -42,6 +43,11 @@ from rnaseq.execution import (
     effective_resource_budget,
     resolved_upstream_implementation,
     nfcore_runtime_params,
+    NFCORE_CONDA_PROFILE,
+    NFCORE_RNASEQ_REVISION,
+    prepare_upstream_conda_cache,
+    render_upstream_conda_config,
+    upstream_conda_cache,
     prepare_execution_workspace,
     project_execution_budget,
     RESOURCE_CONTRACTS,
@@ -56,7 +62,7 @@ from rnaseq.execution import (
     ResourceContract,
     LOCAL_RESOURCE_CEILING,
 )
-from rnaseq.downstream_runtime import DownstreamRuntime, downstream_runtime_preflight, ensure_downstream_runtime
+from rnaseq.downstream_runtime import DownstreamRuntime, downstream_runtime_preflight, ensure_downstream_runtime, native_platform
 from rnaseq.models import FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, ProjectConfig, production_enrichment_backends
 from rnaseq.project import LoadedProject
 from rnaseq.hisat2_featurecounts import FASTP_IMAGE, FASTP_VERSION, FASTQC_IMAGE, FASTQC_VERSION, HISAT2_IMAGE, HISAT2_VERSION, MULTIQC_IMAGE, MULTIQC_VERSION, SAMTOOLS_IMAGE, SAMTOOLS_VERSION, SUBREAD_IMAGE, SUBREAD_VERSION
@@ -183,10 +189,11 @@ def _native_runtime_snapshot() -> RuntimeSnapshot:
 
 
 def _resource_snapshot(report: ValidationReport) -> RuntimeSnapshot:
-    """Docker capacity is relevant only while the unchanged FASTQ upstream runs."""
+    """Only the separate HISAT2 container route needs Docker capacity."""
 
     assert report.config is not None
-    return runtime_snapshot(report.config.runtime.execution_image) if report.config.input.type is InputType.FASTQ else _native_runtime_snapshot()
+    method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
+    return runtime_snapshot(report.config.runtime.execution_image) if report.config.input.type is InputType.FASTQ and method != "salmon" else _native_runtime_snapshot()
 
 
 def _salmon_mapping_contract(run_dir: Path, value: object) -> tuple[Path, dict[str, str]]:
@@ -685,9 +692,12 @@ def freeze_case_inputs(
         resolved = resources or effective_resource_budget(
             _resource_snapshot(report), project_execution_budget(report.config)
         )
-        _write_text(runtime, render_local_resource_config(ResourceContract(
+        config_text = render_local_resource_config(ResourceContract(
             "EFFECTIVE_LOCAL", resolved.effective_cpus, resolved.effective_memory_gib, LOCAL_RESOURCE_CEILING.time_hours
-        )))
+        ))
+        _write_text(runtime, config_text)
+        if method == "salmon":
+            _write_text(frozen / "nfcore.conda.config", render_upstream_conda_config(upstream_conda_cache()))
 
     execution = {
         "case_id": run.case_id,
@@ -793,6 +803,7 @@ def _provenance(
         "workflow/hisat2_featurecounts.nf": _sha256(HISAT2_WORKFLOW),
     }
     local_config = run.run_dir / "frozen" / "nfcore.local.config"
+    upstream_conda_config = run.run_dir / "frozen" / "nfcore.conda.config"
     return {
         "case_id": run.case_id,
         "run_id": run.run_id,
@@ -818,7 +829,13 @@ def _provenance(
             } if method == "hisat2_featurecounts" else None
         ),
         "downstream_runtime": frozen_execution.get("downstream_runtime"),
-        "upstream_container_runtime": "docker" if report.config and report.config.input.type is InputType.FASTQ else None,
+        "upstream_runtime": (
+            {"kind": "conda", "workflow": "nf-core/rnaseq", "version": report.config.upstream.pipeline_version,
+             "revision": NFCORE_RNASEQ_REVISION, "profile": NFCORE_CONDA_PROFILE,
+             "platform": native_platform(), "cache_dir": str(upstream_conda_cache())}
+            if method == "salmon" else None
+        ),
+        "upstream_container_runtime": "docker" if method == "hisat2_featurecounts" else None,
         "production_intended": bool(report.config and report.config.reference.acceptance == "production"),
         "runtime_resources": {
             **resolved_resources.as_dict(),
@@ -835,6 +852,10 @@ def _provenance(
         "frozen_local_nextflow_config": (
             {"path": local_config.relative_to(run.run_dir).as_posix(), "sha256": _sha256(local_config)}
             if local_config.is_file() else None
+        ),
+        "frozen_upstream_conda_config": (
+            {"path": upstream_conda_config.relative_to(run.run_dir).as_posix(), "sha256": _sha256(upstream_conda_config)}
+            if method == "salmon" and upstream_conda_config.is_file() else None
         ),
         "profile": profile,
         "command": command,
@@ -1416,9 +1437,16 @@ def prepare_service_run(report: ValidationReport, *, profile: str) -> EffectiveR
     if nextflow.state != "FOUND":
         raise ExecutionPreflightError("Nextflow is required: " + nextflow.detail)
     if report.config.input.type is InputType.FASTQ:
-        docker = check_docker()
-        if docker.state != "FOUND":
-            raise ExecutionPreflightError("Docker is required for the unchanged upstream FASTQ workflow: " + docker.detail)
+        method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
+        if method == "salmon":
+            conda = check_upstream_conda()
+            if conda.state != "FOUND":
+                raise ExecutionPreflightError("Conda is required for upstream FASTQ execution: " + conda.detail)
+            prepare_upstream_conda_cache()
+        else:
+            docker = check_docker()
+            if docker.state != "FOUND":
+                raise ExecutionPreflightError("Docker is required for HISAT2 execution: " + docker.detail)
     downstream_runtime_preflight()
     return resources
 
@@ -1619,6 +1647,9 @@ def _clone_retry_contract(source: RetrySource, run: CaseRun, command: list[str])
 
     frozen = run.run_dir / "frozen"
     shutil.copytree(source.run.run_dir / "frozen", frozen, dirs_exist_ok=True, ignore=shutil.ignore_patterns("._*"))
+    config = _read_yaml_mapping(frozen / "project.yaml", "retry frozen project")
+    if config.get("input", {}).get("type") == "fastq" and config.get("upstream", {}).get("quantification", {}).get("method", "salmon") == "salmon":
+        _write_text(frozen / "nfcore.conda.config", render_upstream_conda_config(upstream_conda_cache()))
     contract = _read_json_mapping(frozen / "downstream_contract.json", "cloned retry downstream contract")
     contract["case"] = {"id": run.case_id, "run_id": run.run_id, "timezone": "Asia/Taipei"}
     for key, name in (("project_config", "project.yaml"), ("metadata", "metadata.csv"), ("contrasts", "contrasts.csv"), ("input_manifest", "input_manifest.yaml")):
@@ -1708,9 +1739,16 @@ def _prepare_retry_runtime(report: ValidationReport, profile: str) -> EffectiveR
     if nextflow.state != "FOUND":
         raise ExecutionPreflightError("Nextflow is required: " + nextflow.detail)
     if report.config.input.type is InputType.FASTQ:
-        docker = check_docker()
-        if docker.state != "FOUND":
-            raise ExecutionPreflightError("Docker is required for the unchanged upstream FASTQ workflow: " + docker.detail)
+        method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
+        if method == "salmon":
+            conda = check_upstream_conda()
+            if conda.state != "FOUND":
+                raise ExecutionPreflightError("Conda is required for upstream FASTQ execution: " + conda.detail)
+            prepare_upstream_conda_cache()
+        else:
+            docker = check_docker()
+            if docker.state != "FOUND":
+                raise ExecutionPreflightError("Docker is required for HISAT2 execution: " + docker.detail)
     downstream_runtime_preflight()
     return resources
 
@@ -1781,6 +1819,7 @@ def execute_service_run(
                 upstream = (build_nextflow_command(
                     report, samplesheet=frozen.samplesheet, output_dir=run.run_dir / "upstream" / "nfcore_rnaseq",
                     profile=profile, params_file=frozen.upstream_params, config_file=frozen.upstream_config,
+                    conda_config_file=run.run_dir / "frozen" / "nfcore.conda.config",
                     reference_paths=frozen.reference_paths, work_dir=workspace.work_dir / "upstream",
                 ) if method == "salmon" else build_hisat2_featurecounts_command(
                     report, samplesheet=frozen.samplesheet, output_dir=run.run_dir / "upstream" / "hisat2_featurecounts",
@@ -1905,6 +1944,7 @@ def execute_retry_service_run(
                 upstream = (build_nextflow_command(
                     report, samplesheet=frozen / "samplesheet.csv", output_dir=run.run_dir / "upstream" / "nfcore_rnaseq",
                     profile=profile, params_file=frozen / "nfcore.params.json", config_file=frozen / "nfcore.local.config",
+                    conda_config_file=frozen / "nfcore.conda.config",
                     reference_paths=reference_paths, work_dir=workspace.work_dir / "upstream",
                 ) if method == "salmon" else build_hisat2_featurecounts_command(
                     report, samplesheet=frozen / "samplesheet.csv", output_dir=run.run_dir / "upstream" / "hisat2_featurecounts",

@@ -200,6 +200,8 @@ def test_retry_restarts_failed_upstream_from_frozen_fastqs_and_only_then_uses_re
     assert json.loads(source.state_path.read_text(encoding="utf-8"))["status"] == "FAILED"
     assert len(seen) == 2
     assert "nf-core/rnaseq" in seen[0]
+    assert seen[0][seen[0].index("-profile") + 1] == "conda"
+    assert "conda.cacheDir" in (retry.run_dir / "frozen" / "nfcore.conda.config").read_text(encoding="utf-8")
     assert all("-resume" in command for command in seen)
     assert (retry.run_dir / "logs" / "upstream.stdout.log").is_file()
     assert (retry.run_dir / "logs" / "downstream.stdout.log").is_file()

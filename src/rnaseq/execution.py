@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import StringIO
@@ -21,6 +22,7 @@ from typing import Any
 import yaml
 
 from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
+from rnaseq.downstream_runtime import native_platform
 from rnaseq.models import DEFAULT_EXECUTION_IMAGE, FastqPreprocessing, InputType, NFCORE_RNASEQ_VERSION, PIPELINE_VERSION, ReferenceConfig
 from rnaseq.hisat2_featurecounts import COUNTING_POLICY, HISAT2_VERSION, SAMTOOLS_VERSION, SUBREAD_VERSION
 from rnaseq.planner import render_manifest, render_samplesheet
@@ -30,6 +32,8 @@ from rnaseq.workflow_assets import workflow_asset_path
 
 LOCAL_PROFILE = "local"
 CONTAINER_PROFILE = "docker"
+NFCORE_CONDA_PROFILE = "conda"
+NFCORE_RNASEQ_REVISION = "e7ca46272c8f9d5ceee3f71759f4ba551d3217a4"
 RUN_STATES = {"CREATED", "RUNNING", "SUCCESS", "FAILED"}
 EXECUTION_ROOT_ENV = "RNASEQ_EXECUTION_ROOT"
 FIRST_PARTY_EXECUTION_IMAGE = DEFAULT_EXECUTION_IMAGE
@@ -213,6 +217,62 @@ def resolve_execution_workspace(case_id: str, run_id: str) -> ExecutionWorkspace
         raise ExecutionPreflightError(f"{EXECUTION_ROOT_ENV} must be an absolute path when configured.")
     root = (base / case_id / run_id).resolve()
     return ExecutionWorkspace(root=root, launch_dir=root / "launch", work_dir=root / "work")
+
+
+def upstream_conda_cache() -> Path:
+    """Shared nf-core process environments outside all per-run work directories."""
+
+    return resolve_execution_workspace("cache", "upstream-conda").root
+
+
+def check_upstream_conda() -> RuntimeCheck:
+    try:
+        result = _run_capture(["conda", "--version"])
+    except FileNotFoundError:
+        return RuntimeCheck("Conda", "NOT FOUND", "Conda executable was not found on PATH.")
+    if result.returncode != 0:
+        return RuntimeCheck("Conda", "NOT FOUND", (result.stderr or result.stdout).strip())
+    return RuntimeCheck("Conda", "FOUND", result.stdout.strip())
+
+
+def prepare_upstream_conda_cache() -> Path:
+    cache = upstream_conda_cache()
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(prefix=".nf-rna-write-check-", dir=cache):
+            pass
+    except OSError as exc:
+        raise ExecutionPreflightError(f"Upstream Conda cache is not writable: {cache}: {exc}") from exc
+    return cache
+
+
+def render_upstream_conda_config(cache: Path) -> str:
+    # JSON string quoting is valid Groovy syntax and handles paths with spaces.
+    config = f"conda.enabled = true\ndocker.enabled = false\nconda.cacheDir = {json.dumps(str(cache))}\n"
+    if native_platform() == "osx-arm64":
+        # nf-core 3.26.0 pins perl 5.26.2 for this task, which has no osx-arm64 build.
+        # Its bundled gtf2bed.pl only needs Perl core modules and gunzip for gzipped GTFs.
+        config += """process {
+    withName: 'NFCORE_RNASEQ:PREPARE_GENOME:EAUTILS_GTF2BED' {
+        conda = 'conda-forge::perl=5.32.1=7_h4614cfb_perl5 conda-forge::gzip=1.13=hf50ae52_0'
+    }
+    withName: 'NFCORE_RNASEQ:RNASEQ:QUANTIFY_PSEUDO_ALIGNMENT:QUANT_TXIMPORT_SUMMARIZEDEXPERIMENT:TXIMETA_TXIMPORT' {
+        conda = 'conda-forge::r-base=4.5.3=h35b0bb1_3 bioconda::bioconductor-tximeta=1.28.2=r45hdfd78af_0 bioconda::bioconductor-tximport=1.38.2=r45hdfd78af_0 bioconda::bioconductor-summarizedexperiment=1.40.0=r45hdfd78af_0 bioconda::bioconductor-s4vectors=0.48.1=r45h6cc0085_0'
+    }
+}
+"""
+    return config
+
+
+def native_runtime_snapshot() -> RuntimeSnapshot:
+    """Collect host capacity for the native nf-core Conda path."""
+
+    return RuntimeSnapshot(
+        host_os=platform.system(), host_architecture=platform.machine().lower(),
+        logical_cpus=detect_local_resource_capacity().logical_cpus,
+        host_memory_bytes=_host_memory_bytes(), docker_architecture=None,
+        docker_memory_bytes=None, docker_version=None, first_party_image_architecture=None,
+    )
 
 
 def prepare_execution_workspace(workspace: ExecutionWorkspace) -> None:
@@ -840,7 +900,7 @@ def prepare_run(report: ValidationReport, profile: str) -> PreparedRun:
     validate_local_execution_budget(
         report.config.execution.max_cpus, report.config.execution.max_memory_gb, detect_local_resource_capacity()
     )
-    snapshot = runtime_snapshot(report.config.runtime.execution_image)
+    snapshot = native_runtime_snapshot()
     resources = effective_resource_budget(snapshot, project_execution_budget(report.config))
     validate_effective_resource_budget(resources)
     _validate_custom_reference_files(report)
@@ -852,13 +912,13 @@ def prepare_run(report: ValidationReport, profile: str) -> PreparedRun:
         raise ExecutionPreflightError(
             "Nextflow is required for FASTQ execution but was not found. " + nextflow.detail
         )
-    docker = check_docker()
-    if docker.state != "FOUND":
+    conda = check_upstream_conda()
+    if conda.state != "FOUND":
         raise ExecutionPreflightError(
-            "Docker is required for the verified local execution profile but is unavailable. "
-            + docker.detail
+            "Conda is required for upstream FASTQ execution: " + conda.detail
         )
-    return PreparedRun(report, nextflow.detail, "docker", resources)
+    prepare_upstream_conda_cache()
+    return PreparedRun(report, nextflow.detail, "conda", resources)
 
 
 def _render_execution_samplesheet(report: ValidationReport) -> str:
@@ -968,17 +1028,19 @@ def _freeze_inputs(prepared: PreparedRun, run_dir: Path) -> tuple[Path, Path, Pa
     # Resource declarations are frozen separately from scientific parameters.
     runtime_config = frozen / "local.nextflow.config"
     effective = prepared.resource_budget or effective_resource_budget(
-        runtime_snapshot(report.config.runtime.execution_image), project_execution_budget(report.config)
+        native_runtime_snapshot(), project_execution_budget(report.config)
     )
     _write_text(runtime_config, render_local_resource_config(ResourceContract(
         "EFFECTIVE_LOCAL", effective.effective_cpus, effective.effective_memory_gib, LOCAL_RESOURCE_CEILING.time_hours
     )))
+    _write_text(frozen / "nfcore.conda.config", render_upstream_conda_config(upstream_conda_cache()))
     return samplesheet, upstream_path, params_path, runtime_config
 
 
 def build_nextflow_command(
     report: ValidationReport, *, samplesheet: Path, output_dir: Path, profile: str,
     params_file: Path | None = None, config_file: Path | None = None,
+    conda_config_file: Path | None = None,
     reference_paths: dict[str, Path] | None = None, work_dir: Path | None = None,
 ) -> list[str]:
     """Build the exact argument vector; it is never run through a shell."""
@@ -991,9 +1053,11 @@ def build_nextflow_command(
     command = ["nextflow", "run"]
     if config_file is not None:
         command.extend(["-c", str(config_file.resolve())])
+    if conda_config_file is not None:
+        command.extend(["-c", str(conda_config_file.resolve())])
     command.extend([
         "nf-core/rnaseq", "-r", NFCORE_RNASEQ_VERSION,
-        "-profile", CONTAINER_PROFILE,
+        "-profile", NFCORE_CONDA_PROFILE,
     ])
     if work_dir is not None:
         command.extend(["-work-dir", str(work_dir.resolve())])
@@ -1260,10 +1324,10 @@ def execute_prepared_run(prepared: PreparedRun) -> RunResult:
         profile=LOCAL_PROFILE,
         params_file=params_file,
         config_file=runtime_config,
+        conda_config_file=run_dir / "frozen" / "nfcore.conda.config",
         work_dir=workspace.work_dir / "upstream",
     )
-    requested_image = prepared.report.config.runtime.execution_image
-    runtime = runtime_snapshot(requested_image)
+    runtime = native_runtime_snapshot()
     resources = prepared.resource_budget or effective_resource_budget(runtime, project_execution_budget(prepared.report.config))
     source_root = Path(__file__).resolve().parents[2]
     source_checkout = source_root if (source_root / ".git").exists() else None
@@ -1280,7 +1344,9 @@ def execute_prepared_run(prepared: PreparedRun) -> RunResult:
         "nfcore_rnaseq_version": NFCORE_RNASEQ_VERSION,
         "execution_profile": LOCAL_PROFILE,
         "container_runtime": prepared.container_runtime,
-        "container_image": inspect_container_image(requested_image),
+        "upstream_runtime": {"kind": "conda", "profile": NFCORE_CONDA_PROFILE,
+                             "revision": NFCORE_RNASEQ_REVISION, "cache_dir": str(upstream_conda_cache()),
+                             "platform": native_platform()},
         "production_intended": prepared.report.config.reference.acceptance == "production",
         "git_commit": git_commit,
         "source_checkout": str(source_checkout) if source_checkout is not None else None,

@@ -375,12 +375,14 @@ def test_legacy_manifest_is_not_silently_promoted_to_production(tmp_path):
 
 
 def test_production_fastq_preflight_does_not_require_a_first_party_image(monkeypatch, tmp_path, production_capable_execution_capacity):
+    monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(tmp_path / "execution"))
     root, reference = _local_fastq_project(tmp_path)
     _promote_reference_for_production(root, reference)
     report = validate_project(root)
     generate_plan(report)
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "test"))
-    monkeypatch.setattr("rnaseq.service.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "test"))
+    monkeypatch.setattr("rnaseq.service.check_docker", lambda: (_ for _ in ()).throw(AssertionError("Salmon must not query Docker")))
+    monkeypatch.setattr("rnaseq.service.check_upstream_conda", lambda: RuntimeCheck("Conda", "FOUND", "test"))
     monkeypatch.setattr("rnaseq.service.downstream_runtime_preflight", lambda: None)
     prepare_service_run(report, profile="local")
 
