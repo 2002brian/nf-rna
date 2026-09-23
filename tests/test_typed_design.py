@@ -84,6 +84,63 @@ T3,3,Treatment
     assert dict(report.design_variable_types) == {"batch": "continuous", "condition": "categorical"}
 
 
+def _inferred_warnings(report) -> list[str]:
+    return [issue.message for issue in report.warnings if issue.code == "inferred_continuous_design_variable"]
+
+
+def test_legacy_inferred_continuous_covariate_warns_once_without_changing_type(project_factory):
+    metadata = """sample_id,batch,condition
+C1,1,Control
+C2,2,Control
+C3,3,Control
+T1,1,Treatment
+T2,2,Treatment
+T3,3,Treatment
+"""
+    config = deepcopy(base_config())
+    config["design"] = {"type": "two_group", "formula": "~ batch + condition"}
+    report = validate_project(project_factory(config=config, metadata=metadata))
+    assert report.is_valid, report.errors
+    assert dict(report.design_variable_types) == {"batch": "continuous", "condition": "categorical"}
+    messages = _inferred_warnings(report)
+    assert len(messages) == 1
+    assert "'batch' was inferred as continuous" in messages[0]
+
+
+def test_legacy_categorical_inference_and_numeric_contrast_factor_do_not_warn(project_factory):
+    labelled = """sample_id,batch,condition
+C1,B1,0
+C2,B2,0
+C3,B1,0
+T1,B2,1
+T2,B1,1
+T3,B2,1
+"""
+    contrasts = "contrast_id,factor,numerator,denominator\ntreated_vs_control,condition,1,0\n"
+    config = deepcopy(base_config())
+    config["design"] = {"type": "two_group", "formula": "~ batch + condition"}
+    report = validate_project(project_factory(config=config, metadata=labelled, contrasts=contrasts))
+    assert report.is_valid, report.errors
+    assert dict(report.design_variable_types) == {"batch": "categorical", "condition": "categorical"}
+    assert _inferred_warnings(report) == []
+
+
+def test_explicit_schema_13_continuous_type_does_not_emit_inferred_warning(project_factory):
+    metadata = """sample_id,age,condition
+C1,30,Control
+C2,34,Control
+C3,32,Control
+T1,31,Treatment
+T2,35,Treatment
+T3,39,Treatment
+"""
+    config = _config("~ age + condition", {"age": "continuous", "condition": "categorical"})
+    report = validate_project(project_factory(config=config, metadata=metadata))
+    assert report.is_valid, report.errors
+    assert dict(report.design_variable_types) == {"age": "continuous", "condition": "categorical"}
+    assert _inferred_warnings(report) == []
+
+
 def test_legacy_numeric_looking_contrast_levels_remain_categorical(project_factory):
     metadata = """sample_id,condition
 C1,0

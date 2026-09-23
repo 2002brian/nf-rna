@@ -17,7 +17,8 @@ from rnaseq.planner import generate_plan
 from rnaseq.service import create_case_run, freeze_case_inputs, resolve_downstream_inputs
 from rnaseq.validators import validate_project
 from rnaseq.workflow_support import (
-    _samples, _source_import_label, _validated_design_variable_types, enrichment_config, l1_config, l2_config, report,
+    _experimental_design_html, _samples, _source_import_label, _validated_design_variable_types, enrichment_config,
+    l1_config, l2_config, report,
 )
 
 
@@ -323,6 +324,22 @@ def test_bridge_falls_back_to_project_types_for_contracts_without_design(project
     assert _validated_design_variable_types({"schema_version": "1.0"}, {"design": project_design}) == expected
 
 
+def test_report_design_table_shows_frozen_types_and_marks_undeclared_ones_inferred():
+    contract = {"design": {"variables": {"batch": "categorical", "age": "continuous", "condition": "categorical"}}}
+    contrasts = [{"contrast_id": "T_vs_C", "factor": "condition", "numerator": "Treatment", "denominator": "Control"}]
+    legacy = "\n".join(_experimental_design_html({"design": {"formula": "~ batch + age + condition"}}, contrasts, contract))
+    assert "<tr><td>batch</td><td>categorical (inferred)</td></tr>" in legacy
+    assert "<tr><td>age</td><td>continuous (inferred)</td></tr>" in legacy
+    assert "<tr><td>condition</td><td>categorical (inferred)</td></tr>" in legacy
+    assert "Treatment vs Control, adjusted for batch, age." in legacy
+    # A declared project still reports the frozen contract types, without the inferred marker.
+    declared_project = {"design": {"formula": "~ batch + age + condition", "variables": {"batch": "continuous"}}}
+    declared = "\n".join(_experimental_design_html(declared_project, contrasts, contract))
+    assert "<tr><td>batch</td><td>categorical</td></tr>" in declared
+    assert "<tr><td>age</td><td>continuous</td></tr>" in declared
+    assert "(inferred)" not in declared
+
+
 def test_active_nextflow_l2_process_uses_the_guarded_config_builder():
     workflow = (ROOT / "workflow" / "main.nf").read_text(encoding="utf-8")
     assert "python -m rnaseq.workflow_support l2-config" in workflow
@@ -589,6 +606,8 @@ def test_l1_report_requires_no_l2_artifacts_and_cli_does_not_require_l2(project_
     assert "Requested analysis level: L1" in report_text
     assert "Not requested for this L1 project." in report_text
     assert "L2 summary" not in report_text
+    # Legacy schema 1.0: the frozen resolved type is shown and marked as inferred.
+    assert "<tr><td>condition</td><td>categorical (inferred)</td></tr>" in report_text
 
     result = subprocess.run(
         [

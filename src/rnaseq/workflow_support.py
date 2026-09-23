@@ -152,21 +152,25 @@ def _validated_design_variable_types(contract: dict[str, Any], project: dict[str
     return {}
 
 
-def _experimental_design_html(project: dict[str, Any], contrasts: list[dict[str, str]]) -> list[str]:
-    """Render the compact typed-design contract without claiming batch removal."""
+def _experimental_design_html(
+    project: dict[str, Any], contrasts: list[dict[str, str]], contract: dict[str, Any],
+) -> list[str]:
+    """Render the frozen typed-design contract without claiming batch removal."""
 
     design = project.get("design", {})
-    variables = design.get("variables", {}) if isinstance(design, dict) else {}
+    # The same frozen types that L1/L2 received; undeclared ones were inferred at validation.
+    variables = _validated_design_variable_types(contract, project)
+    origin = "" if isinstance(design, dict) and isinstance(design.get("variables"), dict) else " (inferred)"
     rows = ["<h2>Experimental design</h2>", f"<p>Design: <code>{escape(str(design.get('formula', 'not available')))}</code></p>"]
-    if isinstance(variables, dict) and variables:
+    if variables:
         rows.extend(["<table><thead><tr><th>Variable</th><th>Type</th></tr></thead><tbody>"])
-        rows.extend(f"<tr><td>{escape(str(name))}</td><td>{escape(str(kind))}</td></tr>" for name, kind in variables.items())
+        rows.extend(f"<tr><td>{escape(name)}</td><td>{escape(kind + origin)}</td></tr>" for name, kind in variables.items())
         rows.append("</tbody></table>")
     for contrast in contrasts:
-        adjustments = [name for name in variables if name != contrast["factor"]] if isinstance(variables, dict) else []
+        adjustments = [name for name in variables if name != contrast["factor"]]
         adjustment_text = f", adjusted for {', '.join(adjustments)}" if adjustments else ""
         rows.append(f"<p>Differential expression: {escape(contrast['numerator'])} vs {escape(contrast['denominator'])}{escape(adjustment_text)}.</p>")
-    if isinstance(variables, dict) and variables.get("batch") == "categorical":
+    if variables.get("batch") == "categorical":
         rows.append("<p>Known batch was included as a categorical DESeq2 adjustment covariate; raw counts were not batch-corrected before inference.</p>")
     return rows
 
@@ -476,7 +480,7 @@ def _report_l1_only(
         f"<li>Configured contrasts: {len(contrasts)}</li>"
         "<li>Requested analysis level: L1</li>"
         "</ul>",
-        *_experimental_design_html(project, contrasts),
+        *_experimental_design_html(project, contrasts, contract),
         "<h2>L1 — quality control</h2>",
         "<ul>"
         f"<li>Genes input: {_value(l1_summary, 'genes_input')}</li>"
@@ -551,7 +555,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
         f"<li>Design: <code>{escape(str(project['design']['formula']))}</code></li>"
         f"<li>Configured contrasts: {len(contrasts)}</li>"
         "</ul>",
-        *_experimental_design_html(project, contrasts),
+        *_experimental_design_html(project, contrasts, contract),
         "<h2>L1 — quality control</h2>",
         "<ul>"
         f"<li>Genes input: {_value(l1_summary, 'genes_input')}</li>"
