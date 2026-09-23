@@ -16,7 +16,9 @@ from conftest import base_config
 from rnaseq.planner import generate_plan
 from rnaseq.service import create_case_run, freeze_case_inputs, resolve_downstream_inputs
 from rnaseq.validators import validate_project
-from rnaseq.workflow_support import _samples, _source_import_label, enrichment_config, l1_config, l2_config, report
+from rnaseq.workflow_support import (
+    _samples, _source_import_label, _validated_design_variable_types, enrichment_config, l1_config, l2_config, report,
+)
 
 
 @pytest.mark.parametrize(
@@ -88,6 +90,33 @@ def _active_l2_contract(project_factory, *, counts: str, metadata: str) -> tuple
     return frozen.contract, resolve_downstream_inputs(run).root, validation
 
 
+def _typed_batch_l2_contract(
+    project_factory, *, design_type: str, formula: str, variables: dict[str, str], metadata: str,
+    contrasts: str, pair_id: str | None = None,
+) -> tuple[Path, Path, object]:
+    config = base_config()
+    config["schema_version"] = "1.3"
+    config["analysis"] = {"enrichment": []}
+    config["design"] = {
+        "type": design_type,
+        "formula": formula,
+        "variables": variables,
+        **({"pair_id": pair_id} if pair_id is not None else {}),
+    }
+    sample_ids = [line.split(",", 1)[0] for line in metadata.strip().splitlines()[1:]]
+    counts = "gene_id," + ",".join(sample_ids) + "\n" + "\n".join(
+        f"Gene{index}," + ",".join(str(10 + index + position) for position in range(len(sample_ids)))
+        for index in range(1, 4)
+    ) + "\n"
+    root = project_factory(config=config, counts=counts, metadata=metadata, contrasts=contrasts)
+    validation = validate_project(root)
+    assert validation.is_valid, validation.errors
+    generate_plan(validation)
+    run = create_case_run(validation, "CASE-TYPED-BATCH", moment=datetime(2026, 9, 22, 12, 0, 0))
+    frozen = freeze_case_inputs(validation, run, profile="local", command=["rnaseq", "run"])
+    return frozen.contract, resolve_downstream_inputs(run).root, validation
+
+
 @pytest.mark.parametrize(
     ("counts", "metadata", "expected_counts"),
     (
@@ -122,6 +151,176 @@ def test_active_l2_config_accepts_two_by_two_with_existing_low_replication_warni
     assert config["contrasts"] == [
         {"contrast_id": "Treatment_vs_Control", "factor": "condition", "numerator": "Treatment", "denominator": "Control"}
     ]
+
+
+def test_production_bridge_preserves_explicit_numeric_batch_types_and_one_biological_contrast(project_factory, tmp_path):
+    metadata = """sample_id,batch,age,condition
+C1,1,30,Control
+C2,1,34,Control
+C3,2,32,Control
+C4,3,33,Control
+T1,1,31,Treatment
+T2,2,35,Treatment
+T3,3,39,Treatment
+T4,3,36,Treatment
+"""
+    contrasts = "contrast_id,factor,numerator,denominator\nTreatment_vs_Control,condition,Treatment,Control\n"
+    types = {"batch": "categorical", "age": "continuous", "condition": "categorical"}
+    contract, inputs, _validation = _typed_batch_l2_contract(
+        project_factory,
+        design_type="two_group",
+        formula="~ batch + age + condition",
+        variables=types,
+        metadata=metadata,
+        contrasts=contrasts,
+    )
+    l1 = l1_config(contract, inputs, tmp_path / "l1")
+    l2 = l2_config(contract, inputs, tmp_path / "l1", tmp_path / "l2")
+    assert l1["design_variable_types"] == types
+    assert l2["design_variable_types"] == types
+    assert l2["contrasts"] == [
+        {"contrast_id": "Treatment_vs_Control", "factor": "condition", "numerator": "Treatment", "denominator": "Control"}
+    ]
+
+
+def test_multi_group_batch_production_bridge_uses_only_explicit_contrasts(project_factory, tmp_path):
+    metadata = """sample_id,batch,age,condition
+C1,B1,30,Control
+C2,B2,32,Control
+C3,B3,31,Control
+A1,B1,33,DrugA
+A2,B2,36,DrugA
+A3,B3,34,DrugA
+B1,B1,36,DrugB
+B2,B2,38,DrugB
+B3,B3,37,DrugB
+"""
+    contrasts = """contrast_id,factor,numerator,denominator
+DrugA_vs_Control,condition,DrugA,Control
+DrugB_vs_Control,condition,DrugB,Control
+DrugB_vs_DrugA,condition,DrugB,DrugA
+"""
+    contract, inputs, validation = _typed_batch_l2_contract(
+        project_factory,
+        design_type="multi_group",
+        formula="~ batch + age + condition",
+        variables={"batch": "categorical", "age": "continuous", "condition": "categorical"},
+        metadata=metadata,
+        contrasts=contrasts,
+    )
+    assert validation.config.design.type.value == "multi_group"
+    config = l2_config(contract, inputs, tmp_path / "l1", tmp_path / "l2")
+    assert [item["contrast_id"] for item in config["contrasts"]] == [
+        "DrugA_vs_Control", "DrugB_vs_Control", "DrugB_vs_DrugA",
+    ]
+
+
+def test_paired_batch_production_bridge_accepts_full_rank_and_rejects_rank_deficiency(project_factory, tmp_path):
+    contrasts = "contrast_id,factor,numerator,denominator\nTreatment_vs_Control,condition,Treatment,Control\n"
+    types = {"pair_id": "categorical", "batch": "categorical", "condition": "categorical"}
+    full_rank = """sample_id,pair_id,batch,condition
+C1,P1,B1,Control
+T1,P1,B2,Treatment
+C2,P2,B2,Control
+T2,P2,B1,Treatment
+C3,P3,B1,Control
+T3,P3,B2,Treatment
+"""
+    contract, inputs, _validation = _typed_batch_l2_contract(
+        project_factory,
+        design_type="paired_two_group",
+        formula="~ pair_id + batch + condition",
+        variables=types,
+        metadata=full_rank,
+        contrasts=contrasts,
+        pair_id="pair_id",
+    )
+    assert l2_config(contract, inputs, tmp_path / "l1", tmp_path / "l2")["design_variable_types"] == types
+
+    rank_deficient = """sample_id,pair_id,batch,condition
+C1,P1,B1,Control
+T1,P1,B1,Treatment
+C2,P2,B2,Control
+T2,P2,B2,Treatment
+C3,P3,B1,Control
+T3,P3,B1,Treatment
+"""
+    config = base_config()
+    config["schema_version"] = "1.3"
+    config["analysis"] = {"enrichment": []}
+    config["design"] = {
+        "type": "paired_two_group", "pair_id": "pair_id", "formula": "~ pair_id + batch + condition", "variables": types,
+    }
+    report = validate_project(project_factory(config=config, metadata=rank_deficient, contrasts=contrasts))
+    assert "rank_deficient_design" in {item.code for item in report.errors}
+
+
+def test_production_bridge_passes_declared_categorical_for_leading_zero_batch(project_factory, tmp_path):
+    metadata = """sample_id,batch,age,condition
+C1,1,30,Control
+C2,01,34,Control
+C3,2,32,Control
+T1,1,31,Treatment
+T2,01,35,Treatment
+T3,2,39,Treatment
+"""
+    contrasts = "contrast_id,factor,numerator,denominator\nTreatment_vs_Control,condition,Treatment,Control\n"
+    types = {"batch": "categorical", "age": "continuous", "condition": "categorical"}
+    contract, inputs, _validation = _typed_batch_l2_contract(
+        project_factory,
+        design_type="two_group",
+        formula="~ batch + age + condition",
+        variables=types,
+        metadata=metadata,
+        contrasts=contrasts,
+    )
+    assert l1_config(contract, inputs, tmp_path / "l1")["design_variable_types"] == types
+    assert l2_config(contract, inputs, tmp_path / "l1", tmp_path / "l2")["design_variable_types"] == types
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "formula", "metadata", "expected"),
+    (
+        (
+            "1.0", "~ condition",
+            "sample_id,condition\nC1,Control\nC2,Control\nC3,Control\nT1,Treatment\nT2,Treatment\nT3,Treatment\n",
+            {"condition": "categorical"},
+        ),
+        (
+            "1.2", "~ batch + condition",
+            "sample_id,batch,condition\nC1,1,Control\nC2,2,Control\nC3,3,Control\nT1,1,Treatment\nT2,2,Treatment\nT3,3,Treatment\n",
+            {"batch": "continuous", "condition": "categorical"},
+        ),
+    ),
+)
+def test_legacy_bridge_reproduces_existing_resolved_types(project_factory, tmp_path, schema_version, formula, metadata, expected):
+    config = base_config()
+    config["schema_version"] = schema_version
+    if schema_version != "1.0":
+        config["analysis"] = {"enrichment": []}
+    config["design"] = {"type": "two_group", "formula": formula}
+    root = project_factory(config=config, metadata=metadata)
+    validation = validate_project(root)
+    assert validation.is_valid, validation.errors
+    generate_plan(validation)
+    run = create_case_run(validation, "CASE-LEGACY-BRIDGE", moment=datetime(2026, 9, 22, 12, 0, 0))
+    frozen = freeze_case_inputs(validation, run, profile="local", command=["rnaseq", "run"])
+    inputs = resolve_downstream_inputs(run).root
+    frozen_types = json.loads(frozen.contract.read_text(encoding="utf-8"))["design"]["variables"]
+    assert dict(validation.design_variable_types) == frozen_types == expected
+    assert l1_config(frozen.contract, inputs, tmp_path / "l1")["design_variable_types"] == expected
+    assert l2_config(frozen.contract, inputs, tmp_path / "l1", tmp_path / "l2")["design_variable_types"] == expected
+
+
+@pytest.mark.parametrize(
+    ("project_design", "expected"),
+    (
+        ({"formula": "~ condition", "variables": {"condition": "categorical"}}, {"condition": "categorical"}),
+        ({"formula": "~ condition"}, {}),
+    ),
+)
+def test_bridge_falls_back_to_project_types_for_contracts_without_design(project_design, expected):
+    assert _validated_design_variable_types({"schema_version": "1.0"}, {"design": project_design}) == expected
 
 
 def test_active_nextflow_l2_process_uses_the_guarded_config_builder():
