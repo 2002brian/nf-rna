@@ -3,27 +3,12 @@ if (length(args) != 2 || args[[1]] != "--config") stop("usage: l1_analysis.R --c
 script_arg <- commandArgs(trailingOnly = FALSE)
 script_file <- sub("^--file=", "", script_arg[grep("^--file=", script_arg)][[1]])
 source(file.path(dirname(normalizePath(script_file)), "provenance.R"))
+source(file.path(dirname(normalizePath(script_file)), "design_metadata.R"))
 suppressPackageStartupMessages({ library(jsonlite); library(yaml); library(DESeq2); library(ggplot2); library(pheatmap) })
 cfg <- fromJSON(args[[2]], simplifyVector = FALSE)
 dir.create(cfg$output_dir, recursive = TRUE, showWarnings = FALSE)
-metadata <- read.csv(cfg$metadata, check.names = FALSE, stringsAsFactors = FALSE)
-rownames(metadata) <- metadata$sample_id
 samples <- unlist(cfg$samples, use.names = FALSE)
-metadata <- metadata[samples, , drop = FALSE]
-if (!is.null(cfg$design_variable_types)) {
-  for (variable in names(cfg$design_variable_types)) {
-    if (!(variable %in% colnames(metadata))) stop(paste("configured design variable is absent from metadata:", variable))
-    if (cfg$design_variable_types[[variable]] == "categorical") metadata[[variable]] <- factor(metadata[[variable]])
-    if (cfg$design_variable_types[[variable]] == "continuous") {
-      metadata[[variable]] <- as.numeric(metadata[[variable]])
-      if (any(!is.finite(metadata[[variable]]))) stop(paste("continuous design variable is not finite:", variable))
-    }
-  }
-}
-if (!is.null(cfg$pair_id)) {
-  if (!(cfg$pair_id %in% colnames(metadata))) stop("configured pair_id is absent from metadata")
-  metadata[[cfg$pair_id]] <- factor(metadata[[cfg$pair_id]])
-}
+metadata <- nf_rna_design_metadata(cfg, samples)
 formula <- as.formula(cfg$formula)
 if (cfg$source_type == "raw_counts" || cfg$source_type == "featurecounts_raw_counts") {
   table <- read.csv(cfg$counts, check.names = FALSE, stringsAsFactors = FALSE)
