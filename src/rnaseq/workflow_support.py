@@ -457,6 +457,25 @@ def _annotation_qc_report_lines(ranking: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _ora_significance_html(contract: dict[str, Any], module: str) -> str:
+    """State the delivered ORA significance predicate with its frozen cutoffs.
+
+    Mirrors go_analysis.R/kegg_analysis.R: pvalue <= pvalue_cutoff and
+    qvalue <= qvalue_cutoff. p.adjust is reported but is not part of it.
+    """
+
+    annotation = contract.get("annotation")
+    enrichment = annotation.get("enrichment", {}) if isinstance(annotation, dict) else {}
+    settings = enrichment.get("go") if module == "go" else (enrichment.get("kegg") or {}).get("ora")
+    settings = settings if isinstance(settings, dict) else {}
+    return (
+        f"<p>Significant terms: raw p-value &le; {_value(settings, 'pvalue_cutoff')} and "
+        f"q-value &le; {_value(settings, 'qvalue_cutoff')}. The adjusted p-value "
+        f"(p.adjust, {_value(settings, 'p_adjust_method')}) is reported but is not a selection criterion, "
+        "so a significant term can have p.adjust above the p-value cutoff.</p>"
+    )
+
+
 def _evaluated_terms(summary: dict[str, Any]) -> str:
     """Prefer the explicit GSEA calculation count, with legacy fallback."""
 
@@ -627,6 +646,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
                 raise ValueError(f"final report requires enabled {label} artifacts")
             summary = _read_json_artifact(root / summary_name, f"{label} backend summary")
             sections.append(f"<h3>{label}</h3><p>Module state: <strong>{escape(str(summary.get('status', 'not available')))}</strong>.</p>")
+            sections.append(_ora_significance_html(contract, module))
             by_contrast = {str(item.get("contrast_id")): item for item in summary.get("contrasts", []) if isinstance(item, dict)}
             for contrast in contrasts:
                 item = by_contrast.get(contrast["contrast_id"])

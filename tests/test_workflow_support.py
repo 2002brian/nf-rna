@@ -579,6 +579,52 @@ def test_report_cli_accepts_all_enrichment_paths_and_rejects_incomplete_or_unkno
     assert "unrecognized arguments" in unknown.stderr
 
 
+def _render_enrichment_report(project_factory, selection: list[str], ora_cutoffs: dict[str, tuple[float, float]] | None = None) -> str:
+    contract, contract_path, l2, inputs = _frozen_contract(project_factory, schema_version="1.1")
+    contract["analysis"] = {"enrichment": selection}
+    for module, (pvalue_cutoff, qvalue_cutoff) in (ora_cutoffs or {}).items():
+        settings = contract["annotation"]["enrichment"]["go"] if module == "go" else contract["annotation"]["enrichment"]["kegg"]["ora"]
+        settings.update({"pvalue_cutoff": pvalue_cutoff, "qvalue_cutoff": qvalue_cutoff})
+    contract_path.write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    l1, gsea_go, gsea_kegg = _write_report_artifacts(inputs / "contrasts.csv", l2)
+    enrichment_dirs = [gsea_go, gsea_kegg] if "gsea" in selection else []
+    for module, summary_name in (("go", "go_backend_summary.json"), ("kegg", "kegg_backend_summary.json")):
+        if module in selection:
+            root = l2 / "enrichment" / module
+            root.mkdir(parents=True)
+            (root / summary_name).write_text(json.dumps({"status": "SUCCESS", "contrasts": []}), encoding="utf-8")
+            enrichment_dirs.append(root)
+    output = l2.parent / "enrichment-report"
+    report(contract_path, inputs, l1, l2, output, enrichment_dirs)
+    return (output / "report.html").read_text(encoding="utf-8")
+
+
+def test_report_states_go_and_kegg_ora_significance_rule_from_frozen_contract(project_factory):
+    # Differs from the staged project.yaml (GO 0.031/0.17, KEGG 0.021/0.19): the frozen contract is the source.
+    text = _render_enrichment_report(project_factory, ["go", "kegg"], {"go": (0.013, 0.11), "kegg": (0.007, 0.13)})
+    go_section = text[text.index("<h3>GO ORA</h3>"):text.index("<h3>KEGG ORA</h3>")]
+    kegg_section = text[text.index("<h3>KEGG ORA</h3>"):]
+    assert "Significant terms: raw p-value &le; 0.013 and q-value &le; 0.11." in go_section
+    assert "Significant terms: raw p-value &le; 0.007 and q-value &le; 0.13." in kegg_section
+    for section in (go_section, kegg_section):
+        assert "(p.adjust, BH) is reported but is not a selection criterion" in section
+    assert "0.031" not in text and "0.021" not in text
+
+
+def test_report_states_only_the_enabled_ora_module_rule(project_factory):
+    text = _render_enrichment_report(project_factory, ["kegg"])
+    assert "<h3>GO ORA</h3>" not in text
+    assert text.count("Significant terms: raw p-value") == 1
+    assert "Significant terms: raw p-value &le; 0.021 and q-value &le; 0.19." in text
+
+
+def test_gsea_only_report_does_not_present_the_ora_rule(project_factory):
+    text = _render_enrichment_report(project_factory, ["gsea"])
+    assert "L2 — preranked GSEA" in text
+    assert "over-representation analysis" not in text
+    assert "Significant terms: raw p-value" not in text
+
+
 def test_report_cli_without_enrichment_remains_supported(project_factory):
     _contract, contract_path, l2, inputs = _frozen_contract(project_factory, schema_version="1.0")
     l1, _go_root, _kegg_root = _write_report_artifacts(inputs / "contrasts.csv", l2)
