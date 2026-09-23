@@ -47,6 +47,7 @@ nf_rna_write_provenance <- function(cfg, output_dir, module, result_state, packa
     generated_at_utc=format(Sys.time(), tz="UTC", usetz=TRUE),
     script_identity=list(name=runtime$script %||% NA_character_, source_revision=runtime$source_revision %||% NA_character_),
     runtime_identity=list(kind=runtime$runtime_kind %||% NA_character_, platform=runtime$platform %||% NA_character_, lock=runtime$lock %||% NULL, wheel=runtime$wheel %||% NULL, nf_rna_version=runtime$nf_rna_version %||% NA_character_, r_scripts=runtime$r_scripts %||% NULL),
+    container_image=runtime$container_image %||% NA_character_,
     r_version=R.version.string,
     package_versions=nf_rna_package_versions(packages),
     organism=if (is.list(cfg$annotation)) list(organism=cfg$annotation$organism, input_id_type=cfg$annotation$input_id_type, target_id_type=cfg$annotation$target_id_type) else NULL,

@@ -216,16 +216,20 @@ def _runtime_provenance(contract: dict[str, Any], script: str, module: str) -> d
 
     execution = contract.get("execution") if isinstance(contract.get("execution"), dict) else {}
     runtime = execution.get("downstream_runtime") if isinstance(execution.get("downstream_runtime"), dict) else {}
+    # The macOS Docker backend has no Conda runtime identity; it records the
+    # frozen execution image and its OCI source revision instead.
+    docker = not runtime and bool(execution.get("image"))
     return {
         "module": module,
         "script": script,
-        "runtime_kind": runtime.get("kind"),
+        "runtime_kind": "docker" if docker else runtime.get("kind"),
         "platform": runtime.get("platform"),
         "lock": runtime.get("lock"),
         "wheel": runtime.get("wheel"),
         "nf_rna_version": runtime.get("nf_rna_version"),
-        "source_revision": runtime.get("source_revision"),
+        "source_revision": execution.get("source_revision") if docker else runtime.get("source_revision"),
         "r_scripts": runtime.get("r_scripts"),
+        "container_image": execution.get("image") if docker else None,
         "output_schema": "nf-rna.scientific-provenance.v1",
     }
 
@@ -402,9 +406,14 @@ def _pipeline_provenance_line(execution: object, project_pipeline: object) -> st
 
 
 def _source_revision_line(execution: object) -> str:
-    """Render the frozen execution-image revision without a host fallback."""
+    """Render the frozen runtime revision without a host fallback."""
 
-    revision = execution.get("source_revision") if isinstance(execution, dict) else None
+    execution = execution if isinstance(execution, dict) else {}
+    runtime = execution.get("downstream_runtime")
+    if isinstance(runtime, dict):
+        revision = runtime.get("source_revision")
+        return f"Runtime: Nextflow + Conda; nf-rna source revision: {escape(str(revision)) if revision else 'not available'}."
+    revision = execution.get("source_revision")
     if revision:
         return f"Execution-image source revision: {escape(str(revision))}."
     return "Execution-image source revision: not available."

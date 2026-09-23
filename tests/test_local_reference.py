@@ -1008,7 +1008,8 @@ def test_genome_only_runtime_splices_are_frozen_and_passed_once(tmp_path):
     report = validate_project(root)
     assert report.execution_ready
     command = build_hisat2_featurecounts_command(
-        report, samplesheet=root / "samples.csv", output_dir=root / "out", profile="local"
+        report, samplesheet=root / "samples.csv", output_dir=root / "out", profile="local",
+        conda_config_file=root / "conda.config",
     )
     assert command.count("--hisat2_splice_sites") == 1
     assert command[command.index("--hisat2_splice_sites") + 1] == str(reference / "hisat2" / "splice_sites.txt")

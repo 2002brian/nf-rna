@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import yaml
 
 from conftest import base_config
@@ -29,6 +30,9 @@ def test_plan_exposes_requested_and_effective_runtime_budget(monkeypatch, projec
     config = base_config()
     config["execution"] = {"profile": "local", "max_cpus": 16, "max_memory_gb": 32}
     root = project_factory(config=config)
+    # macOS uses the Docker backend, whose VM capacity is an additional ceiling.
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
     monkeypatch.setattr("rnaseq.execution.runtime_snapshot", lambda *_args: RuntimeSnapshot(
         "Darwin", "arm64", 12, 24 * 1024**3, "arm64", 16 * 1024**3, "test", "arm64", 10
     ))
@@ -38,3 +42,19 @@ def test_plan_exposes_requested_and_effective_runtime_budget(monkeypatch, projec
     assert resources["effective"] == {"cpus": 10, "memory_gib": 16}
     assert resources["clamped"] is True
     assert "aggregate" in resources["scheduling"]["policy"]
+
+
+def test_linux_plan_uses_host_capacity_and_never_queries_docker(monkeypatch, project_factory):
+    from rnaseq.execution import RuntimeSnapshot
+
+    root = project_factory(config=base_config())
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    monkeypatch.setattr("rnaseq.execution.runtime_snapshot", lambda *_args: pytest.fail("Linux planning queried Docker"))
+    monkeypatch.setattr("rnaseq.execution.native_runtime_snapshot", lambda: RuntimeSnapshot(
+        "Linux", "x86_64", 28, 50 * 1024**3, None, None, None, None,
+    ))
+    generate_plan(validate_project(root))
+    resources = yaml.safe_load((root / "planning" / "resource_plan.yaml").read_text(encoding="utf-8"))
+    assert resources["container_runtime"]["ceiling_applies"] is False
+    assert resources["warnings"] == []

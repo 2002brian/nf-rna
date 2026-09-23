@@ -7,9 +7,10 @@ import pytest
 import yaml
 
 from conftest import base_config
-from rnaseq.execution import build_hisat2_featurecounts_command, resolved_upstream_implementation
+from rnaseq.execution import HISAT2_LINUX_CONDA_ENV, RuntimeCheck, build_hisat2_featurecounts_command, render_upstream_conda_config, resolve_execution_workspace, resolved_upstream_implementation
 from rnaseq.hisat2_featurecounts import HISAT2_IMAGE, HISAT2_VERSION, assemble_count_matrix, featurecounts_arguments, hisat2_strand_option
-from rnaseq.service import CaseRun, freeze_case_inputs
+from rnaseq.planner import generate_plan
+from rnaseq.service import CaseRun, _provenance, freeze_case_inputs, prepare_service_run
 from rnaseq.validators import validate_project
 
 
@@ -37,7 +38,25 @@ def test_hisat2_is_pinned_to_2_2_3_for_builder_and_runtime():
     assert HISAT2_VERSION == "2.2.3"
     assert HISAT2_IMAGE == "quay.io/biocontainers/hisat2:2.2.3--h8471819_0"
     assert "hisat2=2.2.3" in (root / "environment.reference-builder.yml").read_text(encoding="utf-8")
-    assert "hisat2:2.2.3--h8471819_0" in (root / "workflow" / "hisat2_featurecounts.nf").read_text(encoding="utf-8")
+    assert "bioconda::hisat2=2.2.3=h8471819_0" in HISAT2_LINUX_CONDA_ENV.read_text(encoding="utf-8")
+
+
+def test_linux_hisat2_processes_use_one_pinned_conda_environment():
+    workflow = (Path(__file__).parents[1] / "workflow" / "hisat2_featurecounts.nf").read_text(encoding="utf-8")
+    environment = yaml.safe_load(HISAT2_LINUX_CONDA_ENV.read_text(encoding="utf-8"))
+    dependencies = set(environment["dependencies"])
+    assert {"bioconda::hisat2=2.2.3=h8471819_0", "bioconda::samtools=1.21=h50ea8bc_0",
+            "bioconda::subread=2.0.6=he4a0461_2", "bioconda::fastp=0.24.0=h125f33a_0",
+            "bioconda::fastqc=0.12.1=hdfd78af_0", "bioconda::multiqc=1.33=pyhdfd78af_0",
+            "conda-forge::python=3.10.4=h2660328_0_cpython"} <= dependencies
+    assert len(dependencies) == 173
+    for process in ("FASTQC_RAW", "FASTP_PREPARE", "HISAT2_ALIGN", "FASTQC_PROCESSED",
+                    "SORT_LANE_BAM", "MERGE_AND_INDEX", "PREPARE_COUNT_BAM", "FEATURECOUNTS",
+                    "ASSEMBLE_COUNTS", "MULTIQC"):
+        section = workflow.split(f"process {process} {{", 1)[1].split("\nprocess ", 1)[0]
+        assert "conda params.hisat2_linux_conda" in section
+    assert "docker.enabled = false" in (Path(__file__).parents[1] / "workflow" / "nextflow.config").read_text(encoding="utf-8")
+    assert "conda.cacheDir" in render_upstream_conda_config(Path("/tmp/native-cache"))
 
 
 def test_hisat2_workflow_publishes_fastp_reports_and_feeds_upstream_reports_to_multiqc():
@@ -110,7 +129,7 @@ def test_hisat2_backend_requires_explicit_strandedness(project_factory):
     assert any("explicit upstream.strandedness" in issue.message for issue in report.errors)
 
 
-def test_hisat2_command_uses_first_party_workflow_and_custom_index(tmp_path: Path):
+def test_hisat2_command_uses_first_party_workflow_and_custom_index(tmp_path: Path, monkeypatch):
     root = tmp_path / "project"
     fastq = root / "input" / "fastq"
     fastq.mkdir(parents=True)
@@ -137,9 +156,13 @@ def test_hisat2_command_uses_first_party_workflow_and_custom_index(tmp_path: Pat
     assert report.is_valid and report.execution_ready
     local_config = root / "local.config"
     local_config.write_text("process { resourceLimits = [cpus: 8, memory: '12.GB'] }\n", encoding="utf-8")
-    command = build_hisat2_featurecounts_command(report, samplesheet=root / "samples.csv", output_dir=root / "out", profile="local", config_file=local_config)
+    conda_config = root / "conda.config"
+    conda_config.write_text(render_upstream_conda_config(root / "cache"), encoding="utf-8")
+    command = build_hisat2_featurecounts_command(report, samplesheet=root / "samples.csv", output_dir=root / "out", profile="local", config_file=local_config, conda_config_file=conda_config)
     assert any(item.endswith("workflow/hisat2_featurecounts.nf") for item in command)
     assert command[command.index("-c") + 1] == str(local_config.resolve())
+    assert str(conda_config.resolve()) in command
+    assert command[command.index("-profile") + 1] == "conda"
     assert command[command.index("--strandedness") + 1] == "reverse"
     assert command[command.index("--hisat2_index") + 1] == str(index)
     resolved = resolved_upstream_implementation(report)
@@ -154,3 +177,20 @@ def test_hisat2_command_uses_first_party_workflow_and_custom_index(tmp_path: Pat
     assert execution["upstream_implementation"]["implementation"]["name"] == "nf-rna/hisat2_featurecounts"
     assert execution["upstream_implementation"]["legacy_fastq_config"]["pipeline_version"] == "3.26.0"
     assert yaml.safe_load(frozen.manifest.read_text(encoding="utf-8"))["upstream"]["quantification"]["method"] == "hisat2_featurecounts"
+
+    monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(tmp_path / "execution"))
+    monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "test"))
+    monkeypatch.setattr("rnaseq.service.check_upstream_conda", lambda: RuntimeCheck("Conda", "FOUND", "test"))
+    monkeypatch.setattr("rnaseq.service.downstream_runtime_preflight", lambda: None)
+    monkeypatch.setattr("rnaseq.service.check_docker", lambda: (_ for _ in ()).throw(AssertionError("Linux HISAT2 queried Docker")))
+    monkeypatch.setattr("rnaseq.service.runtime_snapshot", lambda *_: (_ for _ in ()).throw(AssertionError("Linux HISAT2 queried Docker capacity")))
+    monkeypatch.setattr("rnaseq.service.inspect_container_image", lambda *_: (_ for _ in ()).throw(AssertionError("Linux HISAT2 inspected Docker image")))
+    generate_plan(report)
+    prepare_service_run(report, profile="local")
+    provenance = _provenance(
+        report, CaseRun("CASE", "20260905-120000+0800", run_dir, "2026-09-05T12:00:00+08:00"),
+        profile="local", command=["rnaseq", "run"], workspace=resolve_execution_workspace("CASE", "20260905-120000+0800"),
+    )
+    assert provenance["upstream_container_runtime"] is None
+    assert provenance["upstream_runtime"]["kind"] == "conda"
+    assert len(provenance["upstream_runtime"]["environment"]["sha256"]) == 64

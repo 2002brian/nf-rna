@@ -48,22 +48,16 @@ from rnaseq.validators import validate_project
 runner = CliRunner()
 
 
-def test_osx_arm64_nfcore_conda_overrides_are_exact(monkeypatch, tmp_path):
+def test_experimental_osx_arm64_nfcore_conda_overrides_are_withdrawn(monkeypatch, tmp_path):
+    """macOS uses Docker; the experimental per-process Conda overrides must not return."""
     monkeypatch.setattr("rnaseq.execution.native_platform", lambda: "osx-arm64")
     config = render_upstream_conda_config(tmp_path / "cache")
-    assert config.count("withName:") == 2
-    assert "withName: 'NFCORE_RNASEQ:PREPARE_GENOME:EAUTILS_GTF2BED'" in config
-    assert "conda.enabled = true" in config
-    assert "docker.enabled = false" in config
-    assert "conda = 'conda-forge::perl=5.32.1=7_h4614cfb_perl5 conda-forge::gzip=1.13=hf50ae52_0'" in config
-    assert "container =" not in config
-    assert "host" not in config.lower()
-    assert "withName: 'NFCORE_RNASEQ:RNASEQ:QUANTIFY_PSEUDO_ALIGNMENT:QUANT_TXIMPORT_SUMMARIZEDEXPERIMENT:TXIMETA_TXIMPORT'" in config
-    assert "conda = 'conda-forge::r-base=4.5.3=h35b0bb1_3 bioconda::bioconductor-tximeta=1.28.2=r45hdfd78af_0 bioconda::bioconductor-tximport=1.38.2=r45hdfd78af_0 bioconda::bioconductor-summarizedexperiment=1.40.0=r45hdfd78af_0 bioconda::bioconductor-s4vectors=0.48.1=r45h6cc0085_0'" in config
+    assert "EAUTILS_GTF2BED" not in config and "TXIMETA_TXIMPORT" not in config
+    assert "withName:" not in config
 
 
 @pytest.mark.parametrize("platform", ["linux-64", "osx-64"])
-def test_non_arm64_upstream_process_environments_remain_native(monkeypatch, tmp_path, platform):
+def test_upstream_conda_config_has_no_process_overrides(monkeypatch, tmp_path, platform):
     monkeypatch.setattr("rnaseq.execution.native_platform", lambda: platform)
     config = render_upstream_conda_config(tmp_path / "cache")
     assert "withName:" not in config
@@ -337,6 +331,8 @@ def test_container_runtime_probe_reports_the_failed_prerequisite(monkeypatch):
 
 
 def test_doctor_reports_a_successful_container_probe(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
     monkeypatch.setattr("rnaseq.execution.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "available"))
     monkeypatch.setattr("rnaseq.execution.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "available"))
     monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda *_args: RuntimeCheck("First-party execution image", "FOUND", "available"))
@@ -346,6 +342,8 @@ def test_doctor_reports_a_successful_container_probe(monkeypatch):
 
 
 def test_doctor_reports_requested_and_observed_image_identity(monkeypatch, project_factory):
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
     root = project_factory()
     config_path = root / "project.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -371,6 +369,8 @@ def test_doctor_reports_requested_and_observed_image_identity(monkeypatch, proje
 
 
 def test_doctor_distinguishes_missing_nextflow_and_docker_from_architecture_warnings(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
     monkeypatch.setattr("rnaseq.execution.check_nextflow", lambda: RuntimeCheck("Nextflow", "NOT FOUND", "not installed"))
     monkeypatch.setattr("rnaseq.execution.check_docker", lambda: RuntimeCheck("Docker", "NOT FOUND", "daemon unavailable"))
     monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda *_args: RuntimeCheck("First-party execution image", "NOT FOUND", "daemon unavailable"))

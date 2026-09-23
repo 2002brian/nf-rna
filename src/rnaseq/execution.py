@@ -33,11 +33,25 @@ from rnaseq.workflow_assets import workflow_asset_path
 LOCAL_PROFILE = "local"
 CONTAINER_PROFILE = "docker"
 NFCORE_CONDA_PROFILE = "conda"
+# Production runtime policy: one backend per supported host platform.
+BACKEND_CONDA = "conda"
+BACKEND_DOCKER = "docker"
+BACKEND_LABELS = {BACKEND_CONDA: "Nextflow + Conda", BACKEND_DOCKER: "Docker"}
+WINDOWS_UNSUPPORTED_MESSAGE = (
+    "Native Windows is not a supported nf-rna runtime. Install WSL2 with an Ubuntu distribution, "
+    "then install and run nf-rna inside WSL2 (Linux x86-64, Nextflow + Conda)."
+)
 NFCORE_RNASEQ_REVISION = "e7ca46272c8f9d5ceee3f71759f4ba551d3217a4"
 RUN_STATES = {"CREATED", "RUNNING", "SUCCESS", "FAILED"}
 EXECUTION_ROOT_ENV = "RNASEQ_EXECUTION_ROOT"
 FIRST_PARTY_EXECUTION_IMAGE = DEFAULT_EXECUTION_IMAGE
 HISAT2_WORKFLOW = workflow_asset_path("hisat2_featurecounts.nf")
+HISAT2_LINUX_CONDA_ENV = HISAT2_WORKFLOW.parent / "envs" / "hisat2-featurecounts-linux-64.yml"
+# Reviewed identity of the qualified linux-64 HISAT2/featureCounts environment.
+HISAT2_LINUX_CONDA_ENV_SHA256 = "2c407fb2b37529db8d1b70b7c757140124868e3085b2c83a7f57100249e0aa0c"
+# nf-core/rnaseq 3.26.0 manifest: nextflowVersion = '!>=25.04.3'; Nextflow 25+ needs Java 17+.
+NEXTFLOW_MINIMUM_VERSION = "25.04.3"
+JAVA_MINIMUM_MAJOR = 17
 CONTAINER_R_PACKAGES = (
     "DESeq2", "tximport", "ggplot2", "pheatmap", "yaml", "jsonlite",
     "clusterProfiler", "AnnotationDbi", "org.Hs.eg.db", "org.Mm.eg.db",
@@ -219,6 +233,38 @@ def resolve_execution_workspace(case_id: str, run_id: str) -> ExecutionWorkspace
     return ExecutionWorkspace(root=root, launch_dir=root / "launch", work_dir=root / "work")
 
 
+def execution_backend() -> str:
+    """Select the production backend from the host: linux-64/WSL2 -> Conda, macOS arm64 -> Docker."""
+
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    if system == "linux" and machine in {"x86_64", "amd64"}:
+        return BACKEND_CONDA
+    if system == "darwin" and machine in {"arm64", "aarch64"}:
+        return BACKEND_DOCKER
+    if system == "windows" or system.startswith(("cygwin", "msys", "mingw")):
+        raise ExecutionPreflightError(WINDOWS_UNSUPPORTED_MESSAGE)
+    raise ExecutionPreflightError(
+        f"Unsupported nf-rna runtime platform {system}-{machine}. Supported: Linux x86-64 including "
+        "WSL2 (Nextflow + Conda) and macOS Apple Silicon (Docker)."
+    )
+
+
+def runtime_platform_label() -> str:
+    system, machine = platform.system().lower(), platform.machine().lower()
+    if system == "linux":
+        return "linux-64 / WSL2" if _is_wsl() else "linux-64"
+    if system == "darwin":
+        return f"darwin-{'arm64' if machine in {'arm64', 'aarch64'} else machine}"
+    return f"{system}-{machine}"
+
+
+def backend_resource_snapshot(image: str) -> RuntimeSnapshot:
+    """Host capacity for Conda; Docker capacity (and image architecture) for the Docker backend."""
+
+    return runtime_snapshot(image) if execution_backend() == BACKEND_DOCKER else native_runtime_snapshot()
+
+
 def upstream_conda_cache() -> Path:
     """Shared nf-core process environments outside all per-run work directories."""
 
@@ -248,20 +294,9 @@ def prepare_upstream_conda_cache() -> Path:
 
 def render_upstream_conda_config(cache: Path) -> str:
     # JSON string quoting is valid Groovy syntax and handles paths with spaces.
-    config = f"conda.enabled = true\ndocker.enabled = false\nconda.cacheDir = {json.dumps(str(cache))}\n"
-    if native_platform() == "osx-arm64":
-        # nf-core 3.26.0 pins perl 5.26.2 for this task, which has no osx-arm64 build.
-        # Its bundled gtf2bed.pl only needs Perl core modules and gunzip for gzipped GTFs.
-        config += """process {
-    withName: 'NFCORE_RNASEQ:PREPARE_GENOME:EAUTILS_GTF2BED' {
-        conda = 'conda-forge::perl=5.32.1=7_h4614cfb_perl5 conda-forge::gzip=1.13=hf50ae52_0'
-    }
-    withName: 'NFCORE_RNASEQ:RNASEQ:QUANTIFY_PSEUDO_ALIGNMENT:QUANT_TXIMPORT_SUMMARIZEDEXPERIMENT:TXIMETA_TXIMPORT' {
-        conda = 'conda-forge::r-base=4.5.3=h35b0bb1_3 bioconda::bioconductor-tximeta=1.28.2=r45hdfd78af_0 bioconda::bioconductor-tximport=1.38.2=r45hdfd78af_0 bioconda::bioconductor-summarizedexperiment=1.40.0=r45hdfd78af_0 bioconda::bioconductor-s4vectors=0.48.1=r45h6cc0085_0'
-    }
-}
-"""
-    return config
+    # Only the linux-64 Conda backend uses this config.  The former experimental
+    # osx-arm64 per-process Conda overrides were withdrawn: macOS uses Docker.
+    return f"conda.enabled = true\ndocker.enabled = false\nconda.cacheDir = {json.dumps(str(cache))}\n"
 
 
 def native_runtime_snapshot() -> RuntimeSnapshot:
@@ -406,6 +441,14 @@ def _host_memory_bytes() -> int | None:
         return None
 
 
+def _is_wsl() -> bool:
+    try:
+        release_identity = f"{platform.release()} {Path('/proc/version').read_text(encoding='utf-8')}".lower()
+    except OSError:
+        return False
+    return "microsoft" in release_identity or "wsl" in release_identity
+
+
 def runtime_snapshot(image: str = FIRST_PARTY_EXECUTION_IMAGE) -> RuntimeSnapshot:
     """Collect cheap host/Docker facts without launching workflow containers."""
 
@@ -435,13 +478,8 @@ def runtime_snapshot(image: str = FIRST_PARTY_EXECUTION_IMAGE) -> RuntimeSnapsho
     except (FileNotFoundError, json.JSONDecodeError, TypeError):
         pass
     host_os = platform.system() or "unknown"
-    if host_os.lower() == "linux":
-        try:
-            release_identity = f"{platform.release()} {Path('/proc/version').read_text(encoding='utf-8')}".lower()
-            if "microsoft" in release_identity or "wsl" in release_identity:
-                host_os = "Linux/WSL"
-        except OSError:
-            pass
+    if host_os.lower() == "linux" and _is_wsl():
+        host_os = "Linux/WSL"
     return RuntimeSnapshot(
         host_os=host_os,
         host_architecture=host_architecture,
@@ -589,21 +627,27 @@ def runtime_resource_checks(snapshot: RuntimeSnapshot, budget: ResourceContract 
         checks.append(RuntimeCheck("First-party execution image architecture", "FOUND", "amd64 image on arm64 host; Docker/Rosetta emulation may reduce throughput.", "WARN"))
     else:
         checks.append(RuntimeCheck("First-party execution image architecture", "FOUND", f"image={snapshot.first_party_image_architecture}; host={snapshot.host_architecture}"))
-    resources = effective_resource_budget(snapshot, budget)
-    checks.append(RuntimeCheck(
-        "Project resource budget", "FOUND",
-        f"requested aggregate ceiling={resources.requested_cpus} CPUs/{resources.requested_memory_gib} GiB.",
-    ))
-    level = "WARN" if resources.warnings or resources.effective_cpus < 8 or resources.effective_memory_gib < 12 else None
-    checks.append(RuntimeCheck(
-        "Effective local budget", "NOT FOUND" if level else "FOUND",
-        f"effective aggregate ceiling={resources.effective_cpus} CPUs/{resources.effective_memory_gib} GiB; "
-        f"container-runtime ceiling applies={resources.runtime_ceiling_applies}; "
-        + (" ".join(resources.warnings) if resources.warnings else "independent ready tasks may run concurrently within this ceiling."),
-        level,
-    ))
+    checks.extend(_budget_checks(snapshot, budget))
     checks.append(RuntimeCheck("nf-core upstream image architecture", "FOUND", "nf-core/rnaseq resolves process images dynamically; inspect the frozen Nextflow trace for per-process image architecture.", "WARN"))
     return tuple(checks)
+
+
+def _budget_checks(snapshot: RuntimeSnapshot, budget: ResourceContract) -> tuple[RuntimeCheck, ...]:
+    resources = effective_resource_budget(snapshot, budget)
+    level = "WARN" if resources.warnings or resources.effective_cpus < 8 or resources.effective_memory_gib < 12 else None
+    return (
+        RuntimeCheck(
+            "Project resource budget", "FOUND",
+            f"requested aggregate ceiling={resources.requested_cpus} CPUs/{resources.requested_memory_gib} GiB.",
+        ),
+        RuntimeCheck(
+            "Effective local budget", "NOT FOUND" if level else "FOUND",
+            f"effective aggregate ceiling={resources.effective_cpus} CPUs/{resources.effective_memory_gib} GiB; "
+            f"container-runtime ceiling applies={resources.runtime_ceiling_applies}; "
+            + (" ".join(resources.warnings) if resources.warnings else "independent ready tasks may run concurrently within this ceiling."),
+            level,
+        ),
+    )
 
 
 def render_local_resource_config(budget: ResourceContract = LOCAL_RESOURCE_CEILING) -> str:
@@ -745,12 +789,177 @@ def _reference_runtime_check(project_dir: Path | None) -> RuntimeCheck:
     return RuntimeCheck("Reference readiness", "FOUND", f"source={report.config.reference.source}; no dynamic reference preparation is performed by doctor.", "WARN")
 
 
-def doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeCheck, ...]:
-    """Return inexpensive, non-mutating execution prerequisite checks."""
+def _version_tuple(text: str) -> tuple[int, ...] | None:
+    match = re.match(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?", text.strip())
+    return tuple(int(part) for part in match.groups() if part is not None) if match else None
 
-    probe = Path.cwd()
-    writable = probe.exists() and probe.is_dir() and probe.stat().st_mode != 0
-    from rnaseq.downstream import r_runtime_checks
+
+def runtime_policy_checks() -> tuple[RuntimeCheck, ...]:
+    """Name the host platform and the automatically selected production backend."""
+
+    try:
+        backend = execution_backend()
+    except ExecutionPreflightError as exc:
+        return (RuntimeCheck("Runtime platform", "NOT FOUND", f"{runtime_platform_label()}; {exc}"),)
+    return (
+        RuntimeCheck("Runtime platform", "FOUND", runtime_platform_label()),
+        RuntimeCheck("Execution backend", "FOUND", BACKEND_LABELS[backend]),
+    )
+
+
+def check_java() -> RuntimeCheck:
+    """Resolve Java the way the Nextflow launcher does, then require Java 17+."""
+
+    home = os.environ.get("NXF_JAVA_HOME") or os.environ.get("JAVA_HOME")
+    java = str(Path(home) / "bin" / "java") if home else shutil.which("java")
+    source = "NXF_JAVA_HOME" if os.environ.get("NXF_JAVA_HOME") else "JAVA_HOME" if home else "PATH"
+    if java is None:
+        return RuntimeCheck("Java", "NOT FOUND", f"No java executable on PATH; Nextflow requires Java {JAVA_MINIMUM_MAJOR} or later.")
+    try:
+        result = _run_capture([java, "-version"])
+    except FileNotFoundError:
+        return RuntimeCheck("Java", "NOT FOUND", f"{java} (from {source}) does not exist; Nextflow requires Java {JAVA_MINIMUM_MAJOR} or later.")
+    output = (result.stderr + "\n" + result.stdout).strip()
+    match = re.search(r'version "(\d+)(?:\.(\d+))?', output)
+    if result.returncode != 0 or match is None:
+        return RuntimeCheck("Java", "NOT FOUND", f"{java} -version failed: {output or 'no output'}")
+    major = int(match.group(2)) if match.group(1) == "1" and match.group(2) else int(match.group(1))
+    detail = f"{output.splitlines()[0]}; executable={java} (from {source})"
+    if major < JAVA_MINIMUM_MAJOR:
+        return RuntimeCheck("Java", "NOT FOUND", f"{detail}; Nextflow requires Java {JAVA_MINIMUM_MAJOR} or later.")
+    return RuntimeCheck("Java", "FOUND", detail)
+
+
+def check_nextflow_suitability() -> RuntimeCheck:
+    found = check_nextflow()
+    if found.state != "FOUND":
+        return found
+    minimum = NEXTFLOW_MINIMUM_VERSION
+    version = _version_tuple(found.detail)
+    if version is None or version < _version_tuple(minimum):
+        return RuntimeCheck("Nextflow", "NOT FOUND", f"version={found.detail}; nf-core/rnaseq {NFCORE_RNASEQ_VERSION} requires Nextflow >={minimum}.")
+    return RuntimeCheck("Nextflow", "FOUND", f"version={found.detail}; required >={minimum} by nf-core/rnaseq {NFCORE_RNASEQ_VERSION}.")
+
+
+def check_conda_functional() -> RuntimeCheck:
+    """Ask Conda itself for its platform; this is small and never solves or installs."""
+
+    executable = shutil.which("conda")
+    if executable is None:
+        return RuntimeCheck("Conda", "NOT FOUND", "Conda executable was not found on PATH; native upstream and downstream environments are Conda-managed.")
+    try:
+        result = _run_capture([executable, "info", "--json"])
+        info = json.loads(result.stdout) if result.returncode == 0 else None
+    except (FileNotFoundError, json.JSONDecodeError):
+        info = None
+    if not isinstance(info, dict):
+        return RuntimeCheck("Conda", "NOT FOUND", f"{executable} info --json failed; Conda is not functional.")
+    subdir = info.get("platform")
+    detail = f"conda {info.get('conda_version', 'unknown')}; executable={executable}; platform={subdir}"
+    try:
+        expected = native_platform()
+    except ExecutionPreflightError:
+        expected = None
+    if expected is not None and subdir != expected:
+        return RuntimeCheck("Conda", "NOT FOUND", f"{detail}; expected Conda platform {expected}.")
+    return RuntimeCheck("Conda", "FOUND", detail)
+
+
+def _writable_location_check(name: str, path: Path, purpose: str) -> RuntimeCheck:
+    """Check writability without creating anything: the nearest existing ancestor must be writable."""
+
+    anchor = path
+    while not anchor.exists() and anchor != anchor.parent:
+        anchor = anchor.parent
+    if not anchor.is_dir() or not os.access(anchor, os.W_OK | os.X_OK):
+        return RuntimeCheck(name, "NOT FOUND", f"path={path}; {anchor} is not a writable directory; {purpose} cannot be provisioned.")
+    state = "exists" if anchor == path else f"will be created under {anchor}"
+    return RuntimeCheck(name, "FOUND", f"path={path}; writable ({state}); {purpose}.")
+
+
+def nextflow_home() -> Path:
+    return Path(os.environ.get("NXF_HOME") or Path.home() / ".nextflow").expanduser()
+
+
+def nfcore_pin_check() -> RuntimeCheck:
+    detail = f"nf-core/rnaseq {NFCORE_RNASEQ_VERSION} revision={NFCORE_RNASEQ_REVISION}; -profile {NFCORE_CONDA_PROFILE}"
+    assets = nextflow_home() / "assets"
+    cached = (assets / ".repos" / "nf-core" / "rnaseq" / "clones" / NFCORE_RNASEQ_REVISION, assets / "nf-core" / "rnaseq")
+    for clone in cached:
+        if (clone / "main.nf").is_file():
+            return RuntimeCheck("nf-core/rnaseq pin", "FOUND", f"{detail}; cached at {clone}.")
+    return RuntimeCheck("nf-core/rnaseq pin", "NOT FOUND", f"{detail}; not cached under {assets}; Nextflow pulls it on the first FASTQ run (network required).", "WARN")
+
+
+def hisat2_conda_env_check() -> RuntimeCheck:
+    """Verify the reviewed HISAT2/featureCounts environment identity and exact pins."""
+
+    name = "HISAT2/featureCounts Conda environment"
+    if not HISAT2_LINUX_CONDA_ENV.is_file():
+        return RuntimeCheck(name, "NOT FOUND", f"Missing {HISAT2_LINUX_CONDA_ENV}.")
+    digest = sha256_file(HISAT2_LINUX_CONDA_ENV)
+    if digest != HISAT2_LINUX_CONDA_ENV_SHA256:
+        return RuntimeCheck(name, "NOT FOUND", f"sha256 mismatch for {HISAT2_LINUX_CONDA_ENV.name}: expected {HISAT2_LINUX_CONDA_ENV_SHA256}, observed {digest}.")
+    try:
+        dependencies = yaml.safe_load(HISAT2_LINUX_CONDA_ENV.read_text(encoding="utf-8"))["dependencies"]
+    except (yaml.YAMLError, KeyError, TypeError) as exc:
+        return RuntimeCheck(name, "NOT FOUND", f"{HISAT2_LINUX_CONDA_ENV.name} is not a valid Conda environment: {exc}")
+    loose = [item for item in dependencies if not (isinstance(item, str) and re.fullmatch(r"[\w.-]+::[^=\s]+=[^=\s]+=[^=\s]+", item))]
+    if loose:
+        return RuntimeCheck(name, "NOT FOUND", f"Not exactly pinned (channel::name=version=build): {', '.join(map(str, loose[:3]))}")
+    versions = {item.split("::", 1)[1].split("=")[0]: item.split("=")[1] for item in dependencies}
+    expected = {"hisat2": HISAT2_VERSION, "samtools": SAMTOOLS_VERSION, "subread": SUBREAD_VERSION}
+    drift = [f"{tool}={versions.get(tool)} (expected {version})" for tool, version in expected.items() if versions.get(tool) != version]
+    if drift:
+        return RuntimeCheck(name, "NOT FOUND", "Tool versions disagree with the scientific contract: " + ", ".join(drift))
+    reused = sorted(upstream_conda_cache().glob(f"env-*/conda-meta/hisat2-{HISAT2_VERSION}-*.json"))
+    cache_state = f"provisioned env reused from {reused[0].parents[1]}" if reused else "Nextflow provisions it on the first HISAT2 run"
+    return RuntimeCheck(
+        name, "FOUND",
+        f"{HISAT2_LINUX_CONDA_ENV.name} sha256={digest}; {len(dependencies)} exact pins; "
+        f"hisat2={HISAT2_VERSION} samtools={SAMTOOLS_VERSION} subread={SUBREAD_VERSION}; {cache_state}.",
+    )
+
+
+def downstream_runtime_checks() -> tuple[RuntimeCheck, ...]:
+    """Verify the reviewed downstream lock and that its runtime can be provisioned or reused."""
+
+    from rnaseq import downstream_runtime
+
+    try:
+        lock = downstream_runtime.lock_path_for_platform()
+        lock_sha = downstream_runtime._lock_checksum(lock)
+    except ExecutionPreflightError as exc:
+        return (RuntimeCheck("Downstream Conda lock", "NOT FOUND", str(exc)),)
+    checks = [RuntimeCheck("Downstream Conda lock", "FOUND", f"{lock.name} sha256={lock_sha} matches SHA256SUMS.")]
+    root = downstream_runtime._runtime_root()
+    prefix = root / "prefixes" / f"nf-rna-downstream-{downstream_runtime.native_platform()}-{lock_sha[:16]}"
+    location = _writable_location_check("Downstream runtime location", root, "the locked downstream prefix and wheel cache")
+    if location.state == "FOUND" and prefix.is_dir():
+        marker = prefix / "runtime" / "nf-rna-wheel.json"
+        if not marker.is_file():
+            location = RuntimeCheck(location.name, "NOT FOUND", f"{prefix} exists without its wheel identity marker; remove it manually before running.")
+        else:
+            location = RuntimeCheck(location.name, "FOUND", f"{location.detail} Provisioned prefix present: {prefix}.")
+    checks.append(location)
+    ready, detail = downstream_runtime.wheel_source_status()
+    checks.append(RuntimeCheck("Downstream nf-rna wheel", "FOUND" if ready else "NOT FOUND", detail))
+    return tuple(checks)
+
+
+def _free_space_check() -> RuntimeCheck:
+    workspace = resolve_execution_workspace("doctor", "resource-check").work_dir
+    disk_probe = workspace
+    while not disk_probe.exists() and disk_probe != disk_probe.parent:
+        disk_probe = disk_probe.parent
+    try:
+        free = shutil.disk_usage(disk_probe).free
+        return RuntimeCheck("Execution work-directory free space", "FOUND", f"path={workspace}; available_at={disk_probe}; free={_gib(free)}")
+    except OSError as exc:
+        return RuntimeCheck("Execution work-directory free space", "NOT FOUND", f"path={workspace}; unable to inspect free space: {exc}", "WARN")
+
+
+def _doctor_budget(project_dir: Path | None) -> tuple[str, ResourceContract]:
     requested_image = FIRST_PARTY_EXECUTION_IMAGE
     budget = LOCAL_RESOURCE_CEILING
     if project_dir is not None:
@@ -761,18 +970,57 @@ def doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeCheck, ...]:
             budget = project_execution_budget(config)
         except (OSError, ValueError):
             pass
+    return requested_image, budget
+
+
+def native_linux_doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeCheck, ...]:
+    """Checks for the qualified linux-64 architecture: Nextflow + Conda, no Docker."""
+
+    _requested_image, budget = _doctor_budget(project_dir)
+    snapshot = native_runtime_snapshot()
+    probe = Path.cwd()
+    return (
+        RuntimeCheck("Python", "FOUND", f"{sys.executable} ({platform.python_version()})"),
+        check_java(),
+        check_nextflow_suitability(),
+        check_conda_functional(),
+        nfcore_pin_check(),
+        _writable_location_check("Execution root", resolve_execution_workspace("doctor", "resource-check").root.parents[1], "Nextflow launch/work directories"),
+        _writable_location_check("Upstream Conda cache", upstream_conda_cache(), "nf-core and HISAT2/featureCounts process environments"),
+        hisat2_conda_env_check(),
+        *downstream_runtime_checks(),
+        RuntimeCheck(
+            "Host runtime", "FOUND",
+            f"OS={snapshot.host_os}; architecture={snapshot.host_architecture}; logical_cpus={snapshot.logical_cpus or 'unavailable'}; memory={_gib(snapshot.host_memory_bytes)}",
+        ),
+        *_budget_checks(snapshot, budget),
+        _reference_runtime_check(project_dir),
+        RuntimeCheck("Disk write access", "FOUND" if os.access(probe, os.W_OK) else "NOT FOUND", str(probe)),
+        _free_space_check(),
+    )
+
+
+def doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeCheck, ...]:
+    """Return inexpensive, non-mutating execution prerequisite checks."""
+
+    policy = runtime_policy_checks()
+    if len(policy) == 1:
+        return policy
+    if execution_backend() == BACKEND_CONDA:
+        return (*policy, *native_linux_doctor_checks(project_dir))
+    return (*policy, *container_doctor_checks(project_dir))
+
+
+def container_doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeCheck, ...]:
+    """Docker-backend checks for the macOS Apple Silicon production runtime."""
+
+    probe = Path.cwd()
+    writable = probe.exists() and probe.is_dir() and probe.stat().st_mode != 0
+    from rnaseq.downstream import r_runtime_checks
+    requested_image, budget = _doctor_budget(project_dir)
     observed_image = inspect_container_image(requested_image)
     snapshot = runtime_snapshot(requested_image)
-
-    workspace = resolve_execution_workspace("doctor", "resource-check").work_dir
-    disk_probe = workspace
-    while not disk_probe.exists() and disk_probe != disk_probe.parent:
-        disk_probe = disk_probe.parent
-    try:
-        free = shutil.disk_usage(disk_probe).free
-        disk_check = RuntimeCheck("Execution work-directory free space", "FOUND", f"path={workspace}; available_at={disk_probe}; free={_gib(free)}")
-    except OSError as exc:
-        disk_check = RuntimeCheck("Execution work-directory free space", "NOT FOUND", f"path={workspace}; unable to inspect free space: {exc}", "WARN")
+    disk_check = _free_space_check()
 
     return (
         RuntimeCheck("Python", "FOUND", "Python runtime is active."),
@@ -1050,14 +1298,15 @@ def build_nextflow_command(
         raise ExecutionPreflightError("Only the local profile is executable in Milestone 2.")
     assert report.config is not None
     reference: ReferenceConfig = report.config.reference
+    backend = execution_backend()
     command = ["nextflow", "run"]
     if config_file is not None:
         command.extend(["-c", str(config_file.resolve())])
-    if conda_config_file is not None:
+    if backend == BACKEND_CONDA and conda_config_file is not None:
         command.extend(["-c", str(conda_config_file.resolve())])
     command.extend([
         "nf-core/rnaseq", "-r", NFCORE_RNASEQ_VERSION,
-        "-profile", NFCORE_CONDA_PROFILE,
+        "-profile", NFCORE_CONDA_PROFILE if backend == BACKEND_CONDA else CONTAINER_PROFILE,
     ])
     if work_dir is not None:
         command.extend(["-work-dir", str(work_dir.resolve())])
@@ -1109,7 +1358,7 @@ def build_nextflow_command(
 def build_hisat2_featurecounts_command(
     report: ValidationReport, *, samplesheet: Path, output_dir: Path, profile: str,
     reference_paths: dict[str, Path] | None = None, work_dir: Path | None = None,
-    config_file: Path | None = None,
+    config_file: Path | None = None, conda_config_file: Path | None = None,
 ) -> list[str]:
     """Build the first-party alignment/counting command without a shell."""
 
@@ -1148,11 +1397,18 @@ def build_hisat2_featurecounts_command(
         use_runtime_splices = False
     if any(reference_arguments[key] is None for key in ("fasta", "gtf", "hisat2_index")):
         raise ExecutionPreflightError("HISAT2 reference is not prepared.")
+    backend = execution_backend()
     command = ["nextflow", "run"]
     if config_file is not None:
         command.extend(["-c", str(config_file.resolve())])
+    if backend == BACKEND_CONDA:
+        if conda_config_file is None:
+            raise ExecutionPreflightError("Linux HISAT2 execution requires a frozen Conda runtime config.")
+        if not HISAT2_LINUX_CONDA_ENV.is_file():
+            raise ExecutionPreflightError(f"Linux HISAT2 Conda environment is missing: {HISAT2_LINUX_CONDA_ENV}")
+        command.extend(["-c", str(conda_config_file.resolve())])
     command.extend([
-        str(HISAT2_WORKFLOW), "-profile", CONTAINER_PROFILE,
+        str(HISAT2_WORKFLOW), "-profile", NFCORE_CONDA_PROFILE if backend == BACKEND_CONDA else CONTAINER_PROFILE,
         "--input", str(samplesheet.resolve()), "--outdir", str(output_dir.resolve()),
         "--fasta", str(reference_arguments["fasta"]), "--gtf", str(reference_arguments["gtf"]),
         "--hisat2_index", str(reference_arguments["hisat2_index"]),

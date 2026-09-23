@@ -28,6 +28,7 @@ rnaseq-control-plane.yml
 # Nextflow state, task work, logs, and generated R graphics
 .nextflow/
 .nextflow.log*
+/nxf-tmp.??????
 work/
 **/.nextflow/
 **/.nextflow.log*

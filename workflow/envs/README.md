@@ -19,6 +19,19 @@ The runtime identity has two independent immutable parts:
    after creating the locked environment; do not use an editable install or
    the caller's active environment.
 
+The wheel's origin is recorded as `wheel.origin`:
+
+- `installed-distribution` (production): the normally installed nf-rna is
+  verified against its pip `RECORD` hashes and re-packed, with the Python
+  standard library only, into a deterministic uncompressed wheel. Identical
+  installed content always yields the identical wheel SHA-256; no Git checkout,
+  build tool, or network access is needed.
+- `source-checkout-build` (development): a source checkout builds the wheel with
+  `python -m build` from the `dev` extra.
+
+A cached prefix whose recorded wheel SHA-256 differs from the requested wheel
+is rejected, never updated in place.
+
 For each qualified release, provenance must record the platform, lock filename
 and SHA-256, wheel filename and SHA-256, nf-rna version/source revision, and a
 digest of the bundled R-script inventory. The wheel digest remains authoritative

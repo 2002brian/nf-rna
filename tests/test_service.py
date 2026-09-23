@@ -18,6 +18,7 @@ from rnaseq.execution import RuntimeCheck, load_run_states
 from rnaseq.planner import generate_plan
 from rnaseq.service import (
     FrozenInputs,
+    _validate_delivery_count_matrix,
     _sanitize_delivery_appledouble,
     _assert_delivery_appledouble_free,
     assemble_delivery,
@@ -67,6 +68,17 @@ def _frozen_run(project_factory) -> tuple[Path, object, object]:
     run = create_case_run(report, "CASE-20260828-001", moment=datetime(2026, 8, 28, 11, 51, 11))
     freeze_case_inputs(report, run, profile="local", command=["rnaseq", "run"])
     return root, report, run
+
+
+def test_shipped_simple_two_group_counts_pass_delivery_validation():
+    example = Path(__file__).parents[1] / "examples" / "simple_two_group"
+    report = validate_project(example)
+    assert report.is_valid
+    with (example / "metadata.csv").open(encoding="utf-8", newline="") as handle:
+        samples = tuple(row["sample_id"] for row in csv.DictReader(handle))
+    assert _validate_delivery_count_matrix(
+        example / "counts.csv", samples, integer_required=True,
+    ) == (100, 6, samples)
 
 
 def test_freeze_defers_downstream_runtime_identity_until_after_confirmation(project_factory):
