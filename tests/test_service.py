@@ -681,6 +681,10 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "25.10.4"))
     monkeypatch.setattr("rnaseq.service.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "Docker daemon is available."))
     monkeypatch.setattr("rnaseq.service.check_container_runtime", lambda *_args: RuntimeCheck("Control-plane container", "FOUND", "available"))
+    repo_digest = DEFAULT_EXECUTION_IMAGE.rsplit(":", 1)[0] + "@sha256:" + "a" * 64
+    monkeypatch.setattr("rnaseq.service.inspect_container_image", lambda image: {
+        "reference": image, "image_id": "sha256:" + "a" * 64, "repo_digests": [repo_digest], "labels": {},
+    })
     observed: list[tuple[list[str], Path]] = []
 
     def fake_nextflow(command, *, cwd, stdout_path, stderr_path):
@@ -734,10 +738,15 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     downstream_command = observed[1][0]
     assert downstream_command[downstream_command.index("--inputs") + 1] == str(execution_inputs.resolve())
     runtime_config = run.run_dir / "frozen" / "downstream.runtime.config"
-    assert runtime_config.read_text(encoding="utf-8") == f'params.first_party_image = "{DEFAULT_EXECUTION_IMAGE}"\n'
+    # Nextflow receives the frozen immutable reference, never the mutable tag.
+    assert runtime_config.read_text(encoding="utf-8") == f'params.first_party_image = "{repo_digest}"\n'
+    assert frozen_contract["execution"]["image"] == DEFAULT_EXECUTION_IMAGE
+    assert frozen_contract["execution"]["resolved_image"] == repo_digest
     assert str(runtime_config.resolve()) in downstream_command
     assert "/Volumes/KOXIA" not in downstream_command
     provenance = yaml.safe_load((run.run_dir / "provenance" / "run_provenance.yaml").read_text(encoding="utf-8"))
+    assert provenance["execution_image"]["reference"] == DEFAULT_EXECUTION_IMAGE
+    assert provenance["execution_image"]["resolved_reference"] == repo_digest
     assert provenance["execution_root"] == str(local_root / run.case_id / run.run_id)
     assert provenance["fastq_preprocessing"] == "raw"
     assert provenance["skip_trimming"] is False

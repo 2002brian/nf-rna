@@ -33,6 +33,7 @@ CONTAINER_PROFILE = "docker"
 RUN_STATES = {"CREATED", "RUNNING", "SUCCESS", "FAILED"}
 EXECUTION_ROOT_ENV = "RNASEQ_EXECUTION_ROOT"
 FIRST_PARTY_EXECUTION_IMAGE = DEFAULT_EXECUTION_IMAGE
+IMAGE_VERSION_MARKER = "nf-rna-version="
 HISAT2_WORKFLOW = workflow_asset_path("hisat2_featurecounts.nf")
 CONTAINER_R_PACKAGES = (
     "DESeq2", "tximport", "ggplot2", "pheatmap", "yaml", "jsonlite",
@@ -634,7 +635,8 @@ def check_container_runtime(image: str = FIRST_PARTY_EXECUTION_IMAGE) -> Runtime
         "ps --version >/dev/null || { echo 'GNU/procps ps is unavailable' >&2; exit 1; }; "
         f"Rscript -e \"packages <- c({packages}); missing <- packages[!vapply(packages, requireNamespace, logical(1), quietly=TRUE)]; if (length(missing)) {{ cat('missing R package(s): ', paste(missing, collapse=', '), '\\n', file=stderr()); quit(status=1) }}\"; "
         "python -m rnaseq.workflow_support report --help | grep -F -- '--enrichment' >/dev/null "
-        "|| { echo 'missing report CLI option: --enrichment' >&2; exit 1; }"
+        "|| { echo 'missing report CLI option: --enrichment' >&2; exit 1; }; "
+        f"python -c \"import rnaseq; print('{IMAGE_VERSION_MARKER}' + rnaseq.__version__)\""
     )
     result = _run_capture([
         # Keep the image entrypoint and use a non-login shell so the probe sees
@@ -654,9 +656,26 @@ def check_container_runtime(image: str = FIRST_PARTY_EXECUTION_IMAGE) -> Runtime
             else f"container prerequisite probe exited {result.returncode} without diagnostic output."
         )
         return RuntimeCheck("First-party execution image", "NOT FOUND", detail)
+    # The image's installed nf-rna code must be the same release as this CLI:
+    # an older image silently ignores newer frozen contract fields.
+    reported = [
+        line.removeprefix(IMAGE_VERSION_MARKER).strip()
+        for line in (result.stdout or "").splitlines() if line.startswith(IMAGE_VERSION_MARKER)
+    ]
+    if len(reported) != 1 or not reported[0]:
+        return RuntimeCheck(
+            "First-party execution image", "NOT FOUND",
+            f"requested={image}; the image did not report its installed nf-rna version.",
+        )
+    if reported[0] != PIPELINE_VERSION:
+        return RuntimeCheck(
+            "First-party execution image", "INCOMPATIBLE",
+            f"requested={image}; the image contains nf-rna {reported[0]}, but this CLI is nf-rna {PIPELINE_VERSION}. "
+            f"Set runtime.execution_image to the matching image (for example {DEFAULT_EXECUTION_IMAGE}) and re-run 'rnaseq plan'.",
+        )
     return RuntimeCheck(
         "First-party execution image", "FOUND",
-        f"requested={image}; ps, python, Rscript, required R packages, and the final-report CLI contract are available.",
+        f"requested={image}; nf-rna {reported[0]}; ps, python, Rscript, required R packages, and the final-report CLI contract are available.",
     )
 
 

@@ -15,7 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
@@ -72,6 +72,8 @@ TAIPEI = ZoneInfo("Asia/Taipei")
 FINAL_STATES = {"SUCCESS", "FAILED"}
 DELIVERY_MANIFEST_FILENAME = "delivery_manifest.yaml"
 UNLABELED_CONTAINER_SOURCE_REVISION = "unlabeled-container-image"
+OCI_REVISION_LABEL = "org.opencontainers.image.revision"
+RELEASE_REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 @dataclass(frozen=True)
@@ -168,20 +170,113 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _execution_source_revision(image: str) -> str:
-    """Return the OCI revision observed for the exact execution image.
+@dataclass(frozen=True)
+class ExecutionImage:
+    """The first-party image a run executes: what was requested and what is frozen."""
+
+    requested: str
+    reference: str
+    repo_digest: str | None
+    image_id: str | None
+    source_revision: str
+    nf_rna_version: str | None = None
+
+    def contract_fields(self) -> dict[str, object]:
+        return {
+            "image": self.requested, "resolved_image": self.repo_digest, "image_id": self.image_id,
+            "nf_rna_version": self.nf_rna_version, "source_revision": self.source_revision,
+        }
+
+    def manifest_fields(self) -> dict[str, object]:
+        return {
+            "execution_image": self.requested, "resolved_execution_image": self.repo_digest,
+            "execution_image_id": self.image_id, "execution_nf_rna_version": self.nf_rna_version,
+            "source_revision": self.source_revision,
+        }
+
+
+def _execution_source_revision(observed: dict[str, Any]) -> str:
+    """Return the OCI revision label of an inspected execution image.
 
     The frozen execution contract is the sole source passed to every R module.
     A container without an OCI revision label is recorded explicitly rather
     than guessed from the host checkout or a mutable tag.
     """
 
-    observed = inspect_container_image(image)
     labels = observed.get("labels")
-    revision = labels.get("org.opencontainers.image.revision") if isinstance(labels, dict) else None
+    revision = labels.get(OCI_REVISION_LABEL) if isinstance(labels, dict) else None
     if isinstance(revision, str) and revision.strip() and revision.strip().lower() != "unknown":
         return revision.strip()
     return UNLABELED_CONTAINER_SOURCE_REVISION
+
+
+def _image_repository(reference: str) -> str:
+    """Return the repository of an image reference, without tag or digest."""
+
+    name = reference.split("@", 1)[0]
+    if ":" in name.rsplit("/", 1)[-1]:
+        name = name.rsplit(":", 1)[0]
+    return name
+
+
+def _host_source_checkout() -> tuple[Path | None, str | None, bool]:
+    """Return this CLI's git checkout (if any), its HEAD, and whether it is dirty."""
+
+    source_root = Path(__file__).resolve().parents[2]
+    if not (source_root / ".git").exists():
+        return None, None, False
+    try:
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=source_root, capture_output=True, text=True, check=False)
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=source_root, capture_output=True, text=True, check=False)
+    except OSError:
+        return source_root, None, True
+    commit = head.stdout.strip() if head.returncode == 0 else ""
+    return source_root, commit or None, status.returncode != 0 or bool(status.stdout.strip())
+
+
+def resolve_execution_image(requested: str, *, production: bool) -> ExecutionImage:
+    """Resolve the requested first-party image to the reference that will run.
+
+    Only the local Docker image store is consulted; nothing is pulled. The
+    RepoDigest of the requested repository is frozen for Nextflow. Production
+    additionally requires a clean release revision label and, when this CLI
+    runs from a git checkout, a clean checkout at that same revision. A
+    non-production image without a RepoDigest keeps the requested reference.
+    """
+
+    observed = inspect_container_image(requested)
+    repository = _image_repository(requested)
+    candidates = sorted(
+        digest for digest in observed.get("repo_digests") or []
+        if isinstance(digest, str) and digest.split("@", 1)[0] == repository
+    )
+    repo_digest = requested if requested in candidates else (candidates[0] if candidates else None)
+    image_id = observed.get("image_id")
+    image = ExecutionImage(
+        requested, repo_digest or requested, repo_digest, image_id if isinstance(image_id, str) and image_id else None,
+        _execution_source_revision(observed),
+    )
+    if not production:
+        return image
+    if image.image_id is None or image.repo_digest is None:
+        raise ExecutionPreflightError(
+            "Production-intended execution requires an observed immutable execution image ID/digest; "
+            f"Docker could not establish a local RepoDigest for {requested}. Pull the released image "
+            f"('docker pull {requested}') before execution."
+        )
+    if not RELEASE_REVISION_PATTERN.fullmatch(image.source_revision):
+        raise ExecutionPreflightError(
+            f"Production-intended execution requires a released execution image: {requested} has revision "
+            f"label {image.source_revision!r}, not a clean 40-character commit."
+        )
+    checkout, head, dirty = _host_source_checkout()
+    if checkout is not None and (dirty or head != image.source_revision):
+        state = f"{head or 'an unknown commit'}{' with uncommitted changes' if dirty else ''}"
+        raise ExecutionPreflightError(
+            f"Production-intended execution from the source checkout {checkout} requires a clean checkout at the "
+            f"execution image revision {image.source_revision}; found {state}."
+        )
+    return image
 
 
 def _salmon_mapping_contract(run_dir: Path, value: object) -> tuple[Path, dict[str, str]]:
@@ -594,12 +689,13 @@ def _staged_fastq_samplesheet(report: ValidationReport, fastq_root: Path) -> str
 
 def freeze_case_inputs(
     report: ValidationReport, run: CaseRun, *, profile: str, command: list[str],
-    resources: EffectiveResourceBudget | None = None,
+    resources: EffectiveResourceBudget | None = None, execution_image: ExecutionImage | None = None,
 ) -> FrozenInputs:
     """Copy every mutable analysis input into the run before any compute starts."""
 
     assert report.loaded is not None and report.config is not None
-    source_revision = _execution_source_revision(report.config.runtime.execution_image)
+    # The service passes the image it verified; direct callers resolve without enforcement.
+    image = execution_image or resolve_execution_image(report.config.runtime.execution_image, production=False)
     frozen = run.run_dir / "frozen"
     for source, target in (
         (report.loaded.config_path, frozen / "project.yaml"),
@@ -690,8 +786,7 @@ def freeze_case_inputs(
         "run_id": run.run_id,
         "timezone": "Asia/Taipei",
         "profile": profile,
-        "execution_image": report.config.runtime.execution_image,
-        "source_revision": source_revision,
+        **image.manifest_fields(),
         "execution_budget": report.config.execution.model_dump(),
         "command": command,
         "pipeline": {"name": report.config.project.pipeline, "version": PIPELINE_VERSION},
@@ -739,10 +834,7 @@ def freeze_case_inputs(
         # Downstream tasks must never infer L2 from contrasts or metadata.
         "analysis_level": report.config.project.preset.value,
         "analysis": report.config.analysis.model_dump(mode="json") if report.config.analysis else {"enrichment": []},
-        "execution": {
-            "image": report.config.runtime.execution_image,
-            "source_revision": source_revision,
-        },
+        "execution": image.contract_fields(),
         "design": {
             "type": report.config.design.type.value,
             "formula": report.config.design.formula,
@@ -769,16 +861,7 @@ def _provenance(
     report: ValidationReport, run: CaseRun, *, profile: str, command: list[str], workspace: ExecutionWorkspace,
     resources: EffectiveResourceBudget | None = None,
 ) -> dict[str, Any]:
-    git_commit: str | None = None
-    source_root = Path(__file__).resolve().parents[2]
-    source_checkout = source_root if (source_root / ".git").exists() else None
-    try:
-        if source_checkout is not None:
-            result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=source_checkout, capture_output=True, text=True, check=False)
-            if result.returncode == 0:
-                git_commit = result.stdout.strip() or None
-    except OSError:
-        pass
+    source_checkout, git_commit, _dirty = _host_source_checkout()
     nextflow = check_nextflow()
     requested_image = report.config.runtime.execution_image if report.config else FIRST_PARTY_EXECUTION_IMAGE
     runtime = runtime_snapshot(requested_image)
@@ -787,9 +870,14 @@ def _provenance(
     def tool_identity(version: str, image: str) -> dict[str, object]:
         return {"version": version, **inspect_container_image(image)}
 
-    execution_image = inspect_container_image(requested_image)
     frozen_contract = _read_json_mapping(run.run_dir / "frozen" / "downstream_contract.json", "frozen downstream contract")
     frozen_execution = frozen_contract.get("execution") if isinstance(frozen_contract.get("execution"), dict) else {}
+    execution_image = {
+        **inspect_container_image(requested_image),
+        # The immutable reference Nextflow executes and the nf-rna version verified in it.
+        "resolved_reference": frozen_execution.get("resolved_image"),
+        "nf_rna_version": frozen_execution.get("nf_rna_version"),
+    }
     workflow_hashes = {
         "workflow/main.nf": _sha256(workflow_asset_path("main.nf")),
         "workflow/hisat2_featurecounts.nf": _sha256(HISAT2_WORKFLOW),
@@ -1405,7 +1493,18 @@ def sanitize_completed_delivery(run_dir: Path) -> Path:
     return delivery
 
 
-def prepare_service_run(report: ValidationReport, *, profile: str) -> EffectiveResourceBudget:
+def _verified_execution_image(requested: str, *, production: bool) -> ExecutionImage:
+    """Resolve the first-party image, then probe that exact reference before any run exists."""
+
+    image = resolve_execution_image(requested, production=production)
+    container = check_container_runtime(image.reference)
+    if container.state != "FOUND":
+        raise ExecutionPreflightError("First-party execution image is required: " + container.detail)
+    # check_container_runtime accepts only an image reporting this CLI's version.
+    return replace(image, nf_rna_version=PIPELINE_VERSION)
+
+
+def prepare_service_run(report: ValidationReport, *, profile: str) -> tuple[EffectiveResourceBudget, ExecutionImage]:
     if profile != LOCAL_PROFILE:
         raise ExecutionPreflightError("Only '--profile local' is implemented; server profiles are configuration placeholders.")
     if not report.is_valid or report.config is None:
@@ -1427,18 +1526,10 @@ def prepare_service_run(report: ValidationReport, *, profile: str) -> EffectiveR
         raise ExecutionPreflightError("Nextflow is required: " + nextflow.detail)
     if docker.state != "FOUND":
         raise ExecutionPreflightError("Docker is required: " + docker.detail)
-    requested_image = report.config.runtime.execution_image
-    container = check_container_runtime(requested_image)
-    if container.state != "FOUND":
-        raise ExecutionPreflightError("First-party execution image is required: " + container.detail)
-    if report.config.reference.acceptance == "production":
-        observed = inspect_container_image(requested_image)
-        if not observed.get("image_id"):
-            raise ExecutionPreflightError(
-                "Production-intended execution requires an observed immutable execution image ID/digest; "
-                f"Docker could not establish one for {requested_image}."
-            )
-    return resources
+    image = _verified_execution_image(
+        report.config.runtime.execution_image, production=report.config.reference.acceptance == "production",
+    )
+    return resources, image
 
 
 def _parse_retry_reference(value: str) -> tuple[str, str]:
@@ -1712,8 +1803,14 @@ def _retry_report(run: CaseRun) -> tuple[ValidationReport, dict[str, Path]]:
     return report, paths
 
 
-def _prepare_retry_runtime(report: ValidationReport, profile: str) -> EffectiveResourceBudget:
-    """Perform runtime-only checks without consulting mutable project planning files."""
+def _prepare_retry_runtime(
+    report: ValidationReport, profile: str, frozen_image: str | None = None,
+) -> tuple[EffectiveResourceBudget, ExecutionImage]:
+    """Perform runtime-only checks without consulting mutable project planning files.
+
+    A source run that froze an immutable image reference is retried with that
+    same image; older contracts fall back to the requested image.
+    """
 
     if profile != LOCAL_PROFILE or report.config is None:
         raise ExecutionPreflightError("Retry supports only the frozen local execution profile.")
@@ -1727,12 +1824,26 @@ def _prepare_retry_runtime(report: ValidationReport, profile: str) -> EffectiveR
         raise ExecutionPreflightError("Nextflow is required: " + nextflow.detail)
     if docker.state != "FOUND":
         raise ExecutionPreflightError("Docker is required: " + docker.detail)
-    container = check_container_runtime(report.config.runtime.execution_image)
-    if container.state != "FOUND":
-        raise ExecutionPreflightError("First-party execution image is required: " + container.detail)
-    if report.config.reference.acceptance == "production" and not inspect_container_image(report.config.runtime.execution_image).get("image_id"):
-        raise ExecutionPreflightError("Production-intended retry requires an observed immutable execution image ID/digest.")
-    return resources
+    image = _verified_execution_image(
+        frozen_image or report.config.runtime.execution_image,
+        production=report.config.reference.acceptance == "production",
+    )
+    return resources, image
+
+
+def _record_retry_execution_image(run: CaseRun, image: ExecutionImage) -> None:
+    """Record the retry's verified image, keeping the source run's requested reference."""
+
+    frozen = run.run_dir / "frozen"
+    contract = _read_json_mapping(frozen / "downstream_contract.json", "retry downstream contract")
+    execution = contract.get("execution") if isinstance(contract.get("execution"), dict) else {}
+    _update_contract(
+        frozen / "downstream_contract.json",
+        {"execution": {**execution, **image.contract_fields(), "image": execution.get("image", image.requested)}},
+    )
+    manifest = _read_yaml_mapping(frozen / "execution_manifest.yaml", "retry execution manifest")
+    manifest.update({**image.manifest_fields(), "execution_image": manifest.get("execution_image", image.requested)})
+    _write_yaml(frozen / "execution_manifest.yaml", manifest)
 
 
 def _retry_command(command: list[str], enabled: bool) -> list[str]:
@@ -1775,14 +1886,14 @@ def execute_service_run(
 ) -> CaseRun:
     """Run the complete service lifecycle; final success requires downstream completion."""
 
-    resources = prepare_service_run(report, profile=profile)
+    resources, image = prepare_service_run(report, profile=profile)
     run = create_case_run(report, case_id)
     command = ["rnaseq", "run", str(report.project_dir), "--case-id", case_id, "--profile", profile]
     if reuse_upstream:
         command.extend(["--reuse-upstream", reuse_upstream])
     try:
         workspace = resolve_execution_workspace(run.case_id, run.run_id)
-        frozen = freeze_case_inputs(report, run, profile=profile, command=command, resources=resources)
+        frozen = freeze_case_inputs(report, run, profile=profile, command=command, resources=resources, execution_image=image)
         _write_yaml(
             run.run_dir / "provenance" / "run_provenance.yaml",
             _provenance(report, run, profile=profile, command=command, workspace=workspace, resources=resources),
@@ -1824,7 +1935,7 @@ def execute_service_run(
             return run
         execution_inputs = resolve_downstream_inputs(run)
         observer_config = write_downstream_observer_config(run)
-        runtime_config = write_downstream_runtime_config(run, report.config.runtime.execution_image)
+        runtime_config = write_downstream_runtime_config(run, image.reference)
         docker_user_config = write_downstream_docker_user_config(run)
         downstream = build_downstream_nextflow_command(
             run, profile=profile, work_dir=workspace.work_dir / "downstream", observer_config=observer_config,
@@ -1864,13 +1975,15 @@ def execute_retry_service_run(
     # Runtime preflight is based on the frozen project snapshot, before a new
     # run is allocated.  It therefore cannot silently absorb current edits.
     source_report, _ = _retry_report(source.run)
-    resources = _prepare_retry_runtime(source_report, source.execution["profile"])
+    frozen_execution = source.contract.get("execution") if isinstance(source.contract.get("execution"), dict) else {}
+    resources, image = _prepare_retry_runtime(source_report, source.execution["profile"], frozen_execution.get("resolved_image"))
     command = ["rnaseq", "retry", str(project_dir.resolve()), "--retry-of", retry_of]
     if nextflow_resume:
         command.append("--nextflow-resume")
     run = _create_retry_case_run(project_dir.resolve(), source)
     try:
         _clone_retry_contract(source, run, command)
+        _record_retry_execution_image(run, image)
         report, reference_paths = _retry_report(run)
         workspace = resolve_execution_workspace(run.case_id, run.run_id)
         provenance = _provenance(
@@ -1933,7 +2046,7 @@ def execute_retry_service_run(
             return run
         execution_inputs = resolve_downstream_inputs(run)
         observer_config = write_downstream_observer_config(run)
-        runtime_config = write_downstream_runtime_config(run, report.config.runtime.execution_image)
+        runtime_config = write_downstream_runtime_config(run, image.reference)
         docker_user_config = write_downstream_docker_user_config(run)
         downstream = build_downstream_nextflow_command(
             run, profile=profile, work_dir=workspace.work_dir / "downstream", observer_config=observer_config,
