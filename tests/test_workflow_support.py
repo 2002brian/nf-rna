@@ -260,7 +260,7 @@ def test_active_nextflow_l2_process_uses_the_guarded_config_builder():
 
 def test_frozen_source_revision_is_passed_unchanged_to_all_r_modules(project_factory, tmp_path):
     contract, contract_path, l2, inputs = _frozen_contract(project_factory, schema_version="1.1")
-    contract["execution"] = {"image": "nf-rna:test", "source_revision": "abc123-dirty"}
+    contract["execution"] = {"downstream_runtime": {"kind": "conda", "platform": "osx-arm64", "source_revision": "abc123-dirty"}}
     contract_path.write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     configs = [
         l1_config(contract_path, inputs, tmp_path / "l1"),

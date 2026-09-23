@@ -80,20 +80,21 @@ def test_downstream_nextflow_profiles_parse(profile: str):
     assert result.returncode == 0, result.stderr
 
 
-def test_all_downstream_processes_explicitly_use_the_frozen_first_party_image():
+def test_all_downstream_processes_explicitly_use_the_frozen_conda_runtime():
     main = (WORKFLOW / "main.nf").read_text(encoding="utf-8")
     config = (WORKFLOW / "nextflow.config").read_text(encoding="utf-8")
-    assert "params.first_party_image = null" in main
-    assert "Specify --first_party_image through rnaseq" in main
+    assert "params.downstream_runtime_prefix = null" in main
+    assert "Specify --downstream_runtime_prefix through rnaseq" in main
     assert "ghcr.io/2002brian/nf-rna:" not in main
     for name in ("L1_ANALYSIS", "L2_ANALYSIS", "ENRICHMENT_ANALYSIS", "TECHNICAL_REPORT", "TECHNICAL_REPORT_NO_ENRICHMENT", "TECHNICAL_REPORT_L1"):
         body = re.search(rf"process {name} \{{(?P<body>.*?)^\}}", main, flags=re.DOTALL | re.MULTILINE)
         assert body is not None
-        assert "container params.first_party_image" in body.group("body")
+        assert "conda params.downstream_runtime_prefix" in body.group("body")
+        assert "container " not in body.group("body")
     assert "process.container" not in config
 
 
-def test_direct_downstream_execution_rejects_a_missing_frozen_image(tmp_path):
+def test_direct_downstream_execution_rejects_a_missing_frozen_runtime_prefix(tmp_path):
     if shutil.which("nextflow") is None:
         pytest.skip("Nextflow unavailable")
     result = subprocess.run(
@@ -105,7 +106,7 @@ def test_direct_downstream_execution_rejects_a_missing_frozen_image(tmp_path):
         cwd=tmp_path, capture_output=True, text=True, check=False,
     )
     assert result.returncode != 0
-    assert "Specify --first_party_image through rnaseq" in result.stdout + result.stderr
+    assert "Specify --downstream_runtime_prefix through rnaseq" in result.stdout + result.stderr
 
 
 def test_downstream_resource_contracts_are_explicit_without_artificial_serialization():

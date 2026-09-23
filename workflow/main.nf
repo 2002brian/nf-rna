@@ -8,17 +8,15 @@ nextflow.enable.dsl=2
 params.contract = null
 params.inputs = null
 params.outdir = null
-// The rnaseq control plane writes this required value into a frozen per-run
-// config.  Do not put a release tag here: Nextflow cannot import Python's
-// package version, and a second version string could silently drift.
-params.first_party_image = null
-params.r_scripts = '/opt/nf-rna/r'
+// The rnaseq control plane writes an absolute prefix for its verified,
+// non-editable downstream Conda runtime into a frozen per-run config.
+params.downstream_runtime_prefix = null
 params.enrichment = ''
 params.analysis_level = null
 
 process L1_ANALYSIS {
     tag 'L1 expression QC'
-    container params.first_party_image
+    conda params.downstream_runtime_prefix
     publishDir params.outdir, mode: 'copy', overwrite: false
     stageInMode 'copy'
     input:
@@ -28,15 +26,14 @@ process L1_ANALYSIS {
     path 'l1'
     script:
     """
-    export NF_RNA_CONTAINER_IMAGE='${params.first_party_image}'
     python -m rnaseq.workflow_support l1-config --contract $contract --inputs $inputs --out l1-config.json
-    Rscript ${params.r_scripts}/l1_analysis.R --config l1-config.json
+    Rscript \$(python -c "from importlib.resources import files; print(files('rnaseq').joinpath('r', 'l1_analysis.R'))") --config l1-config.json
     """
 }
 
 process L2_ANALYSIS {
     tag 'L2 DESeq2'
-    container params.first_party_image
+    conda params.downstream_runtime_prefix
     publishDir params.outdir, mode: 'copy', overwrite: false
     stageInMode 'copy'
     input:
@@ -47,15 +44,14 @@ process L2_ANALYSIS {
     path 'l2'
     script:
     """
-    export NF_RNA_CONTAINER_IMAGE='${params.first_party_image}'
     python -m rnaseq.workflow_support l2-config --contract $contract --inputs $inputs --l1 $l1 --out l2-config.json
-    Rscript ${params.r_scripts}/l2_analysis.R --config l2-config.json
+    Rscript \$(python -c "from importlib.resources import files; print(files('rnaseq').joinpath('r', 'l2_analysis.R'))") --config l2-config.json
     """
 }
 
 process TECHNICAL_REPORT {
     tag 'HTML technical report'
-    container params.first_party_image
+    conda params.downstream_runtime_prefix
     publishDir params.outdir, mode: 'copy', overwrite: false
     stageInMode 'copy'
     input:
@@ -74,7 +70,7 @@ process TECHNICAL_REPORT {
 
 process TECHNICAL_REPORT_NO_ENRICHMENT {
     tag 'HTML technical report (no enrichment selected)'
-    container params.first_party_image
+    conda params.downstream_runtime_prefix
     publishDir params.outdir, mode: 'copy', overwrite: false
     stageInMode 'copy'
     input:
@@ -92,7 +88,7 @@ process TECHNICAL_REPORT_NO_ENRICHMENT {
 
 process TECHNICAL_REPORT_L1 {
     tag 'HTML technical report (L1 only)'
-    container params.first_party_image
+    conda params.downstream_runtime_prefix
     publishDir params.outdir, mode: 'copy', overwrite: false
     stageInMode 'copy'
     input:
@@ -109,7 +105,7 @@ process TECHNICAL_REPORT_L1 {
 
 process ENRICHMENT_ANALYSIS {
     tag { module }
-    container params.first_party_image
+    conda params.downstream_runtime_prefix
     // Each task emits exactly one backend-specific directory.  Publishing the
     // shared parent directory would make gsea-go and gsea-kegg collide.
     publishDir "${params.outdir}/l2", mode: 'copy', overwrite: false
@@ -123,15 +119,14 @@ process ENRICHMENT_ANALYSIS {
     script:
     def rScript = module == 'go' ? 'go_analysis.R' : module == 'gsea-go' ? 'gsea_analysis.R' : 'kegg_analysis.R'
     """
-    export NF_RNA_CONTAINER_IMAGE='${params.first_party_image}'
     python -m rnaseq.workflow_support enrichment-config --kind ${module} --contract $contract --inputs $inputs --l2 $l2 --out enrichment-config.json
-    Rscript ${params.r_scripts}/${rScript} --config enrichment-config.json
+    Rscript \$(python -c "from importlib.resources import files; print(files('rnaseq').joinpath('r', '${rScript}'))") --config enrichment-config.json
     """
 }
 
 workflow {
     if( !params.contract || !params.inputs || !params.outdir || !params.analysis_level ) error 'Specify --contract, --inputs, --outdir and --analysis_level'
-    if( !params.first_party_image ) error 'Specify --first_party_image through rnaseq; direct downstream Nextflow execution is not a supported user entry point'
+    if( !params.downstream_runtime_prefix ) error 'Specify --downstream_runtime_prefix through rnaseq; direct downstream Nextflow execution is not a supported user entry point'
     if( !(params.analysis_level in ['L1', 'L2']) ) error 'analysis_level must be L1 or L2'
     contract = Channel.value(file(params.contract))
     inputs = Channel.value(file(params.inputs))

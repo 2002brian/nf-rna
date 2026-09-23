@@ -12,7 +12,7 @@ rnaseq CLI → nf-core/rnaseq → standardized upstream outputs → downstream N
 
 Python control plane 會凍結 version-pinned input contract，並記錄穩定的 nf-core handoff boundary。凍結的 `analysis_level` 是 graph selector：`L1` 專案只執行 L1 與 L1 technical report；`L2` 專案執行 L1、L2，以及獨立選用的 GO ORA、KEGG ORA、GO preranked GSEA（BP/MF/CC）與 KEGG preranked GSEA，接著產生 technical HTML report。graph 絕不會從 contrast、metadata 或可用 workflow module 推斷 L2。server executor setting 仍刻意延後決定。
 
-每個 downstream computational process 都明確宣告 `container params.first_party_image`。Python 會為 immutable run 凍結該 parameter 並啟動 Nextflow；Docker task container 僅由 Nextflow 啟動。image 內含已安裝的 `rnaseq.workflow_support` package 與 `/opt/nf-rna/r` scripts，因此 task execution 不依賴 host checkout。
+每個 downstream computational process 都明確宣告 `conda params.downstream_runtime_prefix`。使用者確認後，control plane 會由平台 lock 建立或驗證 deterministic cached Conda prefix，並以 `pip --no-deps` 安裝 non-editable nf-rna wheel；lock、wheel 與 bundled R-script identity 皆會凍結至 run contract。Nextflow 會為每個 first-party task 啟用這個 prefix；R scripts 由安裝 wheel 的 `importlib.resources` 找到，不使用 `/opt/nf-rna/r` 或呼叫端 editable environment。FASTQ upstream 在獨立 migration milestone 前仍使用 Docker。
 
 獨立的 `ENRICHMENT_ANALYSIS` task 在其 CPU 與 memory request 總和符合 effective aggregate local budget 時可並行執行。Nextflow local executor 會負責此 scheduling guard，不再使用固定 `maxForks` 限制。
 

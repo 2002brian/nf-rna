@@ -25,9 +25,7 @@ import yaml
 
 from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
 from rnaseq.execution import (
-    FIRST_PARTY_EXECUTION_IMAGE,
     HISAT2_WORKFLOW,
-    CONTAINER_PROFILE,
     LOCAL_PROFILE,
     PreparedRun,
     EffectiveResourceBudget,
@@ -36,10 +34,8 @@ from rnaseq.execution import (
     build_nextflow_command,
     build_hisat2_featurecounts_command,
     classify_execution_failure,
-    check_container_runtime,
     check_docker,
     check_nextflow,
-    downstream_docker_user_mapping,
     generate_handoff_manifest,
     generate_hisat2_featurecounts_handoff,
     inspect_container_image,
@@ -53,12 +49,14 @@ from rnaseq.execution import (
     require_fresh_plan,
     resolve_execution_workspace,
     runtime_snapshot,
+    RuntimeSnapshot,
     validate_effective_resource_budget,
     validate_local_execution_budget,
     detect_local_resource_capacity,
     ResourceContract,
     LOCAL_RESOURCE_CEILING,
 )
+from rnaseq.downstream_runtime import DownstreamRuntime, downstream_runtime_preflight, ensure_downstream_runtime
 from rnaseq.models import FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, ProjectConfig, production_enrichment_backends
 from rnaseq.project import LoadedProject
 from rnaseq.hisat2_featurecounts import FASTP_IMAGE, FASTP_VERSION, FASTQC_IMAGE, FASTQC_VERSION, HISAT2_IMAGE, HISAT2_VERSION, MULTIQC_IMAGE, MULTIQC_VERSION, SAMTOOLS_IMAGE, SAMTOOLS_VERSION, SUBREAD_IMAGE, SUBREAD_VERSION
@@ -71,7 +69,6 @@ RUN_ID_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}\+[0-9]{4}(?:-[0-9]{2,3})?$")
 TAIPEI = ZoneInfo("Asia/Taipei")
 FINAL_STATES = {"SUCCESS", "FAILED"}
 DELIVERY_MANIFEST_FILENAME = "delivery_manifest.yaml"
-UNLABELED_CONTAINER_SOURCE_REVISION = "unlabeled-container-image"
 
 
 @dataclass(frozen=True)
@@ -168,20 +165,28 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _execution_source_revision(image: str) -> str:
-    """Return the OCI revision observed for the exact execution image.
+def _native_runtime_snapshot() -> RuntimeSnapshot:
+    """Describe host capacity without querying Docker for raw-count execution."""
 
-    The frozen execution contract is the sole source passed to every R module.
-    A container without an OCI revision label is recorded explicitly rather
-    than guessed from the host checkout or a mutable tag.
-    """
+    capacity = detect_local_resource_capacity()
+    return RuntimeSnapshot(
+        host_os=platform.system() or "unknown",
+        host_architecture=platform.machine().lower() or "unknown",
+        logical_cpus=capacity.logical_cpus,
+        host_memory_bytes=(capacity.total_memory_gib * 1024**3 if capacity.total_memory_gib else None),
+        docker_architecture=None,
+        docker_memory_bytes=None,
+        docker_version=None,
+        first_party_image_architecture=None,
+        docker_cpus=None,
+    )
 
-    observed = inspect_container_image(image)
-    labels = observed.get("labels")
-    revision = labels.get("org.opencontainers.image.revision") if isinstance(labels, dict) else None
-    if isinstance(revision, str) and revision.strip() and revision.strip().lower() != "unknown":
-        return revision.strip()
-    return UNLABELED_CONTAINER_SOURCE_REVISION
+
+def _resource_snapshot(report: ValidationReport) -> RuntimeSnapshot:
+    """Docker capacity is relevant only while the unchanged FASTQ upstream runs."""
+
+    assert report.config is not None
+    return runtime_snapshot(report.config.runtime.execution_image) if report.config.input.type is InputType.FASTQ else _native_runtime_snapshot()
 
 
 def _salmon_mapping_contract(run_dir: Path, value: object) -> tuple[Path, dict[str, str]]:
@@ -599,7 +604,6 @@ def freeze_case_inputs(
     """Copy every mutable analysis input into the run before any compute starts."""
 
     assert report.loaded is not None and report.config is not None
-    source_revision = _execution_source_revision(report.config.runtime.execution_image)
     frozen = run.run_dir / "frozen"
     for source, target in (
         (report.loaded.config_path, frozen / "project.yaml"),
@@ -679,7 +683,7 @@ def freeze_case_inputs(
         # and the first-party downstream workflow for every local FASTQ run.
         runtime = frozen / "nfcore.local.config"
         resolved = resources or effective_resource_budget(
-            runtime_snapshot(report.config.runtime.execution_image), project_execution_budget(report.config)
+            _resource_snapshot(report), project_execution_budget(report.config)
         )
         _write_text(runtime, render_local_resource_config(ResourceContract(
             "EFFECTIVE_LOCAL", resolved.effective_cpus, resolved.effective_memory_gib, LOCAL_RESOURCE_CEILING.time_hours
@@ -690,8 +694,7 @@ def freeze_case_inputs(
         "run_id": run.run_id,
         "timezone": "Asia/Taipei",
         "profile": profile,
-        "execution_image": report.config.runtime.execution_image,
-        "source_revision": source_revision,
+        "downstream_runtime": None,
         "execution_budget": report.config.execution.model_dump(),
         "command": command,
         "pipeline": {"name": report.config.project.pipeline, "version": PIPELINE_VERSION},
@@ -739,10 +742,7 @@ def freeze_case_inputs(
         # Downstream tasks must never infer L2 from contrasts or metadata.
         "analysis_level": report.config.project.preset.value,
         "analysis": report.config.analysis.model_dump(mode="json") if report.config.analysis else {"enrichment": []},
-        "execution": {
-            "image": report.config.runtime.execution_image,
-            "source_revision": source_revision,
-        },
+        "execution": {"downstream_runtime": None},
         "design": {
             "type": report.config.design.type.value,
             "formula": report.config.design.formula,
@@ -780,14 +780,12 @@ def _provenance(
     except OSError:
         pass
     nextflow = check_nextflow()
-    requested_image = report.config.runtime.execution_image if report.config else FIRST_PARTY_EXECUTION_IMAGE
-    runtime = runtime_snapshot(requested_image)
+    runtime = _resource_snapshot(report) if report.config is not None else _native_runtime_snapshot()
     resolved_resources = resources or effective_resource_budget(runtime, project_execution_budget(report.config))
     method = report.config.upstream.quantification.method if report.config and report.config.upstream.quantification else None
     def tool_identity(version: str, image: str) -> dict[str, object]:
         return {"version": version, **inspect_container_image(image)}
 
-    execution_image = inspect_container_image(requested_image)
     frozen_contract = _read_json_mapping(run.run_dir / "frozen" / "downstream_contract.json", "frozen downstream contract")
     frozen_execution = frozen_contract.get("execution") if isinstance(frozen_contract.get("execution"), dict) else {}
     workflow_hashes = {
@@ -819,13 +817,8 @@ def _provenance(
                 "multiqc": tool_identity(MULTIQC_VERSION, MULTIQC_IMAGE),
             } if method == "hisat2_featurecounts" else None
         ),
-        "container_runtime": "docker",
-        "execution_image": execution_image,
-        "source_revision": frozen_execution.get("source_revision"),
-        # Compatibility for consumers of pre-migration provenance.  New
-        # consumers should use execution_image, whose name reflects that
-        # Nextflow—not the Python control plane—owns task container launch.
-        "container_image": execution_image,
+        "downstream_runtime": frozen_execution.get("downstream_runtime"),
+        "upstream_container_runtime": "docker" if report.config and report.config.input.type is InputType.FASTQ else None,
         "production_intended": bool(report.config and report.config.reference.acceptance == "production"),
         "runtime_resources": {
             **resolved_resources.as_dict(),
@@ -833,10 +826,10 @@ def _provenance(
             "host_architecture": runtime.host_architecture,
             "logical_cpus": runtime.logical_cpus,
             "host_memory_bytes": runtime.host_memory_bytes,
-            "docker_architecture": runtime.docker_architecture,
-            "docker_memory_bytes": runtime.docker_memory_bytes,
-            "docker_version": runtime.docker_version,
-            "first_party_image_architecture": runtime.first_party_image_architecture,
+            "docker_architecture": runtime.docker_architecture if report.config and report.config.input.type is InputType.FASTQ else None,
+            "docker_memory_bytes": runtime.docker_memory_bytes if report.config and report.config.input.type is InputType.FASTQ else None,
+            "docker_version": runtime.docker_version if report.config and report.config.input.type is InputType.FASTQ else None,
+            "first_party_image_architecture": None,
             "resource_profile": "M5_LOCAL_SMALL_MEDIUM_LARGE",
         },
         "frozen_local_nextflow_config": (
@@ -911,33 +904,29 @@ def write_downstream_observer_config(run: CaseRun) -> Path:
     return path
 
 
-def write_downstream_docker_user_config(
-    run: CaseRun, *, host_os: str | None = None, uid: int | None = None, gid: int | None = None,
-) -> Path | None:
-    """Freeze a Linux/WSL Docker user override for one downstream run.
+def freeze_downstream_runtime_identity(frozen: FrozenInputs, runtime: DownstreamRuntime) -> None:
+    """Bind the already-provisioned native runtime into immutable run records."""
 
-    The override is deliberately a separate Nextflow config rather than an
-    image change or a broad filesystem permission change.  It affects only the
-    downstream task containers and only on Linux/WSL.  Numeric values are
-    produced by :func:`downstream_docker_user_mapping`, so the rendered Groovy
-    string cannot interpolate a user-controlled shell value.
-    """
-
-    mapping = downstream_docker_user_mapping(
-        host_os=host_os or platform.system(), uid=uid, gid=gid,
-    )
-    if mapping is None:
-        return None
-    path = run.run_dir / "frozen" / "downstream.docker-user.config"
-    _write_text(path, "docker {\n  runOptions = '--user " + mapping + "'\n}\n")
-    return path
+    contract = _read_json_mapping(frozen.contract, "frozen downstream contract")
+    execution = contract.get("execution") if isinstance(contract.get("execution"), dict) else {}
+    execution["downstream_runtime"] = runtime.identity()
+    contract["execution"] = execution
+    _write_text(frozen.contract, json.dumps(contract, indent=2, sort_keys=True) + "\n")
+    manifest = frozen.contract.parent / "execution_manifest.yaml"
+    execution_manifest = _read_yaml_mapping(manifest, "frozen execution manifest")
+    execution_manifest["downstream_runtime"] = runtime.identity()
+    _write_yaml(manifest, execution_manifest)
 
 
-def write_downstream_runtime_config(run: CaseRun, image: str) -> Path:
-    """Freeze the image parameter consumed by explicit Nextflow processes."""
+def write_downstream_runtime_config(run: CaseRun, runtime: DownstreamRuntime) -> Path:
+    """Freeze the exact verified Conda prefix consumed by downstream processes."""
 
     path = run.run_dir / "frozen" / "downstream.runtime.config"
-    _write_text(path, f"params.first_party_image = {json.dumps(image)}\n")
+    _write_text(
+        path,
+        "conda.enabled = true\n"
+        f"params.downstream_runtime_prefix = {json.dumps(str(runtime.prefix))}\n",
+    )
     return path
 
 
@@ -971,7 +960,7 @@ def finalize_fastq_handoff(report: ValidationReport, run: CaseRun, contract: Pat
 
 def build_downstream_nextflow_command(
     run: CaseRun, *, profile: str = LOCAL_PROFILE, work_dir: Path | None = None,
-    observer_config: Path | None = None, docker_user_config: Path | None = None,
+    observer_config: Path | None = None,
     execution_inputs: ResolvedDownstreamInputs | None = None, runtime_config: Path | None = None,
     local_resource_config: Path | None = None,
 ) -> list[str]:
@@ -984,7 +973,7 @@ def build_downstream_nextflow_command(
         raise ValueError("Frozen downstream contract cannot enable enrichment for analysis_level L1.")
     resolved_work_dir = work_dir or (resolve_execution_workspace(run.case_id, run.run_id).work_dir / "downstream")
     command = [
-        "nextflow", "run", str(workflow_asset_path("main.nf")), "-c", str(workflow_asset_path("nextflow.config")), "-profile", CONTAINER_PROFILE if profile == LOCAL_PROFILE else profile,
+        "nextflow", "run", str(workflow_asset_path("main.nf")), "-c", str(workflow_asset_path("nextflow.config")), "-profile", profile,
     ]
     if observer_config is not None:
         command.extend(["-c", str(observer_config.resolve())])
@@ -992,8 +981,6 @@ def build_downstream_nextflow_command(
         command.extend(["-c", str(runtime_config.resolve())])
     if local_resource_config is not None:
         command.extend(["-c", str(local_resource_config.resolve())])
-    if docker_user_config is not None:
-        command.extend(["-c", str(docker_user_config.resolve())])
     command.extend([
         "-work-dir", str(resolved_work_dir.resolve()),
         "--contract", str((run.run_dir / "frozen" / "downstream_contract.json").resolve()),
@@ -1418,31 +1405,21 @@ def prepare_service_run(report: ValidationReport, *, profile: str) -> EffectiveR
     validate_local_execution_budget(
         report.config.execution.max_cpus, report.config.execution.max_memory_gb, detect_local_resource_capacity()
     )
-    resources = effective_resource_budget(
-        runtime_snapshot(report.config.runtime.execution_image), project_execution_budget(report.config)
-    )
+    resources = effective_resource_budget(_resource_snapshot(report), project_execution_budget(report.config))
     validate_effective_resource_budget(resources)
     require_fresh_plan(report)
     if report.config.input.type is InputType.FASTQ:
         if not report.execution_ready:
             raise ExecutionPreflightError("Execution is blocked: " + "; ".join(report.execution_blockers))
         _validate_custom_reference_files(report)
-    nextflow, docker = check_nextflow(), check_docker()
+    nextflow = check_nextflow()
     if nextflow.state != "FOUND":
         raise ExecutionPreflightError("Nextflow is required: " + nextflow.detail)
-    if docker.state != "FOUND":
-        raise ExecutionPreflightError("Docker is required: " + docker.detail)
-    requested_image = report.config.runtime.execution_image
-    container = check_container_runtime(requested_image)
-    if container.state != "FOUND":
-        raise ExecutionPreflightError("First-party execution image is required: " + container.detail)
-    if report.config.reference.acceptance == "production":
-        observed = inspect_container_image(requested_image)
-        if not observed.get("image_id"):
-            raise ExecutionPreflightError(
-                "Production-intended execution requires an observed immutable execution image ID/digest; "
-                f"Docker could not establish one for {requested_image}."
-            )
+    if report.config.input.type is InputType.FASTQ:
+        docker = check_docker()
+        if docker.state != "FOUND":
+            raise ExecutionPreflightError("Docker is required for the unchanged upstream FASTQ workflow: " + docker.detail)
+    downstream_runtime_preflight()
     return resources
 
 
@@ -1723,20 +1700,18 @@ def _prepare_retry_runtime(report: ValidationReport, profile: str) -> EffectiveR
     if profile != LOCAL_PROFILE or report.config is None:
         raise ExecutionPreflightError("Retry supports only the frozen local execution profile.")
     validate_local_execution_budget(report.config.execution.max_cpus, report.config.execution.max_memory_gb, detect_local_resource_capacity())
-    resources = effective_resource_budget(runtime_snapshot(report.config.runtime.execution_image), project_execution_budget(report.config))
+    resources = effective_resource_budget(_resource_snapshot(report), project_execution_budget(report.config))
     validate_effective_resource_budget(resources)
     if report.config.input.type is InputType.FASTQ and not report.execution_ready:
         raise ExecutionPreflightError("Retry frozen execution contract is not runtime-ready.")
-    nextflow, docker = check_nextflow(), check_docker()
+    nextflow = check_nextflow()
     if nextflow.state != "FOUND":
         raise ExecutionPreflightError("Nextflow is required: " + nextflow.detail)
-    if docker.state != "FOUND":
-        raise ExecutionPreflightError("Docker is required: " + docker.detail)
-    container = check_container_runtime(report.config.runtime.execution_image)
-    if container.state != "FOUND":
-        raise ExecutionPreflightError("First-party execution image is required: " + container.detail)
-    if report.config.reference.acceptance == "production" and not inspect_container_image(report.config.runtime.execution_image).get("image_id"):
-        raise ExecutionPreflightError("Production-intended retry requires an observed immutable execution image ID/digest.")
+    if report.config.input.type is InputType.FASTQ:
+        docker = check_docker()
+        if docker.state != "FOUND":
+            raise ExecutionPreflightError("Docker is required for the unchanged upstream FASTQ workflow: " + docker.detail)
+    downstream_runtime_preflight()
     return resources
 
 
@@ -1788,13 +1763,16 @@ def execute_service_run(
     try:
         workspace = resolve_execution_workspace(run.case_id, run.run_id)
         frozen = freeze_case_inputs(report, run, profile=profile, command=command, resources=resources)
+        assert report.config is not None
+        runtime = None if report.config.project.preset is Preset.QC else ensure_downstream_runtime()
+        if runtime is not None:
+            freeze_downstream_runtime_identity(frozen, runtime)
         _write_yaml(
             run.run_dir / "provenance" / "run_provenance.yaml",
             _provenance(report, run, profile=profile, command=command, workspace=workspace, resources=resources),
         )
         prepare_execution_workspace(workspace)
         _write_state(run, "RUNNING", phase="freeze", command=command)
-        assert report.config is not None
         if report.config.input.type is InputType.FASTQ:
             assert frozen.samplesheet and frozen.upstream_params and frozen.upstream_config
             reused_from = reuse_upstream_if_compatible(run, frozen, reuse_upstream) if reuse_upstream else None
@@ -1829,11 +1807,11 @@ def execute_service_run(
             return run
         execution_inputs = resolve_downstream_inputs(run)
         observer_config = write_downstream_observer_config(run)
-        runtime_config = write_downstream_runtime_config(run, report.config.runtime.execution_image)
-        docker_user_config = write_downstream_docker_user_config(run)
+        assert runtime is not None
+        runtime_config = write_downstream_runtime_config(run, runtime)
         downstream = build_downstream_nextflow_command(
             run, profile=profile, work_dir=workspace.work_dir / "downstream", observer_config=observer_config,
-            docker_user_config=docker_user_config, execution_inputs=execution_inputs, runtime_config=runtime_config,
+            execution_inputs=execution_inputs, runtime_config=runtime_config,
             local_resource_config=frozen.upstream_config,
         )
         _write_state(run, "RUNNING", phase="downstream", downstream_command=downstream)
@@ -1847,7 +1825,7 @@ def execute_service_run(
             )
         delivery = assemble_delivery(run)
         _write_state(run, "SUCCESS", phase="delivery", delivery=str(delivery))
-    except (OSError, UpstreamExecutionError) as exc:
+    except (OSError, UpstreamExecutionError, ExecutionPreflightError, ValueError) as exc:
         _write_state(run, "FAILED", error=str(exc))
         raise
     return run
@@ -1878,6 +1856,18 @@ def execute_retry_service_run(
         _clone_retry_contract(source, run, command)
         report, reference_paths = _retry_report(run)
         workspace = resolve_execution_workspace(run.case_id, run.run_id)
+        frozen_paths = run.run_dir / "frozen"
+        runtime = None if report.config and report.config.project.preset is Preset.QC else ensure_downstream_runtime()
+        if runtime is not None:
+            freeze_downstream_runtime_identity(
+                FrozenInputs(
+                    (frozen_paths / "samplesheet.csv") if (frozen_paths / "samplesheet.csv").is_file() else None,
+                    frozen_paths / "downstream_contract.json", frozen_paths / "input_manifest.yaml",
+                    (frozen_paths / "nfcore.params.json") if (frozen_paths / "nfcore.params.json").is_file() else None,
+                    (frozen_paths / "nfcore.local.config") if (frozen_paths / "nfcore.local.config").is_file() else None,
+                    reference_paths,
+                ), runtime,
+            )
         provenance = _provenance(
             report, run, profile=source.execution["profile"], command=command, workspace=workspace, resources=resources,
         )
@@ -1938,11 +1928,11 @@ def execute_retry_service_run(
             return run
         execution_inputs = resolve_downstream_inputs(run)
         observer_config = write_downstream_observer_config(run)
-        runtime_config = write_downstream_runtime_config(run, report.config.runtime.execution_image)
-        docker_user_config = write_downstream_docker_user_config(run)
+        assert runtime is not None
+        runtime_config = write_downstream_runtime_config(run, runtime)
         downstream = build_downstream_nextflow_command(
             run, profile=profile, work_dir=workspace.work_dir / "downstream", observer_config=observer_config,
-            docker_user_config=docker_user_config, execution_inputs=execution_inputs, runtime_config=runtime_config,
+            execution_inputs=execution_inputs, runtime_config=runtime_config,
             local_resource_config=(frozen / "nfcore.local.config") if (frozen / "nfcore.local.config").is_file() else None,
         )
         downstream = _retry_command(downstream, nextflow_resume)

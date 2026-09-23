@@ -13,8 +13,8 @@ import yaml
 
 from conftest import base_config
 from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
+from rnaseq.downstream_runtime import DownstreamRuntime
 from rnaseq.execution import RuntimeCheck, load_run_states
-from rnaseq.models import DEFAULT_EXECUTION_IMAGE
 from rnaseq.planner import generate_plan
 from rnaseq.service import (
     FrozenInputs,
@@ -35,7 +35,6 @@ from rnaseq.service import (
     validate_case_id,
     verify_delivery_manifest,
     write_delivery_manifest,
-    write_downstream_docker_user_config,
     write_downstream_observer_config,
 )
 from rnaseq.validators import validate_project
@@ -43,6 +42,22 @@ from rnaseq.workflow_support import l1_config
 
 
 pytestmark = pytest.mark.usefixtures("production_capable_execution_capacity")
+
+
+@pytest.fixture(autouse=True)
+def mocked_downstream_runtime(monkeypatch, tmp_path):
+    """Keep service tests focused on orchestration, not Conda provisioning."""
+
+    runtime = DownstreamRuntime(
+        prefix=tmp_path / "native-runtime", platform="osx-arm64",
+        lock_filename="nf-rna-downstream-osx-arm64.lock.yml", lock_sha256="a" * 64,
+        wheel_filename="nf_rna-1.2.0-py3-none-any.whl", wheel_sha256="b" * 64,
+        nf_rna_version="1.2.0", source_revision="test-revision",
+        r_scripts=({"name": "l2_analysis.R", "sha256": "c" * 64},), r_scripts_sha256="d" * 64,
+    )
+    monkeypatch.setattr("rnaseq.service.downstream_runtime_preflight", lambda: None)
+    monkeypatch.setattr("rnaseq.service.ensure_downstream_runtime", lambda: runtime)
+    return runtime
 
 
 def _frozen_run(project_factory) -> tuple[Path, object, object]:
@@ -54,20 +69,15 @@ def _frozen_run(project_factory) -> tuple[Path, object, object]:
     return root, report, run
 
 
-def test_freeze_uses_observed_oci_revision_without_host_fallback(monkeypatch, project_factory):
-    from rnaseq import service
-
+def test_freeze_defers_downstream_runtime_identity_until_after_confirmation(project_factory):
     report = validate_project(project_factory())
     generate_plan(report)
-    monkeypatch.setattr(service, "inspect_container_image", lambda _image: {
-        "labels": {"org.opencontainers.image.revision": "abc123-dirty"},
-    })
     run = create_case_run(report, "CASE-REVISION", moment=datetime(2026, 9, 20, 12, 0, 0))
     frozen = freeze_case_inputs(report, run, profile="local", command=["rnaseq", "run"])
     contract = json.loads(frozen.contract.read_text(encoding="utf-8"))
     execution = yaml.safe_load((run.run_dir / "frozen" / "execution_manifest.yaml").read_text(encoding="utf-8"))
-    assert contract["execution"]["source_revision"] == "abc123-dirty"
-    assert execution["source_revision"] == "abc123-dirty"
+    assert contract["execution"]["downstream_runtime"] is None
+    assert execution["downstream_runtime"] is None
 
 
 def _fastq_handoff_run(tmp_path: Path):
@@ -562,7 +572,6 @@ def test_delivery_sidecar_after_sanitization_prevents_success_state(monkeypatch,
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(tmp_path / "local-nextflow-cache"))
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "available"))
     monkeypatch.setattr("rnaseq.service.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "available"))
-    monkeypatch.setattr("rnaseq.service.check_container_runtime", lambda *_args: RuntimeCheck("Control-plane container", "FOUND", "available"))
 
     def fake_nextflow(command, *, cwd, stdout_path, stderr_path):
         outdir = Path(command[command.index("--outdir") + 1])
@@ -682,7 +691,6 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(local_root))
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "25.10.4"))
     monkeypatch.setattr("rnaseq.service.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "Docker daemon is available."))
-    monkeypatch.setattr("rnaseq.service.check_container_runtime", lambda *_args: RuntimeCheck("Control-plane container", "FOUND", "available"))
     observed: list[tuple[list[str], Path]] = []
 
     def fake_nextflow(command, *, cwd, stdout_path, stderr_path):
@@ -736,7 +744,10 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     downstream_command = observed[1][0]
     assert downstream_command[downstream_command.index("--inputs") + 1] == str(execution_inputs.resolve())
     runtime_config = run.run_dir / "frozen" / "downstream.runtime.config"
-    assert runtime_config.read_text(encoding="utf-8") == f'params.first_party_image = "{DEFAULT_EXECUTION_IMAGE}"\n'
+    assert runtime_config.read_text(encoding="utf-8") == (
+        "conda.enabled = true\n"
+        f"params.downstream_runtime_prefix = \"{tmp_path / 'native-runtime'}\"\n"
+    )
     assert str(runtime_config.resolve()) in downstream_command
     assert "/Volumes/KOXIA" not in downstream_command
     provenance = yaml.safe_load((run.run_dir / "provenance" / "run_provenance.yaml").read_text(encoding="utf-8"))
@@ -748,8 +759,9 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     assert provenance["salmon_tx2gene"]["mapping_type"] == "nfcore_tx2gene_augmented"
     assert provenance["salmon_tx2gene"]["path"].endswith("salmon.merged.tx2gene_augmented.tsv")
     assert len(provenance["salmon_tx2gene"]["sha256"]) == 64
-    assert provenance["execution_image"]["reference"] == DEFAULT_EXECUTION_IMAGE
-    assert provenance["container_image"] == provenance["execution_image"]
+    assert provenance["downstream_runtime"]["kind"] == "conda"
+    assert provenance["downstream_runtime"]["wheel"]["sha256"] == "b" * 64
+    assert provenance["upstream_container_runtime"] == "docker"
     assert provenance["production_intended"] is False
     assert set(provenance["workflow_sha256"]) == {"workflow/main.nf", "workflow/hisat2_featurecounts.nf"}
     assert all(len(value) == 64 for value in provenance["workflow_sha256"].values())
@@ -775,45 +787,6 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     assert json.loads(run.state_path.read_text(encoding="utf-8"))["status"] == "SUCCESS"
 
 
-def test_downstream_linux_docker_user_config_is_frozen_and_only_adds_a_nextflow_override(project_factory):
-    _root, _report, run = _frozen_run(project_factory)
-    config = write_downstream_docker_user_config(run, host_os="Linux", uid=24701, gid=24703)
-    assert config == run.run_dir / "frozen" / "downstream.docker-user.config"
-    assert config.read_text(encoding="utf-8") == "docker {\n  runOptions = '--user 24701:24703'\n}\n"
-    command = build_downstream_nextflow_command(run, docker_user_config=config)
-    assert command[:2] == ["nextflow", "run"]
-    assert command[command.index("-profile") + 1] == "docker"
-    assert command.count("-c") == 2
-    docker_config_index = [index for index, value in enumerate(command) if value == "-c"][-1]
-    assert command[docker_config_index + 1] == str(config.resolve())
-    assert "rnaseq-control-plane:latest" not in config.read_text(encoding="utf-8")
-    assert "1000:1000" not in config.read_text(encoding="utf-8")
-    if shutil.which("nextflow") is not None:
-        probe = config.parent / "docker_user_config_probe.nf"
-        probe.write_text("nextflow.enable.dsl=2\nworkflow { }\n", encoding="utf-8")
-        result = subprocess.run(
-            [
-                "nextflow", "run", str(probe),
-                "-c", str(Path(__file__).parents[1] / "workflow" / "nextflow.config"),
-                "-c", str(config), "-profile", "docker",
-            ],
-            cwd=config.parent,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-
-
-def test_downstream_macos_keeps_the_existing_container_user_contract(project_factory):
-    _root, _report, run = _frozen_run(project_factory)
-    assert write_downstream_docker_user_config(run, host_os="Darwin", uid=24701, gid=24703) is None
-    command = build_downstream_nextflow_command(run)
-    assert command[:2] == ["nextflow", "run"]
-    assert command[command.index("-profile") + 1] == "docker"
-    assert command.count("-c") == 1
-
-
 def test_failed_service_run_keeps_frozen_logs_and_provenance(monkeypatch, project_factory, tmp_path):
     root = project_factory()
     report = validate_project(root)
@@ -822,7 +795,6 @@ def test_failed_service_run_keeps_frozen_logs_and_provenance(monkeypatch, projec
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(local_root))
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "25.10.4"))
     monkeypatch.setattr("rnaseq.service.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "Docker daemon is available."))
-    monkeypatch.setattr("rnaseq.service.check_container_runtime", lambda *_args: RuntimeCheck("Control-plane container", "FOUND", "available"))
 
     def fail_nextflow(_command, *, cwd, stdout_path, stderr_path):
         (cwd / ".nextflow" / "cache").mkdir(parents=True, exist_ok=True)
@@ -842,13 +814,12 @@ def test_failed_service_run_keeps_frozen_logs_and_provenance(monkeypatch, projec
     assert (local_root / "CASE-20260828-002" / run_dir.name / "launch" / ".nextflow").is_dir()
 
 
-def test_service_preflight_accepts_a_successful_container_probe(monkeypatch, project_factory):
+def test_raw_count_preflight_requires_no_docker(monkeypatch, project_factory):
     root = project_factory()
     report = validate_project(root)
     generate_plan(report)
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "available"))
-    monkeypatch.setattr("rnaseq.service.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "available"))
-    monkeypatch.setattr("rnaseq.service.check_container_runtime", lambda *_args: RuntimeCheck("Control-plane container", "FOUND", "available"))
+    monkeypatch.setattr("rnaseq.service.check_docker", lambda: (_ for _ in ()).throw(AssertionError("raw counts must not query Docker")))
     prepare_service_run(report, profile="local")
 
 

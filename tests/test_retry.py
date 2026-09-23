@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 
 from rnaseq.cli import app
 from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
+from rnaseq.downstream_runtime import DownstreamRuntime
 from rnaseq.execution import RuntimeCheck
 from rnaseq.planner import generate_plan
 from rnaseq.service import (
@@ -43,7 +44,15 @@ def _mock_runtime(monkeypatch, root: Path):
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(root.parent / "retry-nextflow-cache"))
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "test"))
     monkeypatch.setattr("rnaseq.service.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "test"))
-    monkeypatch.setattr("rnaseq.service.check_container_runtime", lambda *_args: RuntimeCheck("Control-plane container", "FOUND", "test"))
+    runtime = DownstreamRuntime(
+        prefix=root.parent / "retry-native-runtime", platform="osx-arm64",
+        lock_filename="nf-rna-downstream-osx-arm64.lock.yml", lock_sha256="a" * 64,
+        wheel_filename="nf_rna-1.2.0-py3-none-any.whl", wheel_sha256="b" * 64,
+        nf_rna_version="1.2.0", source_revision="test-revision",
+        r_scripts=({"name": "l2_analysis.R", "sha256": "c" * 64},), r_scripts_sha256="d" * 64,
+    )
+    monkeypatch.setattr("rnaseq.service.downstream_runtime_preflight", lambda: None)
+    monkeypatch.setattr("rnaseq.service.ensure_downstream_runtime", lambda: runtime)
 
 
 def _successful_downstream(command, *, cwd, stdout_path, stderr_path):

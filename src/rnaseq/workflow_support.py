@@ -6,7 +6,6 @@ import argparse
 import base64
 import csv
 import json
-import os
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -216,11 +215,17 @@ def _runtime_provenance(contract: dict[str, Any], script: str, module: str) -> d
     """Pass stable runtime identity to R without leaking task-local paths."""
 
     execution = contract.get("execution") if isinstance(contract.get("execution"), dict) else {}
+    runtime = execution.get("downstream_runtime") if isinstance(execution.get("downstream_runtime"), dict) else {}
     return {
         "module": module,
         "script": script,
-        "container_image": os.environ.get("NF_RNA_CONTAINER_IMAGE") or execution.get("image"),
-        "source_revision": execution.get("source_revision"),
+        "runtime_kind": runtime.get("kind"),
+        "platform": runtime.get("platform"),
+        "lock": runtime.get("lock"),
+        "wheel": runtime.get("wheel"),
+        "nf_rna_version": runtime.get("nf_rna_version"),
+        "source_revision": runtime.get("source_revision"),
+        "r_scripts": runtime.get("r_scripts"),
         "output_schema": "nf-rna.scientific-provenance.v1",
     }
 
