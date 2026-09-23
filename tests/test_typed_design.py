@@ -35,6 +35,55 @@ def test_explicit_categorical_regression_and_legacy_inference(project_factory):
     assert dict(legacy.design_variable_types) == {"condition": "categorical"}
 
 
+@pytest.mark.parametrize(
+    "variables",
+    (None, {"batch": "categorical"}),
+)
+def test_schema_13_requires_complete_explicit_formula_variable_types(project_factory, variables):
+    config = deepcopy(base_config())
+    config["schema_version"] = "1.3"
+    config["analysis"] = {"enrichment": []}
+    config["design"] = {"type": "two_group", "formula": "~ batch + condition"}
+    if variables is not None:
+        config["design"]["variables"] = variables
+    report = validate_project(project_factory(config=config))
+    assert "invalid_project_config" in _codes(report)
+    assert "design.variables" in report.errors[0].message
+
+
+def test_schema_13_numeric_looking_batch_declared_categorical_remains_categorical(project_factory):
+    metadata = """sample_id,batch,condition
+C1,1,Control
+C2,01,Control
+C3,2,Control
+T1,1,Treatment
+T2,01,Treatment
+T3,2,Treatment
+"""
+    config = _config("~ batch + condition", {"batch": "categorical", "condition": "categorical"})
+    report = validate_project(project_factory(config=config, metadata=metadata))
+    assert report.is_valid, report.errors
+    assert dict(report.design_variable_types) == {"batch": "categorical", "condition": "categorical"}
+
+
+def test_schema_12_without_design_variables_keeps_legacy_inference(project_factory):
+    metadata = """sample_id,batch,condition
+C1,1,Control
+C2,2,Control
+C3,3,Control
+T1,1,Treatment
+T2,2,Treatment
+T3,3,Treatment
+"""
+    config = deepcopy(base_config())
+    config["schema_version"] = "1.2"
+    config["analysis"] = {"enrichment": []}
+    config["design"] = {"type": "two_group", "formula": "~ batch + condition"}
+    report = validate_project(project_factory(config=config, metadata=metadata))
+    assert report.is_valid, report.errors
+    assert dict(report.design_variable_types) == {"batch": "continuous", "condition": "categorical"}
+
+
 def test_legacy_numeric_looking_contrast_levels_remain_categorical(project_factory):
     metadata = """sample_id,condition
 C1,0

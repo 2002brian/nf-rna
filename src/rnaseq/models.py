@@ -499,6 +499,21 @@ class ProjectConfig(StrictModel):
             variables = tuple(re.findall(r"[A-Za-z_][A-Za-z0-9_.]*", self.design.formula.removeprefix("~")))
             if self.design.pair_id not in variables:
                 raise ValueError("design.pair_id must be present in design.formula.")
+        if self.schema_version == SUPPORTED_SCHEMA_VERSION:
+            formula_variables = tuple(
+                re.findall(r"[A-Za-z_][A-Za-z0-9_.]*", self.design.formula.removeprefix("~"))
+            )
+            declared = self.design.variables
+            if declared is None:
+                raise ValueError(
+                    "schema_version 1.3 requires design.variables to declare the type of every design formula variable."
+                )
+            missing = sorted(set(formula_variables) - set(declared))
+            if missing:
+                raise ValueError(
+                    "schema_version 1.3 design.variables is missing formula variable(s): "
+                    + ", ".join(missing)
+                )
         if self.reference.acceptance == "production":
             if self.input.type is not InputType.FASTQ:
                 raise ValueError("reference.acceptance: production is supported only for FASTQ projects.")
