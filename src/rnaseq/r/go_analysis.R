@@ -4,6 +4,7 @@ script_arg <- commandArgs(trailingOnly=FALSE)
 script_file <- sub("^--file=", "", script_arg[grep("^--file=", script_arg)][[1]])
 source(file.path(dirname(normalizePath(script_file)), "provenance.R"))
 source(file.path(dirname(normalizePath(script_file)), "ora_helpers.R"))
+source(file.path(dirname(normalizePath(script_file)), "annotation_mapping_qc.R"))
 suppressPackageStartupMessages({ library(jsonlite); library(AnnotationDbi); library(clusterProfiler); library(ggplot2) })
 cfg <- fromJSON(args[[2]], simplifyVector=FALSE)
 dir.create(cfg$output_dir, recursive=TRUE, showWarnings=FALSE)
@@ -82,14 +83,17 @@ for (contrast in cfg$contrasts) {
   retained <- gene_sets$retained; tested <- gene_sets$tested
   mapping <- map_sources(retained); write_table(mapping, file.path(root, "gene_mapping.tsv")); all_mappings[[length(all_mappings)+1]] <- mapping
   tested_mapping <- mapping[mapping$original_gene_id %in% tested, , drop=FALSE]; universe_stats <- mapping_stats(tested_mapping, tested); universe <- universe_stats$targets
-  universe_summary <- c(gene_sets$counts, list(successfully_mapped_tested_genes=length(universe)), without_targets(universe_stats))
+  # Shared dual-threshold mapping QC on the mapped tested-gene universe: only a
+  # rate below minimum_mapping_rate blocks; a WARNING still runs ORA.
+  mapping_qc <- annotation_mapping_qc(universe_stats$mapping_rate, cfg$annotation)
+  universe_summary <- c(gene_sets$counts, list(successfully_mapped_tested_genes=length(universe)), without_targets(universe_stats), list(annotation_qc=mapping_qc))
   fg_summary <- list(); fgs <- list(significant=contrast$significant, up=contrast$up, down=contrast$down)
   for (name in names(fgs)) {
     foreground <- unique(as.character(read.delim(fgs[[name]], check.names=FALSE, stringsAsFactors=FALSE)$gene_id)); foreground <- foreground[!is.na(foreground) & foreground != ""]
     if (!all(foreground %in% tested)) stop(paste0("GO ORA foreground ", name, " is not a subset of statistically tested genes for contrast ", contrast$contrast_id))
     fg_mapping <- tested_mapping[tested_mapping$original_gene_id %in% foreground, , drop=FALSE]; fg_stats <- mapping_stats(fg_mapping, foreground); targets <- fg_stats$targets
     directory <- file.path(root, name); dir.create(directory, recursive=TRUE, showWarnings=FALSE)
-    if (universe_stats$mapping_rate < cfg$annotation$mapping_warning_rate) outcome <- list(status="BLOCKED", reason="mapped tested-gene universe is below annotation.mapping_warning_rate", evaluated_term_count=0, significant_term_count=0) else if (length(targets) < cfg$annotation$minimum_mapped_foreground) {
+    if (mapping_qc$status == "BLOCKED") outcome <- list(status="BLOCKED", reason=paste0("GO ORA blocked: ", mapping_qc$reason), evaluated_term_count=0, significant_term_count=0) else if (length(targets) < cfg$annotation$minimum_mapped_foreground) {
       outcome <- list(status="NOT_APPLICABLE", reason=paste0("only ", length(targets), " mapped foreground genes"), ontologies=write_empty_ontology_artifacts(directory, tested_mapping), evaluated_term_count=0, significant_term_count=0)
     } else {
       outcomes <- lapply(c("BP", "MF", "CC"), function(ontology) run_ontology(targets, universe, ontology, directory, tested_mapping)); names(outcomes) <- c("BP", "MF", "CC")
@@ -106,6 +110,7 @@ annotation_dir <- file.path(dirname(dirname(cfg$output_dir)), "annotation"); dir
 if (length(all_mappings)) write_table(do.call(rbind, all_mappings), file.path(annotation_dir, "gene_mapping.tsv"))
 statuses <- unlist(lapply(contrast_summaries, function(x) vapply(x$foregrounds, function(y) y$status, character(1))))
 overall <- if (any(statuses == "FAILED")) "FAILED" else if (any(statuses == "BLOCKED")) "BLOCKED" else if (all(statuses == "NOT_APPLICABLE")) "NOT_APPLICABLE" else if (all(statuses != "SUCCESS")) "NO_SIGNIFICANT_TERMS" else "SUCCESS"
-summary <- list(status=overall, annotation_database=cfg$orgdb_package, annotation_database_version=as.character(packageVersion(cfg$orgdb_package)), clusterProfiler_version=as.character(packageVersion("clusterProfiler")), contrasts=contrast_summaries)
+annotation_contract <- list(input_id_type=cfg$annotation$input_id_type, target_id_type=cfg$annotation$target_id_type, warning_threshold=as.numeric(cfg$annotation$mapping_warning_rate), blocking_threshold=as.numeric(cfg$annotation$minimum_mapping_rate))
+summary <- list(status=overall, annotation_qc_status=annotation_qc_status(contrast_summaries), annotation=annotation_contract, annotation_database=cfg$orgdb_package, annotation_database_version=as.character(packageVersion(cfg$orgdb_package)), clusterProfiler_version=as.character(packageVersion("clusterProfiler")), contrasts=contrast_summaries)
 write(toJSON(summary, auto_unbox=TRUE, pretty=TRUE, null="null"), file.path(cfg$output_dir, "go_backend_summary.json"))
 nf_rna_write_provenance(cfg, cfg$output_dir, "GO_ORA", overall, c("AnnotationDbi", "clusterProfiler", "ggplot2", "jsonlite", cfg$orgdb_package), summary)
