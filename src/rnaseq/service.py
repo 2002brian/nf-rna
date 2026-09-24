@@ -39,6 +39,7 @@ from rnaseq.execution import (
     build_hisat2_featurecounts_command,
     classify_execution_failure,
     check_container_runtime,
+    check_conda_channels,
     check_docker,
     check_upstream_conda,
     execution_backend,
@@ -1501,6 +1502,11 @@ def _backend_preflight(report: ValidationReport) -> None:
             conda = check_upstream_conda()
             if conda.state != "FOUND":
                 raise ExecutionPreflightError("Conda is required for upstream FASTQ execution: " + conda.detail)
+            method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
+            if method == "salmon":
+                channels = check_conda_channels()
+                if channels.state != "FOUND":
+                    raise ExecutionPreflightError("nf-core/rnaseq -profile conda needs a compatible Conda channel configuration: " + channels.detail)
             prepare_upstream_conda_cache()
         downstream_runtime_preflight()
         return

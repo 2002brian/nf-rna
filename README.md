@@ -54,7 +54,7 @@ Every authorized execution creates an immutable run under `runs/<case-id>/<run-i
 Use a Linux x86-64 workstation or Windows with WSL2 (native Windows and macOS are not supported by v1.3.0) with:
 
 - Python 3.11+ and Git;
-- Conda (for example Miniforge) on `PATH`;
+- Conda (for example Miniforge) on `PATH`, with the `conda-forge` and `bioconda` channels configured in that order, as nf-core requires (`conda config --add channels bioconda && conda config --add channels conda-forge && conda config --set channel_priority strict`);
 - Bash, Java 17+, and Nextflow on `PATH`; and
 - sufficient local storage for references, Conda environments, and Nextflow work data.
 
@@ -89,9 +89,10 @@ The release contract is deliberate:
 CLI X.Y.Z  ↔  Git tag vX.Y.Z  ↔  one source commit, recorded in every run
 ```
 
-`rnaseq doctor` is read-only: it checks Java, Nextflow, Conda, the nf-core/rnaseq
-pin, the downstream Conda lock, and the nf-rna source revision, but it does not
-create environments or download pipelines.
+`rnaseq doctor` is read-only: it checks Java, Nextflow, Conda and its channel
+configuration, the nf-core/rnaseq pin, the downstream Conda lock, and the nf-rna
+source revision, then prints `Overall: READY` or `Overall: NOT READY` (exit code 1).
+It does not create environments or download pipelines.
 
 ### Historical Docker releases
 

@@ -13,7 +13,7 @@ import typer
 
 from rnaseq.errors import ExecutionPreflightError, ProjectCreationError, UpstreamExecutionError
 from rnaseq.execution import (
-    detect_local_resource_capacity, doctor_checks, load_run_states,
+    detect_local_resource_capacity, doctor_checks, doctor_readiness, load_run_states,
     suggested_local_resources, validate_local_execution_budget,
 )
 from rnaseq.service import execute_retry_service_run, execute_service_run, prepare_service_run, sanitize_completed_delivery, validate_case_id
@@ -898,8 +898,15 @@ def analyze_command(
 def doctor_command(project_dir: Path | None = typer.Argument(None, help="Optional project for adopted-reference readiness.")) -> None:
     """Report non-mutating execution prerequisites; nothing is installed automatically."""
 
-    for item in doctor_checks(project_dir):
+    checks = doctor_checks(project_dir)
+    for item in checks:
         typer.echo(f"{item.name}: {item.verdict} — {item.detail}")
+    ready, failed = doctor_readiness(checks)
+    if ready:
+        typer.echo("Overall: READY")
+    else:
+        typer.echo(f"Overall: NOT READY — failed: {', '.join(failed)}")
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

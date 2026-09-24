@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -346,3 +347,52 @@ def test_retry_must_use_the_backend_that_produced_the_source(monkeypatch, projec
     legacy["execution"] = {"downstream_runtime": {"kind": "conda"}}
     contract_path.write_text(json.dumps(legacy), encoding="utf-8")
     assert _frozen_backend(run) == BACKEND_CONDA
+
+
+def _incompatible_channels(monkeypatch):
+    check = RuntimeCheck("Conda channels for nf-core", "NOT FOUND", "observed channels=['conda-forge']; missing bioconda.")
+    monkeypatch.setattr("rnaseq.service.check_conda_channels", lambda: check)
+
+
+def test_salmon_run_preflight_refuses_incompatible_conda_channels_before_any_run(monkeypatch, tmp_path, mocked_downstream_runtime):
+    report = _salmon_report(tmp_path / "project")
+    generate_plan(report)
+    monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(tmp_path / "execution"))
+    _host(monkeypatch, *LINUX, wsl=True)
+    _guard_backend(monkeypatch, BACKEND_CONDA)
+    _incompatible_channels(monkeypatch)
+    with pytest.raises(ExecutionPreflightError, match="nf-core/rnaseq -profile conda needs a compatible Conda channel configuration.*missing bioconda"):
+        execute_service_run(report, case_id="CASE-CHANNELS")
+    assert not (tmp_path / "project" / "runs").exists()
+
+
+def test_routes_without_nf_core_do_not_require_its_channels(monkeypatch, tmp_path, project_factory, mocked_downstream_runtime):
+    _host(monkeypatch, *LINUX, wsl=True)
+    _guard_backend(monkeypatch, BACKEND_CONDA)
+    monkeypatch.setattr("rnaseq.service.check_conda_channels", _fail("non-nf-core route checked nf-core channels"))
+    for report in (_hisat2_report(tmp_path / "hisat2"), validate_project(project_factory())):
+        generate_plan(report)
+        prepare_service_run(report, profile="local")
+
+
+@pytest.mark.real_conda_channels
+@pytest.mark.parametrize(("channels", "allowed"), [(["conda-forge", "bioconda"], True), (["bioconda", "conda-forge"], False)])
+def test_salmon_run_preflight_queries_the_effective_conda_channels(monkeypatch, tmp_path, mocked_downstream_runtime, channels, allowed):
+    report = _salmon_report(tmp_path / "project")
+    generate_plan(report)
+    _host(monkeypatch, *LINUX, wsl=True)
+    _guard_backend(monkeypatch, BACKEND_CONDA)
+    queried: list[list[str]] = []
+
+    def conda(arguments):
+        queried.append(list(arguments))
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"channel_priority": "strict", "channels": channels}), stderr="")
+
+    monkeypatch.setattr("rnaseq.execution.shutil.which", lambda name: f"/opt/conda/bin/{name}")
+    monkeypatch.setattr("rnaseq.execution._run_capture", conda)
+    if allowed:
+        prepare_service_run(report, profile="local")
+    else:
+        with pytest.raises(ExecutionPreflightError, match="conda-forge must come before bioconda"):
+            prepare_service_run(report, profile="local")
+    assert queried == [["/opt/conda/bin/conda", "config", "--show", "channels", "channel_priority", "--json"]]

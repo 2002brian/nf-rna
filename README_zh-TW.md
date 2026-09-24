@@ -54,7 +54,7 @@ L1 提供表現品質控制與探索。L2 必須明確選擇：它會對已宣�
 請使用 Linux x86-64 workstation，或 Windows 的 WSL2（v1.3.0 不支援 native Windows 與 macOS），並準備：
 
 - Python 3.11+ 與 Git；
-- 位於 `PATH` 的 Conda（例如 Miniforge）；
+- 位於 `PATH` 的 Conda（例如 Miniforge），並依 nf-core 要求依序設定 `conda-forge` 與 `bioconda` channel（`conda config --add channels bioconda && conda config --add channels conda-forge && conda config --set channel_priority strict`）；
 - 位於 `PATH` 的 Bash、Java 17+ 與 Nextflow；以及
 - 足夠儲存 reference、Conda environment 與 Nextflow work data 的本機空間。
 
@@ -88,8 +88,9 @@ release contract 為：
 CLI X.Y.Z  ↔  Git tag vX.Y.Z  ↔  單一 source commit（記錄於每次 run）
 ```
 
-`rnaseq doctor` 是 read-only 檢查；它會檢查 Java、Nextflow、Conda、nf-core/rnaseq
-pin、downstream Conda lock 與 nf-rna source revision，但不會建立 environment 或下載
+`rnaseq doctor` 是 read-only 檢查；它會檢查 Java、Nextflow、Conda 與其 channel 設定、
+nf-core/rnaseq pin、downstream Conda lock 與 nf-rna source revision，最後輸出
+`Overall: READY` 或 `Overall: NOT READY`（exit code 1）。它不會建立 environment 或下載
 pipeline。
 
 ### 歷史 Docker release

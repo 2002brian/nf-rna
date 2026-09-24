@@ -10,7 +10,9 @@ Required local components:
 
 - Python 3.11+ for the `rnaseq` control plane, installed from a Git release tag
   so that pip records the source commit (see the [README](../README.md)).
-- Conda on `PATH` (for example Miniforge).
+- Conda on `PATH` (for example Miniforge), with the `conda-forge` and `bioconda`
+  channels in that order in its effective configuration, as nf-core/rnaseq
+  `-profile conda` requires. Other channels may also be present.
 - Bash, Java 17+, and Nextflow for host-side workflow execution.
 - Sufficient local disk for Conda environments, Nextflow cache/work, and the
   selected reference.
@@ -209,7 +211,7 @@ matrix. QC-only runs may deliver the canonical upstream source matrix but do
 not fabricate VST. Do not compare raw-count magnitudes across samples without
 an appropriate normalization.
 
-Run `rnaseq doctor <PROJECT>` before an authorized FASTQ run. On Linux/WSL2 it checks Java, Nextflow, Conda, the nf-core/rnaseq pin and cache, the pinned HISAT2/featureCounts Conda environment, the downstream Conda lock and any provisioned prefix, the nf-rna source revision, host CPU/RAM, the selected local ceiling, free space at the configured Nextflow work location, and project/reference readiness. It does not create environments or execute a workflow.
+Run `rnaseq doctor <PROJECT>` before an authorized FASTQ run. On Linux/WSL2 it checks Java, Nextflow, Conda, the effective Conda channel order (`conda-forge` before `bioconda`, read from `conda config --show channels --json`), the nf-core/rnaseq pin and cache, the pinned HISAT2/featureCounts Conda environment, the downstream Conda lock and any provisioned prefix, the nf-rna source revision, host CPU/RAM, the selected local ceiling, free space at the configured Nextflow work location, and project/reference readiness. It ends with `Overall: READY`, or `Overall: NOT READY` and exit code 1 when any check fails. It does not create environments or execute a workflow. `rnaseq run` and `rnaseq retry` repeat the channel check for the nf-core Salmon route before creating a run.
 
 Only the local execution profile is implemented. Workstation/HPC and SLURM execution remain deferred to the resource-profile milestone.
 

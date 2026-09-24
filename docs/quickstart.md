@@ -1,6 +1,6 @@
 # nf-rna Quick Start
 
-This guide is for production users on Linux x86-64 or Windows WSL2. Install Python 3.11+, Git, Conda (for example Miniforge), Bash, Java 17+, and Nextflow before starting. Nextflow runs on the host and runs every analysis task in a Conda environment; Docker is not required. See the [official Nextflow installation guide](https://docs.seqera.io/nextflow/install) for Java and Nextflow.
+This guide is for production users on Linux x86-64 or Windows WSL2. Install Python 3.11+, Git, Conda (for example Miniforge) with the `conda-forge` and `bioconda` channels configured in that order (`conda config --add channels bioconda && conda config --add channels conda-forge && conda config --set channel_priority strict`), Bash, Java 17+, and Nextflow before starting. Nextflow runs on the host and runs every analysis task in a Conda environment; Docker is not required. See the [official Nextflow installation guide](https://docs.seqera.io/nextflow/install) for Java and Nextflow.
 
 ## Install a released nf-rna version
 
@@ -19,7 +19,7 @@ rnaseq --version
 rnaseq doctor
 ```
 
-The installed package contains required workflow assets. `rnaseq doctor` is read-only: it checks Java, Nextflow, Conda, the nf-core/rnaseq pin, the downstream Conda lock, and the nf-rna source revision without creating environments or downloading anything. The first run creates the locked downstream Conda environment; Nextflow creates the nf-core/rnaseq and HISAT2/featureCounts process environments in a shared Conda cache.
+The installed package contains required workflow assets. `rnaseq doctor` is read-only: it checks Java, Nextflow, Conda and its channel order, the nf-core/rnaseq pin, the downstream Conda lock, and the nf-rna source revision without creating environments or downloading anything, and ends with `Overall: READY` or `Overall: NOT READY`. The first run creates the locked downstream Conda environment; Nextflow creates the nf-core/rnaseq and HISAT2/featureCounts process environments in a shared Conda cache.
 
 Releases `v1.1.2` through `v1.2.1` used a Docker execution image published as
 `ghcr.io/2002brian/nf-rna:X.Y.Z`; `v1.2.1` is the last Docker-based release.

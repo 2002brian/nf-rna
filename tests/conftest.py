@@ -33,6 +33,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "real_source_revision: use the real nf-rna source-revision lookup instead of a clean test revision",
     )
+    config.addinivalue_line(
+        "markers", "real_conda_channels: use the real Conda channel check instead of an nf-core-compatible test result",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -47,6 +50,21 @@ def identified_nf_rna_source(request, monkeypatch):
         return
     monkeypatch.setattr("rnaseq.downstream_runtime.runtime_source_revision", lambda: IDENTIFIED_TEST_REVISION)
     monkeypatch.setattr("rnaseq.service.runtime_source_revision", lambda: IDENTIFIED_TEST_REVISION)
+
+
+@pytest.fixture(autouse=True)
+def nfcore_compatible_conda_channels(request, monkeypatch):
+    """Keep run preflight independent of the developer's real Conda configuration.
+
+    Tests of the channel check itself opt out with ``@pytest.mark.real_conda_channels``.
+    """
+
+    if request.node.get_closest_marker("real_conda_channels"):
+        return
+    from rnaseq.execution import RuntimeCheck
+
+    compatible = RuntimeCheck("Conda channels for nf-core", "FOUND", "observed channels=['conda-forge', 'bioconda']")
+    monkeypatch.setattr("rnaseq.service.check_conda_channels", lambda: compatible)
 
 
 def base_config() -> dict[str, Any]:

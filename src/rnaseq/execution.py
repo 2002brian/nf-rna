@@ -865,6 +865,76 @@ def check_conda_functional() -> RuntimeCheck:
     return RuntimeCheck("Conda", "FOUND", detail)
 
 
+# nf-core/rnaseq -profile conda requires both channels, conda-forge first
+# (utils_nextflow_pipeline checkCondaChannels); other channels may also exist.
+NFCORE_CONDA_CHANNELS = ("conda-forge", "bioconda")
+NFCORE_CONDA_CHANNEL_REMEDY = (
+    "conda config --add channels bioconda && conda config --add channels conda-forge "
+    "&& conda config --set channel_priority strict"
+)
+
+
+def check_conda_channels() -> RuntimeCheck:
+    """Apply nf-core's channel rule to Conda's effective, merged configuration."""
+
+    name = "Conda channels for nf-core"
+    required = "conda-forge before bioconda"
+    executable = shutil.which("conda")
+    if executable is None:
+        return RuntimeCheck(name, "NOT FOUND", "Conda executable was not found on PATH; channel configuration cannot be verified.")
+    command = [executable, "config", "--show", "channels", "channel_priority", "--json"]
+    try:
+        result = _run_capture(command)
+        payload = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, json.JSONDecodeError):
+        payload = None
+    channels = payload.get("channels") if isinstance(payload, dict) else None
+    if not isinstance(channels, list) or not all(isinstance(channel, str) for channel in channels):
+        return RuntimeCheck(
+            name, "NOT FOUND",
+            f"Could not read the effective channel list from '{' '.join(command[1:])}'; required channels: {required}. "
+            "Inspect with 'conda config --show-sources'.",
+        )
+    detail = (
+        f"observed channels={channels}; channel_priority={payload.get('channel_priority', 'unknown')}; "
+        f"required by nf-core/rnaseq {NFCORE_RNASEQ_VERSION} -profile conda: {required}"
+    )
+    missing = [channel for channel in NFCORE_CONDA_CHANNELS if channel not in channels]
+    if missing:
+        return RuntimeCheck(name, "NOT FOUND", f"{detail}; missing {', '.join(missing)}. Fix with: {NFCORE_CONDA_CHANNEL_REMEDY}")
+    if [channel for channel in channels if channel in NFCORE_CONDA_CHANNELS] != list(NFCORE_CONDA_CHANNELS):
+        return RuntimeCheck(name, "NOT FOUND", f"{detail}; conda-forge must come before bioconda. Fix with: {NFCORE_CONDA_CHANNEL_REMEDY}")
+    return RuntimeCheck(name, "FOUND", detail)
+
+
+def _project_uses_nfcore(project_dir: Path | None) -> bool:
+    """Whether the nf-core Conda upstream applies; without a project it may."""
+
+    if project_dir is None:
+        return True
+    try:
+        from rnaseq.project import load_project
+        config = load_project(project_dir).config
+    except (OSError, ValueError):
+        return True
+    method = config.upstream.quantification.method if config.upstream.quantification else "salmon"
+    return config.input.type is InputType.FASTQ and method == "salmon"
+
+
+def _nfcore_conda_channel_check(project_dir: Path | None) -> RuntimeCheck:
+    check = check_conda_channels()
+    if check.state == "FOUND" or _project_uses_nfcore(project_dir):
+        return check
+    return RuntimeCheck(check.name, check.state, f"{check.detail} (not used by this project's route)", "WARN")
+
+
+def doctor_readiness(checks: tuple[RuntimeCheck, ...]) -> tuple[bool, tuple[str, ...]]:
+    """Ready only when no check failed; WARN never blocks."""
+
+    failed = tuple(check.name for check in checks if check.verdict == "FAIL")
+    return not failed, failed
+
+
 def _writable_location_check(name: str, path: Path, purpose: str) -> RuntimeCheck:
     """Check writability without creating anything: the nearest existing ancestor must be writable."""
 
@@ -991,6 +1061,7 @@ def native_linux_doctor_checks(project_dir: Path | None = None) -> tuple[Runtime
         check_java(),
         check_nextflow_suitability(),
         check_conda_functional(),
+        _nfcore_conda_channel_check(project_dir),
         nfcore_pin_check(),
         _writable_location_check("Execution root", resolve_execution_workspace("doctor", "resource-check").root.parents[1], "Nextflow launch/work directories"),
         _writable_location_check("Upstream Conda cache", upstream_conda_cache(), "nf-core and HISAT2/featureCounts process environments"),
