@@ -47,16 +47,21 @@ The graph does not infer L2 from the presence of contrasts, condition metadata, 
 `rnaseq` is the control plane: it validates and freezes the project, authorizes
 an immutable run or retry, materializes narrow stageable inputs, records
 provenance, and assembles delivery. It starts Nextflow but never schedules an
-L1, L2, GSEA, or report container itself. Nextflow is the execution plane: its
+L1, L2, GSEA, or report task itself. Nextflow is the execution plane: its
 explicit `L1_ANALYSIS`, `L2_ANALYSIS`, enrichment, and report processes all
-declare `container params.first_party_image`. The per-run generated config
-freezes that parameter as `params.first_party_image`; it does not inject a
-global `process.container` or depend on a source checkout mounted into a task.
+declare `conda params.downstream_runtime_prefix`. The per-run generated config
+freezes that parameter to the verified, locked downstream Conda prefix; it does
+not inject a global process environment or depend on a source checkout mounted
+into a task. R scripts are located inside the installed nf-rna wheel with
+`importlib.resources`.
 
-The one first-party image contains the installed `rnaseq.workflow_support`
-package and a copied `/opt/nf-rna/r` script bundle. Docker is the current local
-Nextflow process runtime. A future Apptainer profile can select the same
-process image without moving scientific execution back into Python.
+The downstream prefix is created from the reviewed linux-64 Conda lock and
+holds the non-editable nf-rna wheel, so `rnaseq.workflow_support` and the R
+scripts in every task come from the same recorded source commit. Upstream,
+nf-core/rnaseq runs with `-profile conda` and the HISAT2/featureCounts graph
+uses its exactly pinned Conda environment. The same processes also declare
+`container params.first_party_image`, used only by the historical Docker
+runtime of v1.2.1 and earlier.
 
 `paired_two_group` is a specialization of the existing additive-design path, not a separate analysis pipeline. Its explicit `pair_id` column, formula, contrast-specific pair membership, complete-pair counts, and analyzed-sample counts are validated before execution and frozen into the input manifest and downstream contract. L1, the single DESeq2 L2 fit, explicit contrast extraction, and optional preranked GSEA then follow the same graph as unpaired projects.
 

@@ -1,35 +1,29 @@
 # nf-rna Quick Start
 
-This guide is for production users on Linux or WSL. Install Python 3.11+, Git, Docker with a running daemon, Bash, Java 17+, and Nextflow before starting. Nextflow runs on the host; Docker runs analysis tasks. See the [official Nextflow installation guide](https://docs.seqera.io/nextflow/install) for Java and Nextflow.
+This guide is for production users on Linux x86-64 or Windows WSL2. Install Python 3.11+, Git, Conda (for example Miniforge), Bash, Java 17+, and Nextflow before starting. Nextflow runs on the host and runs every analysis task in a Conda environment; Docker is not required. See the [official Nextflow installation guide](https://docs.seqera.io/nextflow/install) for Java and Nextflow.
 
 ## Install a released nf-rna version
 
-nf-rna is installed from Git tags; it is not published to PyPI. Beginning with
-the `v1.1.2` release, official images are published as
-`ghcr.io/2002brian/nf-rna:X.Y.Z`. Replace `X.Y.Z` with the released version you
-intend to use:
+nf-rna is installed from Git tags; it is not published to PyPI. Installing from
+Git lets pip record the exact source commit, which every run records; nf-rna
+refuses to run from an install without a commit. Replace `X.Y.Z` with the
+released version you intend to use:
 
 ```bash
 RELEASE_VERSION=X.Y.Z
-python3.11 -m venv ~/.venvs/nf-rna-${RELEASE_VERSION}
-source ~/.venvs/nf-rna-${RELEASE_VERSION}/bin/activate
+conda create --yes --name nf-rna python=3.11
+conda activate nf-rna
 python -m pip install --upgrade pip
 python -m pip install "git+https://github.com/2002brian/nf-rna.git@v${RELEASE_VERSION}"
-docker pull ghcr.io/2002brian/nf-rna:${RELEASE_VERSION}
 rnaseq --version
 rnaseq doctor
 ```
 
-The installed package contains required workflow assets. `rnaseq doctor` is read-only: it checks the local environment and image without pulling or building anything.
+The installed package contains required workflow assets. `rnaseq doctor` is read-only: it checks Java, Nextflow, Conda, the nf-core/rnaseq pin, the downstream Conda lock, and the nf-rna source revision without creating environments or downloading anything. The first run creates the locked downstream Conda environment; Nextflow creates the nf-core/rnaseq and HISAT2/featureCounts process environments in a shared Conda cache.
 
-Official release images are qualified for `linux/amd64`; `linux/arm64` is not
-yet independently qualified. Use an explicit version tag or immutable digest,
-not `:latest`, for a formal analysis. The historical `v1.0.0` release has no
-official GHCR image; use its source-build path when working with that release.
-`v1.1.0` and `v1.1.1` remain valid source releases but have no official GHCR
-images: their publication workflows stopped before image build or push.
-Official distribution begins with `v1.1.2`, which has no scientific-analysis,
-R, or Nextflow changes.
+Releases `v1.1.2` through `v1.2.1` used a Docker execution image published as
+`ghcr.io/2002brian/nf-rna:X.Y.Z`; `v1.2.1` is the last Docker-based release.
+`v1.0.0` predates GHCR publication, and `v1.1.0`/`v1.1.1` have no official image.
 
 ## Create and run a project
 
@@ -68,16 +62,17 @@ Only `--profile local` is implemented. HPC, SLURM, and Apptainer are not current
 The release contract is:
 
 ```text
-CLI X.Y.Z  ↔  Git tag vX.Y.Z  ↔  ghcr.io/2002brian/nf-rna:X.Y.Z
+CLI X.Y.Z  ↔  Git tag vX.Y.Z  ↔  one source commit, recorded in every run
 ```
 
-New projects use the image that matches the installed CLI version. For formal
-analyses, use a versioned tag or an immutable digest rather than `:latest`;
-`latest` is a convenience tag only.
+Install an explicit release tag for formal analyses. `rnaseq doctor PROJECT`
+reports the source revision, the downstream Conda lock, and any provisioned
+runtime. Run provenance records the nf-rna version and source commit, the
+downstream Conda lock filename and SHA-256, the installed wheel SHA-256, the
+bundled R-script inventory, the nf-core/rnaseq version and revision, the
+reference manifest and file checksums, and executed workflow hashes.
 
-`rnaseq doctor PROJECT` reports requested and Docker-observed image identity. Run provenance records the requested image, observed image ID/repository digest, OCI revision label when available, CLI version, and executed workflow hashes.
-
-## v1.0.0 compatibility
+## Historical v1.0.0 compatibility
 
 The immutable `v1.0.0` release predates both GHCR publication and the
 version-matched project default. It has no official GHCR image. Its `rnaseq

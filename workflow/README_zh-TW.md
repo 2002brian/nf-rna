@@ -4,7 +4,7 @@
 
 > 本文件為繁體中文翻譯；若與英文版內容有差異，以英文版 README.md 為準。
 
-local Docker profile 會呼叫外部且已固定版本的 `nf-core/rnaseq 3.26.0` pipeline，接著執行此 first-party DSL2 downstream workflow：
+local profile 會以 `-profile conda` 呼叫外部且已固定版本的 `nf-core/rnaseq 3.26.0` pipeline，接著執行此 first-party DSL2 downstream workflow：
 
 ```text
 rnaseq CLI → nf-core/rnaseq → standardized upstream outputs → downstream Nextflow workflow → R modules
@@ -12,7 +12,7 @@ rnaseq CLI → nf-core/rnaseq → standardized upstream outputs → downstream N
 
 Python control plane 會凍結 version-pinned input contract，並記錄穩定的 nf-core handoff boundary。凍結的 `analysis_level` 是 graph selector：`L1` 專案只執行 L1 與 L1 technical report；`L2` 專案執行 L1、L2，以及獨立選用的 GO ORA、KEGG ORA、GO preranked GSEA（BP/MF/CC）與 KEGG preranked GSEA，接著產生 technical HTML report。graph 絕不會從 contrast、metadata 或可用 workflow module 推斷 L2。server executor setting 仍刻意延後決定。
 
-每個 downstream computational process 都明確宣告 `conda params.downstream_runtime_prefix`。使用者確認後，control plane 會由平台 lock 建立或驗證 deterministic cached Conda prefix，並以 `pip --no-deps` 安裝 non-editable nf-rna wheel；lock、wheel 與 bundled R-script identity 皆會凍結至 run contract。Nextflow 會為每個 first-party task 啟用這個 prefix；R scripts 由安裝 wheel 的 `importlib.resources` 找到，不使用 `/opt/nf-rna/r` 或呼叫端 editable environment。FASTQ upstream 在獨立 migration milestone 前仍使用 Docker。
+每個 downstream computational process 都明確宣告 `conda params.downstream_runtime_prefix`。使用者確認後，control plane 會由平台 lock 建立或驗證 deterministic cached Conda prefix，並以 `pip --no-deps` 安裝 non-editable nf-rna wheel；lock、wheel 與 bundled R-script identity 皆會凍結至 run contract。Nextflow 會為每個 first-party task 啟用這個 prefix；R scripts 由安裝 wheel 的 `importlib.resources` 找到，不使用 `/opt/nf-rna/r` 或呼叫端 editable environment。FASTQ upstream 同樣在 Conda 中執行：nf-core/rnaseq 使用 `-profile conda`，HISAT2/featureCounts graph 使用精確 pin 的 Conda environment。
 
 獨立的 `ENRICHMENT_ANALYSIS` task 在其 CPU 與 memory request 總和符合 effective aggregate local budget 時可並行執行。Nextflow local executor 會負責此 scheduling guard，不再使用固定 `maxForks` 限制。
 
@@ -24,4 +24,4 @@ Python control plane 會凍結 version-pinned input contract，並記錄穩定�
 
 checked-in local configuration 使用明確且非科學性的 runtime class：SMALL（1 CPU、2 GiB、2 h）、MEDIUM（4 CPUs、8 GiB、8 h）與 LARGE（8 CPUs、12 GiB、12 h）。L1 與 technical report 使用 SMALL；L2 與每個 GSEA backend 使用 MEDIUM。sample-level upstream 與獨立 enrichment task 不會被固定序列化；Nextflow 只會在 request 總和符合凍結的 effective aggregate ceiling 時啟動 ready task，並保留 nf-core 原有 process-specific label request。
 
-這些限制用於避免 local Docker memory oversubscription，不會變更任何 input、model、filtering、threshold、ranking、enrichment calculation 或已發布 artifact。未來 server profile 可以明確覆寫 resource directive。local run 前請使用 `rnaseq doctor [PROJECT]` 檢查 host/Docker capacity 與 architecture；dynamic upstream nf-core image architecture 必須在凍結的 Nextflow trace 中檢查。
+這些限制用於避免 local memory oversubscription，不會變更任何 input、model、filtering、threshold、ranking、enrichment calculation 或已發布 artifact。未來 server profile 可以明確覆寫 resource directive。local run 前請使用 `rnaseq doctor [PROJECT]` 檢查 host capacity 與 Conda runtime。

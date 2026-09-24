@@ -4,13 +4,13 @@ English | [繁體中文](README_zh-TW.md)
 
 `nf-rna` is a reproducible bulk RNA-seq workflow for FASTQ and raw-count projects. It validates declared inputs and design, performs the selected QC and analysis stages, and produces figures, tables, a technical report, and frozen provenance.
 
-`rnaseq` is the control plane, Nextflow is the execution plane, and Docker is the process runtime. Production users enter through `rnaseq`; they do not build an execution image or invoke internal Nextflow modules.
+`rnaseq` is the control plane, Nextflow is the execution plane, and Conda provides every process environment. The supported runtime for v1.3.0 is **Linux x86-64 or Windows WSL2, with Nextflow and Conda**; Docker is not required. Production users enter through `rnaseq`; they do not invoke internal Nextflow modules.
 
 ## Features
 
 - FASTQ projects using nf-core/rnaseq with Salmon/tximport or first-party HISAT2 + featureCounts.
 - Raw-count projects with validated metadata, explicit contrasts, QC, differential expression, and optional GO/KEGG ORA and preranked GSEA.
-- Immutable runs with frozen configuration, execution-image identity, workflow hashes, and curated delivery artifacts.
+- Immutable runs with frozen configuration, the exact nf-rna source commit, the locked Conda runtime identity, workflow hashes, and curated delivery artifacts.
 
 ## Architecture
 
@@ -41,7 +41,7 @@ L1 provides expression quality control and exploration. L2 is explicitly selecte
 
 ### Outputs
 
-Every authorized execution creates an immutable run under `runs/<case-id>/<run-id>/`. The run keeps frozen inputs and configuration, execution-image and workflow identity, and provenance alongside its analysis artifacts.
+Every authorized execution creates an immutable run under `runs/<case-id>/<run-id>/`. The run keeps frozen inputs and configuration, the nf-rna source commit, Conda runtime and workflow identity, and provenance alongside its analysis artifacts.
 
 - **Upstream count data:** FASTQ projects retain upstream QC and the Salmon/tximport or featureCounts count handoff; count-matrix projects retain their validated imported count source.
 - **L1 QC:** filtering and normalization records, transformed expression for visualization, PCA, sample correlation, and QC tables and figures.
@@ -51,53 +51,56 @@ Every authorized execution creates an immutable run under `runs/<case-id>/<run-i
 
 ## Requirements
 
-Use a supported Linux or WSL workstation with:
+Use a Linux x86-64 workstation or Windows with WSL2 (native Windows and macOS are not supported by v1.3.0) with:
 
-- Python 3.11+ with `venv` and Git;
-- Docker with a running daemon;
+- Python 3.11+ and Git;
+- Conda (for example Miniforge) on `PATH`;
 - Bash, Java 17+, and Nextflow on `PATH`; and
-- sufficient local storage for references and Nextflow work data.
+- sufficient local storage for references, Conda environments, and Nextflow work data.
 
-Java and Nextflow run on the host. R, DESeq2, HISAT2, featureCounts, SAMtools, and Salmon are provided by execution images; normal users do not install them on the host. See the [Nextflow installation guide](https://docs.seqera.io/nextflow/install).
+Docker is not required. Java, Nextflow, and Conda run on the host. nf-core/rnaseq 3.26.0 runs with `-profile conda`; HISAT2/featureCounts use an exactly pinned Conda environment; R, DESeq2, tximport, and the enrichment packages run in a locked linux-64 Conda environment that nf-rna creates on first use. Normal users do not install these tools by hand. See the [Nextflow installation guide](https://docs.seqera.io/nextflow/install).
 
 ## Installation
 
-nf-rna has no PyPI distribution. Beginning with the `v1.1.2` release, official
-images are published as `ghcr.io/2002brian/nf-rna:X.Y.Z`; install the released
-CLI from its Git tag and pull its matching image. Replace `X.Y.Z` with the
-released version you intend to use:
+nf-rna has no PyPI distribution. Install the released CLI from its Git tag.
+Installing from Git lets pip record the exact source commit, which every run
+must record; nf-rna refuses to run from an install that has no commit, such as
+a plain directory, sdist, or wheel install. Replace `X.Y.Z` with the released
+version you intend to use:
 
 ```bash
 RELEASE_VERSION=X.Y.Z
-python3.11 -m venv ~/.venvs/nf-rna-${RELEASE_VERSION}
-source ~/.venvs/nf-rna-${RELEASE_VERSION}/bin/activate
+conda create --yes --name nf-rna python=3.11
+conda activate nf-rna
 python -m pip install --upgrade pip
 python -m pip install "git+https://github.com/2002brian/nf-rna.git@v${RELEASE_VERSION}"
-docker pull ghcr.io/2002brian/nf-rna:${RELEASE_VERSION}
 rnaseq --version
 rnaseq doctor
 ```
 
+The first run creates the locked downstream Conda environment under the nf-rna
+runtime cache (one environment per lock and installed nf-rna build); later runs
+reuse it. nf-core/rnaseq and HISAT2/featureCounts process environments are
+created by Nextflow in a shared upstream Conda cache.
+
 The release contract is deliberate:
 
 ```text
-CLI X.Y.Z  ↔  Git tag vX.Y.Z  ↔  ghcr.io/2002brian/nf-rna:X.Y.Z
+CLI X.Y.Z  ↔  Git tag vX.Y.Z  ↔  one source commit, recorded in every run
 ```
 
-`v1.0.0` is an immutable historical GitHub Release and predates GHCR
-publication; it has no official container image. Build from source only when
-working with that historical release or developing the project.
+`rnaseq doctor` is read-only: it checks Java, Nextflow, Conda, the nf-core/rnaseq
+pin, the downstream Conda lock, and the nf-rna source revision, but it does not
+create environments or download pipelines.
 
-`v1.1.0` and `v1.1.1` remain valid source releases, but neither has an official
-GHCR image: their publication workflows stopped before image build or push.
-Official GHCR distribution begins with `v1.1.2`, which contains no scientific,
-R, or Nextflow changes.
+### Historical Docker releases
 
-Official release images are qualified for `linux/amd64`. `linux/arm64` is not
-yet independently qualified. Prefer an explicit version tag or immutable
-digest over `:latest`; `latest` is a convenience tag only.
-
-`rnaseq doctor` is read-only: it verifies the host environment and locally available image but does not pull or build images.
+Releases `v1.1.2` through `v1.2.1` ran their processes in Docker and published
+official images as `ghcr.io/2002brian/nf-rna:X.Y.Z`, qualified for
+`linux/amd64`. `v1.2.1` is the last Docker-based release; v1.3.0 does not
+require or qualify a Docker image. `v1.0.0` predates GHCR publication, and
+`v1.1.0`/`v1.1.1` remain valid source releases without official images because
+their publication workflows stopped before image build or push.
 
 ## Quick Start
 
@@ -138,9 +141,9 @@ Known batch belongs in the DESeq2 design (`~ batch + condition`), not in a batch
 
 ## Reproducibility
 
-New projects use the execution image that matches the installed CLI version. A prerelease CLI likewise uses its explicit matching prerelease tag; publish and qualify that image before using the prerelease.
+Every run records the nf-rna source commit, the downstream Conda lock and its SHA-256, the installed nf-rna wheel SHA-256, the bundled R-script inventory, the nf-core/rnaseq version and revision, and the reference manifest and file checksums. nf-rna refuses to start a run when the source commit is unknown or the source checkout has uncommitted changes.
 
-For formal analyses, use an explicit release tag or an immutable digest. `ghcr.io/2002brian/nf-rna:latest` is a convenience tag only and should not be used for an active production analysis. `rnaseq doctor PROJECT` reports requested and Docker-observed image identity.
+For formal analyses, install an explicit release tag. `rnaseq doctor PROJECT` reports the source revision, the Conda lock, and the provisioned runtime before you run.
 
 ## Documentation
 
@@ -151,4 +154,4 @@ For formal analyses, use an explicit release tag or an immutable digest. `ghcr.i
 
 ## Development
 
-Cloning the source, editable installation, local image builds, and tests are contributor activities. See [Development installation](docs/development.md).
+Cloning the source, editable installation, and tests are contributor activities. See [Development installation](docs/development.md).
