@@ -11,6 +11,8 @@ Correctness release for 1.2.0. DESeq2, tximport, nf-core/rnaseq 3.26.0, contrast
 - L1/L2 now receive design-variable types from the frozen, validated contract instead of re-reading `project.yaml`.
 - Legacy schema 1.0–1.2 projects keep their inference, but each formula variable inferred as continuous now produces a validation warning.
 - The report's Experimental design section lists the resolved variable types from the frozen contract and marks undeclared ones as inferred.
+- For legacy schema 1.0–1.2 projects, `pca_scores.tsv` now includes an annotation column for each resolved design variable; PC coordinates and explained variance are unchanged.
+- Fixed post-analysis delivery validation rejecting raw-count inputs that contain physically blank CSV lines (such as a trailing blank line), which input validation and R already ignore. The delivered `raw_counts.csv` remains byte-identical to the input and its manifest counts only real gene rows. This is a delivery-validation fix; DESeq2 inputs and results are unchanged.
 - The GO/KEGG ORA significance rule (raw p-value ≤ `pvalue_cutoff` and q-value ≤ `qvalue_cutoff`; `p.adjust` is reported but not used for selection) is now documented and stated in the report. The rule itself is unchanged.
 - The first-party Docker image must report the same nf-rna version as the CLI, is resolved to its local RepoDigest, and runs by that frozen `repository@sha256:…` reference. Production acceptance also requires a clean release revision label matching a clean source checkout. After upgrading, set existing projects' `runtime.execution_image` to the 1.2.1 image and re-run `rnaseq plan`.
 

@@ -923,3 +923,72 @@ def test_raw_counts_delivery_preserves_metadata_sample_order(project_factory):
 
     assert artifact["ordered_sample_ids"] == expected_samples
     assert artifact["columns"] == 6
+
+
+_DELIVERY_HEADER = "gene_id,C1,C2,C3,T1,T2,T3\n"
+_DELIVERY_GENES = "GeneA,10,12,9,40,45,43\nGeneB,100,110,98,95,102,99\nGeneC,5,6,7,8,9,10\n"
+
+
+@pytest.mark.parametrize(
+    "counts",
+    [
+        _DELIVERY_HEADER + _DELIVERY_GENES,
+        _DELIVERY_HEADER + _DELIVERY_GENES + "\n",
+        (_DELIVERY_HEADER + _DELIVERY_GENES + "\n").replace("\n", "\r\n"),
+        _DELIVERY_HEADER + _DELIVERY_GENES + "\n\n\n",
+        _DELIVERY_HEADER + "GeneA,10,12,9,40,45,43\n\nGeneB,100,110,98,95,102,99\nGeneC,5,6,7,8,9,10\n",
+    ],
+    ids=["clean", "one-trailing-blank", "crlf-trailing-blank", "multiple-trailing-blanks", "interior-blank"],
+)
+def test_raw_counts_delivery_ignores_only_physical_blank_records(project_factory, counts):
+    root = project_factory(counts=counts)
+    report = validate_project(root)
+    assert report.is_valid, report.errors
+    assert report.counts.gene_count == 3
+    generate_plan(report)
+    run = create_case_run(report, "CASE-20260924-001", moment=datetime(2026, 9, 24, 10, 0, 0))
+    freeze_case_inputs(report, run, profile="local", command=["rnaseq", "run"])
+
+    delivery = assemble_delivery(run)
+
+    source = run.run_dir / "frozen" / "input" / "counts.csv"
+    target = delivery / "counts" / "raw_counts.csv"
+    assert source.read_bytes() == counts.encode("utf-8")
+    assert target.read_bytes() == source.read_bytes()
+    artifact = json.loads((delivery / "counts" / "artifact_manifest.json").read_text(encoding="utf-8"))["artifacts"][0]
+    assert artifact["rows"] == 3
+    assert artifact["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("counts", "message"),
+    [
+        (_DELIVERY_HEADER + _DELIVERY_GENES + ",,,,,,\n", "invalid gene identifiers"),
+        (_DELIVERY_HEADER + _DELIVERY_GENES + ",1,2,3,4,5,6\n", "invalid gene identifiers"),
+        (_DELIVERY_HEADER + _DELIVERY_GENES + "GeneA,1,2,3,4,5,6\n", "invalid gene identifiers"),
+        (_DELIVERY_HEADER + _DELIVERY_GENES + "GeneD,1,2,3\n", "invalid gene identifiers"),
+        (_DELIVERY_HEADER + "\n\n", "no gene rows"),
+        ("gene_id,T1,C2,C3,C1,T2,T3\n" + _DELIVERY_GENES, "unexpected gene/sample columns"),
+    ],
+    ids=["empty-field-record", "empty-gene-id", "duplicate-gene-id", "short-row", "only-blank-records", "sample-order-mismatch"],
+)
+def test_raw_counts_delivery_still_rejects_malformed_matrices(project_factory, counts, message):
+    _root, _report, run = _frozen_run(project_factory)
+    (run.run_dir / "frozen" / "input" / "counts.csv").write_text(counts, encoding="utf-8")
+
+    with pytest.raises(UpstreamExecutionError, match=message):
+        assemble_delivery(run)
+
+
+@pytest.mark.parametrize(
+    ("counts", "code"),
+    [
+        (_DELIVERY_HEADER + _DELIVERY_GENES + ",1,2,3,4,5,6\n", "blank_gene_id"),
+        (_DELIVERY_HEADER + _DELIVERY_GENES + "GeneA,1,2,3,4,5,6\n", "duplicate_gene_id"),
+        (_DELIVERY_HEADER + _DELIVERY_GENES + "GeneD,1,2,3\n", "malformed_count_row"),
+        (_DELIVERY_HEADER + "\n\n", "missing_genes"),
+    ],
+)
+def test_count_validation_still_rejects_malformed_records_around_blank_lines(project_factory, counts, code):
+    report = validate_project(project_factory(counts=counts + "\n"))
+    assert code in {issue.code for issue in report.errors}

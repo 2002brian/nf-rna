@@ -1132,6 +1132,10 @@ def _validate_delivery_count_matrix(
         raise UpstreamExecutionError(f"Delivery count matrix has unexpected gene/sample columns: {path}")
     genes: set[str] = set()
     for row in rows[1:]:
+        # A physically blank line is absent to validate_counts and R read.csv;
+        # a record of empty fields such as ",,," is not, and is still rejected.
+        if not row:
+            continue
         if len(row) != len(rows[0]) or not row[0] or row[0] in genes:
             raise UpstreamExecutionError(f"Delivery count matrix has invalid gene identifiers: {path}")
         genes.add(row[0])
@@ -1144,7 +1148,9 @@ def _validate_delivery_count_matrix(
                 raise UpstreamExecutionError(f"Delivery matrix contains a non-finite or invalid value: {path}")
             if integer_required and not numeric.is_integer():
                 raise UpstreamExecutionError(f"Delivery raw-count matrix contains a non-integer value: {path}")
-    return len(rows) - 1, len(samples), tuple(matrix_samples)
+    if not genes:
+        raise UpstreamExecutionError(f"Delivery count matrix has no gene rows: {path}")
+    return len(genes), len(samples), tuple(matrix_samples)
 
 
 def _delivery_count_source(run: CaseRun) -> tuple[Path, str, bool, str, str, str, bool] | None:
