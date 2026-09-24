@@ -868,6 +868,14 @@ def _resolve_design_variable_types(report: ValidationReport) -> None:
                     if _numeric_column(values) is not None
                     else MetadataVariableType.CATEGORICAL.value
                 )
+        for variable, variable_type in resolved.items():
+            if variable_type == MetadataVariableType.CONTINUOUS.value:
+                report.warning(
+                    "inferred_continuous_design_variable",
+                    f"Design variable {variable!r} was inferred as continuous because no explicit variable type "
+                    "was declared (design.variables). It is fitted as a numeric slope; if its values are group "
+                    "labels, declare it categorical.",
+                )
     report.design_variable_types = resolved
 
 

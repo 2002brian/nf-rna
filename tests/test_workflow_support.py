@@ -16,7 +16,10 @@ from conftest import base_config
 from rnaseq.planner import generate_plan
 from rnaseq.service import create_case_run, freeze_case_inputs, resolve_downstream_inputs
 from rnaseq.validators import validate_project
-from rnaseq.workflow_support import _samples, _source_import_label, enrichment_config, l1_config, l2_config, report
+from rnaseq.workflow_support import (
+    _experimental_design_html, _samples, _source_import_label, _validated_design_variable_types, enrichment_config,
+    l1_config, l2_config, report,
+)
 
 
 @pytest.mark.parametrize(
@@ -251,6 +254,90 @@ T3,P3,B1,Treatment
     }
     report = validate_project(project_factory(config=config, metadata=rank_deficient, contrasts=contrasts))
     assert "rank_deficient_design" in {item.code for item in report.errors}
+
+
+def test_production_bridge_passes_declared_categorical_for_leading_zero_batch(project_factory, tmp_path):
+    metadata = """sample_id,batch,age,condition
+C1,1,30,Control
+C2,01,34,Control
+C3,2,32,Control
+T1,1,31,Treatment
+T2,01,35,Treatment
+T3,2,39,Treatment
+"""
+    contrasts = "contrast_id,factor,numerator,denominator\nTreatment_vs_Control,condition,Treatment,Control\n"
+    types = {"batch": "categorical", "age": "continuous", "condition": "categorical"}
+    contract, inputs, _validation = _typed_batch_l2_contract(
+        project_factory,
+        design_type="two_group",
+        formula="~ batch + age + condition",
+        variables=types,
+        metadata=metadata,
+        contrasts=contrasts,
+    )
+    assert l1_config(contract, inputs, tmp_path / "l1")["design_variable_types"] == types
+    assert l2_config(contract, inputs, tmp_path / "l1", tmp_path / "l2")["design_variable_types"] == types
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "formula", "metadata", "expected"),
+    (
+        (
+            "1.0", "~ condition",
+            "sample_id,condition\nC1,Control\nC2,Control\nC3,Control\nT1,Treatment\nT2,Treatment\nT3,Treatment\n",
+            {"condition": "categorical"},
+        ),
+        (
+            "1.2", "~ batch + condition",
+            "sample_id,batch,condition\nC1,1,Control\nC2,2,Control\nC3,3,Control\nT1,1,Treatment\nT2,2,Treatment\nT3,3,Treatment\n",
+            {"batch": "continuous", "condition": "categorical"},
+        ),
+    ),
+)
+def test_legacy_bridge_reproduces_existing_resolved_types(project_factory, tmp_path, schema_version, formula, metadata, expected):
+    config = base_config()
+    config["schema_version"] = schema_version
+    if schema_version != "1.0":
+        config["analysis"] = {"enrichment": []}
+    config["design"] = {"type": "two_group", "formula": formula}
+    root = project_factory(config=config, metadata=metadata)
+    validation = validate_project(root)
+    assert validation.is_valid, validation.errors
+    generate_plan(validation)
+    run = create_case_run(validation, "CASE-LEGACY-BRIDGE", moment=datetime(2026, 9, 22, 12, 0, 0))
+    frozen = freeze_case_inputs(validation, run, profile="local", command=["rnaseq", "run"])
+    inputs = resolve_downstream_inputs(run).root
+    frozen_types = json.loads(frozen.contract.read_text(encoding="utf-8"))["design"]["variables"]
+    assert dict(validation.design_variable_types) == frozen_types == expected
+    assert l1_config(frozen.contract, inputs, tmp_path / "l1")["design_variable_types"] == expected
+    assert l2_config(frozen.contract, inputs, tmp_path / "l1", tmp_path / "l2")["design_variable_types"] == expected
+
+
+@pytest.mark.parametrize(
+    ("project_design", "expected"),
+    (
+        ({"formula": "~ condition", "variables": {"condition": "categorical"}}, {"condition": "categorical"}),
+        ({"formula": "~ condition"}, {}),
+    ),
+)
+def test_bridge_falls_back_to_project_types_for_contracts_without_design(project_design, expected):
+    assert _validated_design_variable_types({"schema_version": "1.0"}, {"design": project_design}) == expected
+
+
+def test_report_design_table_shows_frozen_types_and_marks_undeclared_ones_inferred():
+    contract = {"design": {"variables": {"batch": "categorical", "age": "continuous", "condition": "categorical"}}}
+    contrasts = [{"contrast_id": "T_vs_C", "factor": "condition", "numerator": "Treatment", "denominator": "Control"}]
+    legacy = "\n".join(_experimental_design_html({"design": {"formula": "~ batch + age + condition"}}, contrasts, contract))
+    assert "<tr><td>batch</td><td>categorical (inferred)</td></tr>" in legacy
+    assert "<tr><td>age</td><td>continuous (inferred)</td></tr>" in legacy
+    assert "<tr><td>condition</td><td>categorical (inferred)</td></tr>" in legacy
+    assert "Treatment vs Control, adjusted for batch, age." in legacy
+    # A declared project still reports the frozen contract types, without the inferred marker.
+    declared_project = {"design": {"formula": "~ batch + age + condition", "variables": {"batch": "continuous"}}}
+    declared = "\n".join(_experimental_design_html(declared_project, contrasts, contract))
+    assert "<tr><td>batch</td><td>categorical</td></tr>" in declared
+    assert "<tr><td>age</td><td>continuous</td></tr>" in declared
+    assert "(inferred)" not in declared
 
 
 def test_active_nextflow_l2_process_uses_the_guarded_config_builder():
@@ -519,6 +606,8 @@ def test_l1_report_requires_no_l2_artifacts_and_cli_does_not_require_l2(project_
     assert "Requested analysis level: L1" in report_text
     assert "Not requested for this L1 project." in report_text
     assert "L2 summary" not in report_text
+    # Legacy schema 1.0: the frozen resolved type is shown and marked as inferred.
+    assert "<tr><td>condition</td><td>categorical (inferred)</td></tr>" in report_text
 
     result = subprocess.run(
         [
