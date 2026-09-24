@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented here.
 
+## 1.3.0 — 2026-09-24
+
+Runtime release. The supported runtime is now **Linux x86-64 or Windows WSL2 with Nextflow and Conda**; Docker is no longer required or used. nf-core/rnaseq 3.26.0, DESeq2, tximport, contrast semantics, and the enrichment methods are unchanged apart from the ORA mapping-QC correction below.
+
+- FASTQ upstream runs in Conda: nf-core/rnaseq 3.26.0 (revision `e7ca46272c8f9d5ceee3f71759f4ba551d3217a4`) with `-profile conda`, and the HISAT2/featureCounts graph in an exactly pinned Conda environment with the same tool versions and builds as the former containers.
+- Downstream L1, L2, enrichment, and report tasks run in a locked linux-64 Conda environment (`workflow/envs/locks/nf-rna-downstream-linux-64.lock.yml`, verified against `SHA256SUMS`) into which the non-editable nf-rna wheel is installed. One immutable prefix is created per (lock, wheel) pair, so an upgrade provisions a new prefix instead of colliding with an earlier run's environment.
+- Every run records the exact nf-rna source commit. A source checkout reports its `HEAD`; an installed distribution reports the commit pip recorded for a `git+…@<ref>` install. Runs are refused when no commit is available (directory, sdist, or wheel installs) or the checkout has uncommitted changes. Provenance also records the lock and wheel SHA-256 and the bundled R-script inventory.
+- Includes every correctness fix of 1.2.1 (see below): categorical label identity (`1` ≠ `01`), explicit schema 1.3 formula-variable types, frozen variable types passed to L1/L2, inferred-continuous warnings, the typed experimental-design report table, blank-line raw-count delivery validation, and the ORA significance-rule disclosure. The Docker image-identity changes of 1.2.1 do not apply to the Conda runtime.
+- Fixed GO and KEGG ORA treating `annotation.mapping_warning_rate` as a blocking threshold. All four enrichment backends (GO/KEGG ORA and GO/KEGG preranked GSEA) now share one mapping QC: at or above `mapping_warning_rate` is `PASS`; from `minimum_mapping_rate` up to the warning threshold is `WARNING` and the backend runs; below `minimum_mapping_rate` is `BLOCKED`. **ORA results can change for projects whose tested-gene mapping rate lies between the two thresholds (0.50–0.70 by default)**, which 1.2.x blocked. ORA summaries now record the QC status and both thresholds.
+- Raw-count delivery keeps the valid source column order of `input/counts.csv` instead of requiring it to match metadata order; analysis still uses the frozen metadata order.
+- macOS and native Windows are not supported by 1.3.0. v1.2.1 remains the last Docker-based release.
+
+## 1.2.1 — 2026-09-24
+
+Correctness release for 1.2.0. DESeq2, tximport, nf-core/rnaseq 3.26.0, contrast semantics, and enrichment methods are unchanged.
+
+- Fixed R metadata parsing that merged distinct categorical labels such as `1` and `01` (or `1`/`1.0`, `1e2`/`100`, and very long numeric IDs) into one factor level before DESeq2. Metadata is now read as text and the frozen variable types are applied afterwards, preserving each label; reference-level order is unchanged. **Results can change for projects whose categorical covariates or `pair_id` contained such labels**, because 1.2.0 fitted a model with merged levels. Other projects produce identical DESeq2 results.
+- Schema 1.3 projects must declare a type in `design.variables` for every formula variable; incomplete projects are rejected before analysis.
+- L1/L2 now receive design-variable types from the frozen, validated contract instead of re-reading `project.yaml`.
+- Legacy schema 1.0–1.2 projects keep their inference, but each formula variable inferred as continuous now produces a validation warning.
+- The report's Experimental design section lists the resolved variable types from the frozen contract and marks undeclared ones as inferred.
+- For legacy schema 1.0–1.2 projects, `pca_scores.tsv` now includes an annotation column for each resolved design variable; PC coordinates and explained variance are unchanged.
+- Fixed post-analysis delivery validation rejecting raw-count inputs that contain physically blank CSV lines (such as a trailing blank line), which input validation and R already ignore. The delivered `raw_counts.csv` remains byte-identical to the input and its manifest counts only real gene rows. This is a delivery-validation fix; DESeq2 inputs and results are unchanged.
+- The GO/KEGG ORA significance rule (raw p-value ≤ `pvalue_cutoff` and q-value ≤ `qvalue_cutoff`; `p.adjust` is reported but not used for selection) is now documented and stated in the report. The rule itself is unchanged.
+- The first-party Docker image must report the same nf-rna version as the CLI, is resolved to its local RepoDigest, and runs by that frozen `repository@sha256:…` reference. Production acceptance also requires a clean release revision label matching a clean source checkout. After upgrading, set existing projects' `runtime.execution_image` to the 1.2.1 image and re-run `rnaseq plan`.
+
 ## 1.2.0 — 2026-09-21
 
 - Added explicitly typed categorical and continuous metadata covariates for generalized additive fixed-effect DESeq2 designs.
