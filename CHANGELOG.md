@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here.
 
+## 1.2.1 — 2026-09-24
+
+Correctness release for 1.2.0. DESeq2, tximport, nf-core/rnaseq 3.26.0, contrast semantics, and enrichment methods are unchanged.
+
+- Fixed R metadata parsing that merged distinct categorical labels such as `1` and `01` (or `1`/`1.0`, `1e2`/`100`, and very long numeric IDs) into one factor level before DESeq2. Metadata is now read as text and the frozen variable types are applied afterwards, preserving each label; reference-level order is unchanged. **Results can change for projects whose categorical covariates or `pair_id` contained such labels**, because 1.2.0 fitted a model with merged levels. Other projects produce identical DESeq2 results.
+- Schema 1.3 projects must declare a type in `design.variables` for every formula variable; incomplete projects are rejected before analysis.
+- L1/L2 now receive design-variable types from the frozen, validated contract instead of re-reading `project.yaml`.
+- Legacy schema 1.0–1.2 projects keep their inference, but each formula variable inferred as continuous now produces a validation warning.
+- The report's Experimental design section lists the resolved variable types from the frozen contract and marks undeclared ones as inferred.
+- The GO/KEGG ORA significance rule (raw p-value ≤ `pvalue_cutoff` and q-value ≤ `qvalue_cutoff`; `p.adjust` is reported but not used for selection) is now documented and stated in the report. The rule itself is unchanged.
+- The first-party Docker image must report the same nf-rna version as the CLI, is resolved to its local RepoDigest, and runs by that frozen `repository@sha256:…` reference. Production acceptance also requires a clean release revision label matching a clean source checkout. After upgrading, set existing projects' `runtime.execution_image` to the 1.2.1 image and re-run `rnaseq plan`.
+
 ## 1.2.0 — 2026-09-21
 
 - Added explicitly typed categorical and continuous metadata covariates for generalized additive fixed-effect DESeq2 designs.
