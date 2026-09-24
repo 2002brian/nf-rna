@@ -933,17 +933,24 @@ def downstream_runtime_checks() -> tuple[RuntimeCheck, ...]:
         return (RuntimeCheck("Downstream Conda lock", "NOT FOUND", str(exc)),)
     checks = [RuntimeCheck("Downstream Conda lock", "FOUND", f"{lock.name} sha256={lock_sha} matches SHA256SUMS.")]
     root = downstream_runtime._runtime_root()
-    prefix = root / "prefixes" / f"nf-rna-downstream-{downstream_runtime.native_platform()}-{lock_sha[:16]}"
+    # One prefix per (lock, wheel); the lock-only name is the pre-1.3.0 layout.
+    stem = f"nf-rna-downstream-{downstream_runtime.native_platform()}-{lock_sha[:16]}"
+    prefixes = sorted(path for path in (root / "prefixes").glob(f"{stem}*") if path.is_dir()) if (root / "prefixes").is_dir() else []
     location = _writable_location_check("Downstream runtime location", root, "the locked downstream prefix and wheel cache")
-    if location.state == "FOUND" and prefix.is_dir():
-        marker = prefix / "runtime" / "nf-rna-wheel.json"
-        if not marker.is_file():
-            location = RuntimeCheck(location.name, "NOT FOUND", f"{prefix} exists without its wheel identity marker; remove it manually before running.")
+    if location.state == "FOUND" and prefixes:
+        unmarked = [path for path in prefixes if not (path / "runtime" / "nf-rna-wheel.json").is_file()]
+        if unmarked:
+            location = RuntimeCheck(location.name, "NOT FOUND", f"{unmarked[0]} exists without its wheel identity marker; remove it manually before running.")
         else:
-            location = RuntimeCheck(location.name, "FOUND", f"{location.detail} Provisioned prefix present: {prefix}.")
+            location = RuntimeCheck(location.name, "FOUND", f"{location.detail} Provisioned prefixes for this lock: {len(prefixes)}.")
     checks.append(location)
     ready, detail = downstream_runtime.wheel_source_status()
     checks.append(RuntimeCheck("Downstream nf-rna wheel", "FOUND" if ready else "NOT FOUND", detail))
+    try:
+        revision = downstream_runtime.require_identified_source()
+        checks.append(RuntimeCheck("nf-rna source revision", "FOUND", f"{revision} (recorded in every run's provenance)."))
+    except ExecutionPreflightError as exc:
+        checks.append(RuntimeCheck("nf-rna source revision", "NOT FOUND", str(exc)))
     return tuple(checks)
 
 

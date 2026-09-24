@@ -302,6 +302,8 @@ def test_salmon_run_dispatches_every_stage_to_one_backend(monkeypatch, tmp_path,
         assert provenance["downstream_runtime"]["kind"] == "conda"
         assert provenance["container_runtime"] is None and provenance["upstream_container_runtime"] is None
         assert provenance["execution_image"] is None and provenance["runtime_resources"]["docker_version"] is None
+        # The one source commit that produced the run, as frozen with its Conda runtime.
+        assert provenance["source_revision"] == provenance["downstream_runtime"]["source_revision"] == "test-revision"
     else:
         assert upstream[upstream.index("-profile") + 1] == "docker"
         assert downstream[downstream.index("-profile") + 1] == "docker"

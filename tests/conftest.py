@@ -26,6 +26,29 @@ Treatment_vs_Control,condition,Treatment,Control
 """
 
 
+IDENTIFIED_TEST_REVISION = "0123456789abcdef0123456789abcdef01234567"
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "real_source_revision: use the real nf-rna source-revision lookup instead of a clean test revision",
+    )
+
+
+@pytest.fixture(autouse=True)
+def identified_nf_rna_source(request, monkeypatch):
+    """Keep tests independent of this checkout's git state.
+
+    Runs refuse an unidentified or dirty nf-rna source.  Tests that exercise
+    that guard opt out with ``@pytest.mark.real_source_revision``.
+    """
+
+    if request.node.get_closest_marker("real_source_revision"):
+        return
+    monkeypatch.setattr("rnaseq.downstream_runtime.runtime_source_revision", lambda: IDENTIFIED_TEST_REVISION)
+    monkeypatch.setattr("rnaseq.service.runtime_source_revision", lambda: IDENTIFIED_TEST_REVISION)
+
+
 def base_config() -> dict[str, Any]:
     return {
         "schema_version": "1.0",

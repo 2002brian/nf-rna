@@ -415,9 +415,55 @@ print(json.dumps({'version': rnaseq.__version__, 'file': str(root)}))
     return str(identity["version"]), scripts, digest
 
 
+def runtime_prefix(root: Path, target: str, lock_sha: str, wheel_sha: str) -> Path:
+    """One immutable prefix per (platform lock, nf-rna wheel) pair.
+
+    Upgrading nf-rna therefore provisions a new prefix instead of colliding
+    with a prefix that a completed run froze as its analysis environment.
+    """
+
+    return root / "prefixes" / f"nf-rna-downstream-{target}-{lock_sha[:16]}-{wheel_sha[:16]}"
+
+
+def runtime_source_revision() -> str | None:
+    """The git commit of the nf-rna source that this invocation would execute.
+
+    A source checkout reports its HEAD (``+dirty`` with uncommitted changes); an
+    installed distribution reports the commit pip recorded for a git install.
+    """
+
+    source = _source_checkout()
+    if source is not None:
+        return _source_revision(source)
+    try:
+        return _installed_revision(_installed_distribution())
+    except ExecutionPreflightError:
+        return None
+
+
+def require_identified_source() -> str:
+    """Refuse execution unless one clean git commit identifies the nf-rna source."""
+
+    revision = runtime_source_revision()
+    if revision is None:
+        raise ExecutionPreflightError(
+            "The nf-rna source revision is unavailable, so a run could not state which commit produced it. "
+            "Install nf-rna from a git commit, for example "
+            "'python -m pip install \"git+https://github.com/2002brian/nf-rna@v1.3.0\"' "
+            "(or 'git+file:///path/to/nf-rna@<commit>'); a plain directory, sdist, or wheel install records no commit."
+        )
+    if revision.endswith("+dirty"):
+        raise ExecutionPreflightError(
+            f"The nf-rna source checkout has uncommitted changes ({revision}); commit them so the run is "
+            "attributable to one exact source revision."
+        )
+    return revision
+
+
 def downstream_runtime_preflight() -> None:
     """Verify immutable inputs without creating a Conda environment."""
 
+    require_identified_source()
     lock = lock_path_for_platform()
     _lock_checksum(lock)
     if not shutil_which("conda"):
@@ -438,9 +484,9 @@ def ensure_downstream_runtime() -> DownstreamRuntime:
     lock = lock_path_for_platform(target)
     lock_sha = _lock_checksum(lock)
     root = _runtime_root().resolve()
-    prefix = root / "prefixes" / f"nf-rna-downstream-{target}-{lock_sha[:16]}"
     wheel, revision, origin = _runtime_wheel(root)
     wheel_sha = _sha256(wheel)
+    prefix = runtime_prefix(root, target, lock_sha, wheel_sha)
     marker = prefix / "runtime" / "nf-rna-wheel.json"
     if not prefix.is_dir():
         env = {**os.environ, "CONDA_NO_PLUGINS": "true", "CONDA_SOLVER": "classic"}

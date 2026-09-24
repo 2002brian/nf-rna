@@ -68,7 +68,9 @@ from rnaseq.execution import (
     ResourceContract,
     LOCAL_RESOURCE_CEILING,
 )
-from rnaseq.downstream_runtime import DownstreamRuntime, downstream_runtime_preflight, ensure_downstream_runtime, native_platform
+from rnaseq.downstream_runtime import (
+    DownstreamRuntime, downstream_runtime_preflight, ensure_downstream_runtime, native_platform, runtime_source_revision,
+)
 from rnaseq.models import FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, ProjectConfig, production_enrichment_backends
 from rnaseq.project import LoadedProject
 from rnaseq.hisat2_featurecounts import FASTP_IMAGE, FASTP_VERSION, FASTQC_IMAGE, FASTQC_VERSION, HISAT2_IMAGE, HISAT2_VERSION, MULTIQC_IMAGE, MULTIQC_VERSION, SAMTOOLS_IMAGE, SAMTOOLS_VERSION, SUBREAD_IMAGE, SUBREAD_VERSION
@@ -869,7 +871,11 @@ def _provenance(
         "downstream_runtime": frozen_execution.get("downstream_runtime"),
         "container_runtime": None if conda else "docker",
         "execution_image": execution_image,
-        "source_revision": None if conda else frozen_execution.get("source_revision"),
+        # The one nf-rna commit that produced this run; preflight refuses unidentified or dirty sources.
+        "source_revision": (
+            (frozen_execution.get("downstream_runtime") or {}).get("source_revision") or runtime_source_revision()
+            if conda else frozen_execution.get("source_revision")
+        ),
         "container_image": execution_image,
         "upstream_runtime": (
             {"kind": "conda", "workflow": "nf-core/rnaseq", "version": report.config.upstream.pipeline_version,

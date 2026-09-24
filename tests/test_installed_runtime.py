@@ -180,7 +180,7 @@ def test_installed_nf_rna_provisions_and_reuses_the_locked_prefix(installed, mon
     identity = runtime.identity()
     assert identity["wheel"]["origin"] == downstream_runtime.WHEEL_ORIGIN_INSTALLED
     assert identity["lock"]["sha256"] == "18197d49b7087d39c3a8e3aef8a16d7bd65af7e56e07d87aa47be656b219617d"
-    assert runtime.prefix.name == "nf-rna-downstream-linux-64-18197d49b7087d39"
+    assert runtime.prefix.name == f"nf-rna-downstream-linux-64-18197d49b7087d39-{runtime.wheel_sha256[:16]}"
     marker = json.loads((runtime.prefix / "runtime" / "nf-rna-wheel.json").read_text(encoding="utf-8"))
     assert marker == {"filename": runtime.wheel_filename, "sha256": runtime.wheel_sha256, "origin": "installed-distribution"}
     # The R scripts inventoried inside the prefix are exactly the bundled source scripts.
@@ -194,7 +194,7 @@ def test_installed_nf_rna_provisions_and_reuses_the_locked_prefix(installed, mon
     assert again.identity() == identity
 
 
-def test_changed_release_is_rejected_by_the_cached_prefix(installed, monkeypatch, tmp_path):
+def test_changed_release_gets_a_new_prefix_and_leaves_the_old_one_untouched(installed, monkeypatch, tmp_path):
     monkeypatch.setenv("RNASEQ_RUNTIME_ROOT", str(tmp_path / "runtime"))
     conda = FakeConda(monkeypatch)
     runtime = downstream_runtime.ensure_downstream_runtime()
@@ -205,11 +205,24 @@ def test_changed_release_is_rejected_by_the_cached_prefix(installed, monkeypatch
     support = installed / "rnaseq" / "workflow_support.py"
     support.write_text(support.read_text(encoding="utf-8") + "\n# next release\n", encoding="utf-8")
     _write_record(installed)
-    with pytest.raises(ExecutionPreflightError, match="wheel identity does not match") as error:
-        downstream_runtime.ensure_downstream_runtime()
-    assert runtime.wheel_sha256 in str(error.value)
+    upgraded = downstream_runtime.ensure_downstream_runtime()
+    assert upgraded.wheel_sha256 != runtime.wheel_sha256
+    assert upgraded.lock_sha256 == runtime.lock_sha256
+    assert upgraded.prefix != runtime.prefix
+    assert upgraded.prefix.name.endswith(upgraded.wheel_sha256[:16])
+    # The earlier prefix is an immutable record of earlier runs.
     assert marker.read_bytes() == recorded
-    assert conda.created() == 1
+    assert conda.created() == 2
+
+
+def test_cached_prefix_with_a_foreign_wheel_marker_is_rejected(installed, monkeypatch, tmp_path):
+    monkeypatch.setenv("RNASEQ_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    FakeConda(monkeypatch)
+    runtime = downstream_runtime.ensure_downstream_runtime()
+    marker = runtime.prefix / "runtime" / "nf-rna-wheel.json"
+    marker.write_text(json.dumps({"filename": "other.whl", "sha256": "f" * 64, "origin": "x"}), encoding="utf-8")
+    with pytest.raises(ExecutionPreflightError, match="wheel identity does not match"):
+        downstream_runtime.ensure_downstream_runtime()
 
 
 def test_prefix_without_identity_marker_is_never_reused(installed, monkeypatch, tmp_path):
