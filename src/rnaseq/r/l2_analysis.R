@@ -4,6 +4,7 @@ script_arg <- commandArgs(trailingOnly = FALSE)
 script_file <- sub("^--file=", "", script_arg[grep("^--file=", script_arg)][[1]])
 source(file.path(dirname(normalizePath(script_file)), "provenance.R"))
 source(file.path(dirname(normalizePath(script_file)), "design_metadata.R"))
+source(file.path(dirname(normalizePath(script_file)), "sample_inputs.R"))
 suppressPackageStartupMessages({ library(jsonlite); library(DESeq2); library(ggplot2); library(pheatmap) })
 cfg <- fromJSON(args[[2]], simplifyVector = FALSE)
 dir.create(cfg$output_dir, recursive = TRUE, showWarnings = FALSE)
@@ -25,10 +26,10 @@ if (cfg$source_type == "raw_counts" || cfg$source_type == "featurecounts_raw_cou
   source_counts <- matrix_counts
 } else if (cfg$source_type == "salmon_tximport") {
   suppressPackageStartupMessages(library(tximport))
-  files <- unlist(cfg$quant_sf, use.names = FALSE); names(files) <- samples
+  files <- nf_rna_quant_sf_files(cfg$quant_sf, samples)
   tx2gene <- read.delim(cfg$tx2gene, check.names = FALSE, stringsAsFactors = FALSE)[, 1:2]
   txi <- tximport(files, type = "salmon", tx2gene = tx2gene)
-  source_counts <- txi$counts; colnames(source_counts) <- samples
+  source_counts <- nf_rna_tximport_counts(txi, samples)
   dds <- DESeqDataSetFromTximport(txi, colData = metadata, design = formula)
 } else stop("unsupported source_type")
 all_zero <- rowSums(source_counts) == 0
