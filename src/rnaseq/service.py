@@ -13,8 +13,10 @@ import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -1085,9 +1087,56 @@ def build_downstream_nextflow_command(
     return command
 
 
+class _Termination(Exception):
+    """rnaseq itself was asked to stop while Nextflow was running."""
+
+
+def _raise_termination(signum: int, _frame: object) -> None:
+    raise _Termination(signal.Signals(signum).name)
+
+
 def _run_command(command: list[str], *, cwd: Path, stdout_path: Path, stderr_path: Path) -> int:
-    with stdout_path.open("w", encoding="utf-8", newline="\n") as stdout, stderr_path.open("w", encoding="utf-8", newline="\n") as stderr:
-        return subprocess.run(command, cwd=cwd, stdout=stdout, stderr=stderr, check=False).returncode
+    """Run one Nextflow invocation with no terminal attached.
+
+    Nextflow's ANSI progress log initialises JLine, which runs
+    ``stty -icanon min 1 -icrnl -inlcr < /dev/tty``.  When ``rnaseq run`` is a
+    background job of an interactive shell (``nohup rnaseq run ... &``), that
+    terminal write from a background process group raises SIGTTOU and stops
+    the whole workflow before any task runs.  Nextflow therefore gets plain
+    logging (``NXF_ANSI_LOG=false``), no stdin, and its own session without a
+    controlling terminal, so neither it nor its tasks can be stopped by
+    terminal job control.  Because the terminal's Ctrl-C then no longer
+    reaches Nextflow, interruption of rnaseq (SIGINT, SIGTERM, and SIGHUP
+    unless ignored, as under nohup) is forwarded as SIGTERM, which Nextflow
+    handles by shutting down its tasks cleanly.
+    """
+
+    environment = {**os.environ, "NXF_ANSI_LOG": "false"}
+    forwarded: dict[int, object] = {}
+    if threading.current_thread() is threading.main_thread():
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            if signal.getsignal(signum) is signal.SIG_DFL:
+                forwarded[signum] = signal.signal(signum, _raise_termination)
+    try:
+        with stdout_path.open("w", encoding="utf-8", newline="\n") as stdout, stderr_path.open("w", encoding="utf-8", newline="\n") as stderr:
+            process = subprocess.Popen(
+                command, cwd=cwd, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, env=environment,
+                start_new_session=True,
+            )
+            try:
+                return process.wait()
+            except BaseException:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=300)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                raise
+    finally:
+        for signum, handler in forwarded.items():
+            signal.signal(signum, handler)
 
 
 def _validate_delivery_count_matrix(
