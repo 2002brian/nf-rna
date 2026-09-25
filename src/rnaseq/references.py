@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import uuid
+from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -35,11 +36,19 @@ SALMON_NOT_BUILT = "not_built"
 SALMON_BUILT = "built"
 SALMON_VERSION = "1.10.3"
 SALMON_KMER_SIZE = 31
-# Kept only to read the provenance of historic nf-rna-built indexes.  New
-# manifests bind an index directly to ``files.transcript_fasta`` and do not
-# require RSEM to have created that file.
+# nf-core/rnaseq 3.26.0 derives its Salmon transcriptome with RSEM from the
+# genome FASTA and its CUSTOM_GTFFILTER output (MAKE_TRANSCRIPTS_FASTA), so
+# transcript names equal GTF transcript_id values and CUSTOM_TX2GENE, which
+# matches them exactly, can build tx2gene.  The builder reproduces that.
 TRANSCRIPTOME_STRATEGY = "nfcore_rnaseq_3.26.0_rsem_from_genome_fasta_and_gtf"
+GTF_FILTER_STRATEGY = "nfcore_rnaseq_3.26.0_custom_gtffilter"
 DECOY_STRATEGY = "nfcore_rnaseq_3.26.0_gentrome"
+RSEM_VERSION = "1.3.3"
+GTF_DERIVED_TRANSCRIPTOME_SOURCE = "gtf_derived"
+GTF_DERIVED_TRANSCRIPTOME_STRATEGY = "gtf_derived_exact_transcript_id_contract"
+GTF_DERIVED_SALMON_DIR = "salmon/gtf_derived"
+HOST_NATIVE_BUILD = "host_native_build"
+TRANSCRIPT_ID_CONTRACT_SCHEMA = "nf-rna.transcript-id-contract.v1"
 SALMON_STRATEGY_TRANSCRIPTOME_ONLY = "transcriptome_only"
 SALMON_STRATEGY_DECOY_AWARE = "decoy_aware"
 SALMON_STRATEGIES = frozenset((SALMON_STRATEGY_TRANSCRIPTOME_ONLY, SALMON_STRATEGY_DECOY_AWARE))
@@ -132,12 +141,12 @@ class LocalReference:
 
     @property
     def transcriptome_strategy(self) -> str:
-        if self.transcript_fasta is None:
-            return "not_applicable_without_salmon"
+        if self.salmon_transcriptome is not None and self.salmon_transcriptome != self.transcript_fasta:
+            return GTF_DERIVED_TRANSCRIPTOME_STRATEGY
         if self.transcript_fasta is not None and self.salmon_transcriptome == self.transcript_fasta:
             return "manifest_registered_transcript_fasta"
-        if self.salmon_transcriptome is not None:
-            return "gtf_derived_exact_transcript_id_contract"
+        if self.transcript_fasta is None:
+            return "not_applicable_without_salmon"
         return TRANSCRIPTOME_STRATEGY
 
     @property
@@ -492,11 +501,16 @@ def _validated_prebuilt_salmon(
     salmon: dict[str, Any],
     genome_fasta: LocalReferenceAsset,
     transcript_fasta: LocalReferenceAsset,
-) -> tuple[Path, dict[str, object], dict[str, object]]:
+    annotation_gtf: LocalReferenceAsset,
+    *,
+    identity: dict[str, Any],
+) -> tuple[Path, dict[str, object], dict[str, object], dict[str, object]]:
     """Validate a first-class externally built Salmon index declaration.
 
     The index is validated from its own metadata and is tied to the source
-    transcriptome by checksum.  No claim is made about which tool created it.
+    transcriptome by checksum.  No claim is made about which tool created it,
+    but its transcriptome must carry a PASS transcript-ID contract against the
+    GTF, because nf-core/rnaseq builds tx2gene from that exact namespace.
     """
 
     strategy = _require_string(salmon.get("strategy"), "salmon.strategy")
@@ -533,11 +547,232 @@ def _validated_prebuilt_salmon(
     provenance = dict(_require_mapping(salmon.get("provenance", {}), "salmon.provenance"))
     provenance.setdefault("mode", "prebuilt")
     provenance.setdefault("source_transcriptome_sha256", source_transcriptome)
-    return index, metadata, provenance
+    if not isinstance(salmon.get("validation"), dict):
+        raise LocalReferenceError(
+            f"Local reference Salmon index {index} is declared from files.transcript_fasta ({transcript_fasta.relative_path}) "
+            "without a transcript-ID contract against the annotation GTF (salmon.validation.artifact). "
+            "nf-core/rnaseq builds tx2gene by exact equality between Salmon transcript names and GTF transcript_id, "
+            "so an unverified transcriptome such as Ensembl cDNA with versioned IDs fails at CUSTOM_TX2GENE. "
+            f"Rebuild the index from the genome FASTA and GTF: rnaseq reference prepare --rebuild-salmon {root}"
+        )
+    _artifact_path, validation = _validation_artifact(root, salmon, genome_fasta, annotation_gtf, transcript_fasta, identity)
+    return index, metadata, provenance, validation
 
 
 def _is_prebuilt_salmon_declaration(salmon: dict[str, Any]) -> bool:
     return "source_transcriptome_sha256" in salmon
+
+
+# nf-core/rnaseq 3.26.0 parses GTF attributes with this pattern (CUSTOM_TX2GENE).
+_GTF_ATTRIBUTE = re.compile(r'(\S+) "(.*?)(?<!\\)";')
+_GTF_TRANSCRIPT_ID = re.compile(r'transcript_id "([^"]+)"')
+_VALID_TRANSCRIPT_BASES = frozenset("ACGTUNRYKMSWBDHV")
+_VERSION_SUFFIX = re.compile(r"\.[0-9]+$")
+
+
+def _fasta_primary_ids(path: Path) -> set[str]:
+    """Record IDs exactly as Salmon and nf-core read them: the header up to whitespace."""
+
+    identifiers: set[str] = set()
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if line.startswith(">"):
+                identifiers.add(line[1:].split(None, 1)[0] if line[1:].strip() else "")
+    return identifiers
+
+
+def filter_gtf_like_nfcore(genome_fasta: Path, gtf: Path, destination: Path) -> dict[str, object]:
+    """Reproduce nf-core/rnaseq 3.26.0 CUSTOM_GTFFILTER without modifying any line.
+
+    A line is kept when its sequence name is a genome FASTA record and it
+    carries a transcript_id attribute; comments and gene records are dropped.
+    """
+
+    sequence_names = _fasta_primary_ids(genome_fasta)
+    kept = removed = 0
+    with gtf.open(encoding="utf-8") as source, destination.open("w", encoding="utf-8", newline="") as target:
+        for line in source:
+            if line.split("\t", 1)[0] in sequence_names and _GTF_TRANSCRIPT_ID.search(line):
+                target.write(line)
+                kept += 1
+            else:
+                removed += 1
+    if kept == 0:
+        raise ReferencePreparationError(f"The nf-core GTF filter removed every line of {gtf}; no transcript is on the genome FASTA.")
+    return {"strategy": GTF_FILTER_STRATEGY, "lines_kept": kept, "lines_removed": removed, "sha256": sha256_file(destination)}
+
+
+def _gtf_transcript_genes(gtf: Path, genome_sequences: set[str]) -> tuple[dict[str, set[str]], set[str]]:
+    """Map every GTF transcript_id to its gene_id values, and list those on the genome.
+
+    A transcript is on the genome when a record of it has a genome FASTA
+    sequence name: exactly the records nf-core's GTF filter keeps.
+    """
+
+    genes: dict[str, set[str]] = defaultdict(set)
+    on_genome: set[str] = set()
+    with gtf.open(encoding="utf-8") as handle:
+        for number, line in enumerate(handle, start=1):
+            if line.startswith("#") or not line.strip() or 'transcript_id "' not in line:
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) != 9:
+                raise LocalReferenceError(f"Malformed GTF line {number} in {gtf}: expected nine tab-separated columns.")
+            attributes = dict(_GTF_ATTRIBUTE.findall(fields[8]))
+            transcript_id = attributes.get("transcript_id")
+            if transcript_id:
+                transcript_genes = genes[transcript_id]
+                if attributes.get("gene_id"):
+                    transcript_genes.add(attributes["gene_id"])
+                if fields[0] in genome_sequences:
+                    on_genome.add(transcript_id)
+    return genes, on_genome
+
+
+def _transcriptome_records(path: Path) -> tuple[set[str], int, list[str], list[str]]:
+    """Primary IDs, total length, duplicate IDs and invalid records of a transcript FASTA."""
+
+    identifiers: set[str] = set()
+    duplicates: list[str] = []
+    invalid: list[str] = []
+    total_length = 0
+    current: str | None = None
+    current_length = 0
+    with path.open(encoding="utf-8") as handle:
+        for number, raw in enumerate(handle, start=1):
+            line = raw.rstrip("\n\r")
+            if not line:
+                continue
+            if line.startswith(">"):
+                if current is not None and current_length == 0:
+                    invalid.append(f"{current}: empty sequence")
+                current = line[1:].split(maxsplit=1)[0] if line[1:].strip() else ""
+                current_length = 0
+                if not current:
+                    invalid.append(f"line {number}: blank FASTA identifier")
+                elif current in identifiers:
+                    duplicates.append(current)
+                identifiers.add(current)
+                continue
+            if current is None:
+                invalid.append(f"line {number}: sequence before FASTA header")
+                continue
+            unsupported = set(line.upper()) - _VALID_TRANSCRIPT_BASES
+            if unsupported:
+                invalid.append(f"{current}: unsupported sequence symbols {''.join(sorted(unsupported))}")
+            current_length += len(line)
+            total_length += len(line)
+    if current is None:
+        invalid.append("no FASTA records")
+    elif current_length == 0:
+        invalid.append(f"{current}: empty sequence")
+    identifiers.discard("")
+    return identifiers, total_length, duplicates, invalid
+
+
+def transcript_id_contract(
+    *,
+    identity: dict[str, object],
+    genome_fasta: LocalReferenceAsset,
+    annotation_gtf: LocalReferenceAsset,
+    transcriptome: Path,
+    transcriptome_relative_path: str,
+) -> dict[str, object]:
+    """Check the exact transcript namespace shared by a Salmon transcriptome and the GTF.
+
+    nf-core/rnaseq builds tx2gene by exact equality between Salmon transcript
+    names and GTF transcript_id.  Nothing is normalized here: an Ensembl
+    versioned ID (``ENSMUST00000200568.2``) does not match an unversioned
+    ``transcript_id "ENSMUST00000200568"``.  Version-stripped matches are
+    counted only to explain a failure.
+    """
+
+    transcript_genes, on_genome = _gtf_transcript_genes(annotation_gtf.path, _fasta_primary_ids(genome_fasta.path))
+    gtf_ids = set(transcript_genes)
+    fasta_ids, total_length, duplicates, invalid = _transcriptome_records(transcriptome)
+    fasta_only = sorted(fasta_ids - gtf_ids)
+    gtf_only = sorted(gtf_ids - fasta_ids)
+    # Scope: every GTF transcript nf-core would keep must be quantifiable, so a
+    # partial transcriptome (for example protein-coding cDNA without lncRNA)
+    # cannot pass even when its IDs happen to match.
+    missing_on_genome = sorted(on_genome - fasta_ids)
+    zero_gene = sorted(item for item in fasta_ids & gtf_ids if not transcript_genes[item]) + fasta_only
+    multi_gene = sorted(item for item in fasta_ids & gtf_ids if len(transcript_genes[item]) > 1)
+    one_gene = len(fasta_ids) - len(zero_gene) - len(multi_gene)
+    version_only = [item for item in fasta_only if _VERSION_SUFFIX.sub("", item) in gtf_ids]
+    passed = bool(fasta_ids) and not (fasta_only or missing_on_genome or zero_gene or multi_gene or duplicates or invalid)
+    count = len(fasta_ids)
+    return {
+        "schema": TRANSCRIPT_ID_CONTRACT_SCHEMA,
+        "contract": {
+            "rule": (
+                "every transcriptome FASTA primary ID equals exactly one GTF transcript_id with exactly one gene_id, "
+                "and every GTF transcript on a genome FASTA sequence is in the transcriptome"
+            ),
+            "normalization": "none",
+            "consumer": "nf-core/rnaseq 3.26.0 CUSTOM_TX2GENE (exact attribute match)",
+        },
+        "reference": {key: identity.get(key) for key in ("species", "provider", "release", "assembly", "assembly_patch")},
+        "inputs": {
+            "genome": {"path": genome_fasta.relative_path, "sha256": genome_fasta.sha256},
+            "gtf": {"path": annotation_gtf.relative_path, "sha256": annotation_gtf.sha256},
+        },
+        "generated_transcriptome": {
+            "path": transcriptome_relative_path,
+            "sha256": sha256_file(transcriptome),
+            "transcript_count": count,
+            "total_sequence_length": total_length,
+            "file_size_bytes": transcriptome.stat().st_size,
+        },
+        "identifier_compatibility": {
+            "fasta_unique_ids": count,
+            "gtf_unique_transcript_ids": len(gtf_ids),
+            "intersection": len(fasta_ids & gtf_ids),
+            "fasta_only": len(fasta_only),
+            "gtf_only": len(gtf_only),
+            "fasta_mapping_rate": len(fasta_ids & gtf_ids) / count if count else 0.0,
+            "gtf_mapping_rate": len(fasta_ids & gtf_ids) / len(gtf_ids) if gtf_ids else 0.0,
+            "gtf_transcripts_on_genome": len(on_genome),
+            "gtf_on_genome_only": len(missing_on_genome),
+            "gtf_on_genome_only_examples": missing_on_genome[:20],
+            "fasta_only_matching_gtf_after_version_strip": len(version_only),
+            "fasta_only_examples": fasta_only[:20],
+            "gtf_only_examples": gtf_only[:20],
+        },
+        "tx2gene": {
+            "one_gene_mappings": one_gene,
+            "zero_gene_mappings": len(zero_gene),
+            "multi_gene_mappings": len(multi_gene),
+            "zero_gene_examples": zero_gene[:20],
+            "multi_gene_examples": multi_gene[:20],
+        },
+        "fasta_validation": {
+            "duplicate_transcript_ids": len(duplicates),
+            "duplicate_examples": sorted(set(duplicates))[:20],
+            "invalid_records": invalid[:20],
+        },
+        "status": "PASS" if passed else "BLOCKED",
+    }
+
+
+def transcript_id_contract_summary(payload: dict[str, Any]) -> str:
+    """One-line explanation of a transcript-ID contract result."""
+
+    compatibility = payload["identifier_compatibility"]
+    summary = (
+        f"transcript-ID contract {payload['status']}: {compatibility['intersection']:,} of "
+        f"{compatibility['fasta_unique_ids']:,} transcriptome IDs exactly equal a GTF transcript_id "
+        f"({compatibility['fasta_only']:,} absent from the GTF; {compatibility['gtf_on_genome_only']:,} of "
+        f"{compatibility['gtf_transcripts_on_genome']:,} GTF transcripts on the genome missing from the transcriptome; "
+        f"{payload['tx2gene']['multi_gene_mappings']:,} multi-gene; {payload['fasta_validation']['duplicate_transcript_ids']:,} duplicate IDs)"
+    )
+    if compatibility["fasta_only_matching_gtf_after_version_strip"]:
+        summary += (
+            f"; {compatibility['fasta_only_matching_gtf_after_version_strip']:,} would match only after removing a "
+            "'.N' version suffix, e.g. Ensembl cDNA headers against an unversioned GTF transcript_id; "
+            "nf-core matches exactly, so derive the transcriptome from the genome FASTA and GTF instead"
+        )
+    return summary + "."
 
 
 def _validation_artifact(
@@ -574,7 +809,11 @@ def _validation_artifact(
     compatibility = _require_mapping(artifact.get("identifier_compatibility"), "salmon.validation.artifact.identifier_compatibility")
     _require_equal(compatibility.get("fasta_only"), 0, "salmon validation artifact identifier_compatibility.fasta_only")
     _require_equal(compatibility.get("fasta_mapping_rate"), 1.0, "salmon validation artifact identifier_compatibility.fasta_mapping_rate")
-    _require_equal(compatibility.get("gtf_mapping_rate"), 1.0, "salmon validation artifact identifier_compatibility.gtf_mapping_rate")
+    if "gtf_on_genome_only" in compatibility:
+        # GTF transcripts off the genome FASTA are removed by nf-core's filter itself.
+        _require_equal(compatibility.get("gtf_on_genome_only"), 0, "salmon validation artifact identifier_compatibility.gtf_on_genome_only")
+    else:
+        _require_equal(compatibility.get("gtf_mapping_rate"), 1.0, "salmon validation artifact identifier_compatibility.gtf_mapping_rate")
     _require_equal(compatibility.get("fasta_unique_ids"), transcript_count, "salmon validation artifact identifier_compatibility.fasta_unique_ids")
     tx2gene = _require_mapping(artifact.get("tx2gene"), "salmon.validation.artifact.tx2gene")
     _require_equal(tx2gene.get("zero_gene_mappings"), 0, "salmon validation artifact tx2gene.zero_gene_mappings")
@@ -585,7 +824,7 @@ def _validation_artifact(
     return artifact_path, validation
 
 
-def _validated_transcriptome_only_salmon(
+def _validated_gtf_derived_salmon(
     root: Path,
     salmon: dict[str, Any],
     genome_fasta: LocalReferenceAsset,
@@ -593,15 +832,22 @@ def _validated_transcriptome_only_salmon(
     *,
     identity: dict[str, Any],
 ) -> tuple[Path, LocalReferenceAsset, dict[str, object], dict[str, object], dict[str, object]]:
-    _require_equal(salmon.get("strategy"), SALMON_STRATEGY_TRANSCRIPTOME_ONLY, "salmon.strategy")
+    """Validate a Salmon index built from a transcriptome derived from the genome FASTA and GTF."""
+
+    strategy = _require_string(salmon.get("strategy"), "salmon.strategy")
+    if strategy not in SALMON_STRATEGIES:
+        raise LocalReferenceError(
+            "Local reference salmon.strategy must be one of: "
+            f"{SALMON_STRATEGY_TRANSCRIPTOME_ONLY}, {SALMON_STRATEGY_DECOY_AWARE}."
+        )
+    decoy_aware = strategy == SALMON_STRATEGY_DECOY_AWARE
     _require_equal(salmon.get("status"), SALMON_BUILT, "salmon.status")
     _require_equal(salmon.get("version"), SALMON_VERSION, "salmon.version")
     _require_equal(salmon.get("kmer_size"), SALMON_KMER_SIZE, "salmon.kmer_size")
-    _require_equal(salmon.get("num_decoys"), 0, "salmon.num_decoys")
-    _require_equal(salmon.get("decoy_aware"), False, "salmon.decoy_aware")
-    transcriptome = _asset_from_payload(
-        root, _require_mapping(salmon.get("transcriptome"), "salmon.transcriptome"), "salmon.transcriptome", "salmon_transcriptome"
-    )
+    _require_equal(salmon.get("decoy_aware"), decoy_aware, "salmon.decoy_aware")
+    transcriptome_payload = _require_mapping(salmon.get("transcriptome"), "salmon.transcriptome")
+    _require_equal(transcriptome_payload.get("source"), GTF_DERIVED_TRANSCRIPTOME_SOURCE, "salmon.transcriptome.source")
+    transcriptome = _asset_from_payload(root, transcriptome_payload, "salmon.transcriptome", "salmon_transcriptome")
     index = _resolve_under(root, _require_string(salmon.get("index"), "salmon.index"), "salmon.index", directory=True)
     artifact_path, validation = _validation_artifact(root, salmon, genome_fasta, annotation_gtf, transcriptome, identity)
     index_metadata = _salmon_index_metadata(index)
@@ -610,16 +856,35 @@ def _validated_transcriptome_only_salmon(
         _require_equal(expected_metadata.get(key), index_metadata[key], f"salmon.index_metadata.{key}")
     _require_equal(index_metadata["salmon_version"], SALMON_VERSION, "salmon index Salmon version")
     _require_equal(index_metadata["kmer_size"], SALMON_KMER_SIZE, "salmon index k")
-    _require_equal(index_metadata["num_decoys"], 0, "salmon index num_decoys")
+    _require_equal(salmon.get("num_decoys"), index_metadata["num_decoys"], "salmon.num_decoys versus index metadata")
     provenance = _require_mapping(salmon.get("provenance"), "salmon.provenance")
-    _require_equal(provenance.get("mode"), ADOPTED_EXISTING_INDEX, "salmon.provenance.mode")
-    _require_string(provenance.get("adopted_at"), "salmon.provenance.adopted_at")
+    if decoy_aware:
+        if not isinstance(index_metadata["num_decoys"], int) or index_metadata["num_decoys"] <= 0:
+            raise LocalReferenceError("Local reference decoy_aware Salmon index must declare at least one decoy in info.json.")
+        _require_equal(salmon.get("source_genome_sha256"), genome_fasta.sha256, "salmon.source_genome_sha256 versus files.genome_fasta.sha256")
+    else:
+        _require_equal(index_metadata["num_decoys"], 0, "salmon index num_decoys")
+    mode = provenance.get("mode")
+    if mode == ADOPTED_EXISTING_INDEX:
+        _require_string(provenance.get("adopted_at"), "salmon.provenance.adopted_at")
+    elif mode == HOST_NATIVE_BUILD:
+        _require_string(provenance.get("built_at"), "salmon.provenance.built_at")
+        _require_equal(provenance.get("transcriptome_strategy"), TRANSCRIPTOME_STRATEGY, "salmon.provenance.transcriptome_strategy")
+    else:
+        raise LocalReferenceError(
+            f"Local reference salmon.provenance.mode must be {ADOPTED_EXISTING_INDEX!r} or {HOST_NATIVE_BUILD!r}."
+        )
     return index, transcriptome, dict(provenance), dict(index_metadata), validation
 
 
 def _load_local_reference_root(
-    root: Path, manifest_name: str, expected_species: str | None
+    root: Path, manifest_name: str, expected_species: str | None, *, validate_salmon: bool = True,
 ) -> tuple[LocalReference, dict[str, Any]]:
+    """Load and verify a manifest; ``validate_salmon=False`` treats Salmon as not built.
+
+    Only an explicit Salmon rebuild uses that mode, so a rejected Salmon
+    declaration can be replaced while every other asset is still verified.
+    """
     if not root.is_dir():
         raise LocalReferenceError(f"Local reference root directory not found: {root}")
     manifest_path = _resolve_under(root, manifest_name, "manifest")
@@ -681,7 +946,7 @@ def _load_local_reference_root(
         manifest.get("sources"),
         source_assets,
     )
-    salmon = _require_mapping(manifest.get("salmon"), "salmon")
+    salmon = _require_mapping(manifest.get("salmon"), "salmon") if validate_salmon else {"index": None, "status": SALMON_NOT_BUILT}
     salmon_status = _require_string(salmon.get("status"), "salmon.status")
     index_value = salmon.get("index")
     salmon_strategy_type: str | None = None
@@ -704,33 +969,28 @@ def _load_local_reference_root(
                 "Local reference salmon.strategy must be one of: "
                 f"{SALMON_STRATEGY_TRANSCRIPTOME_ONLY}, {SALMON_STRATEGY_DECOY_AWARE}."
             )
-        if _is_prebuilt_salmon_declaration(salmon):
-            if transcript_fasta is None:
-                raise LocalReferenceError(
-                    "A built Salmon declaration requires files.transcript_fasta and its matching source checksum."
-                )
-            salmon_index, salmon_index_metadata, salmon_provenance = _validated_prebuilt_salmon(
-                root, salmon, genome_fasta, transcript_fasta
-            )
-            salmon_transcriptome = transcript_fasta
-            salmon_strategy_type = _require_string(salmon.get("strategy"), "salmon.strategy")
-        elif strategy == SALMON_STRATEGY_TRANSCRIPTOME_ONLY:
-            if transcript_fasta is None:
-                raise LocalReferenceError("A built Salmon declaration requires files.transcript_fasta.")
+        identity_for_salmon = {"species": species, "provider": provider, "release": release, "assembly": assembly}
+        if salmon.get("transcriptome") is not None:
             (
                 salmon_index,
                 salmon_transcriptome,
                 salmon_provenance,
                 salmon_index_metadata,
                 salmon_validation,
-            ) = _validated_transcriptome_only_salmon(
-                root,
-                salmon,
-                genome_fasta,
-                annotation_gtf,
-                identity={"species": species, "provider": provider, "release": release, "assembly": assembly},
+            ) = _validated_gtf_derived_salmon(root, salmon, genome_fasta, annotation_gtf, identity=identity_for_salmon)
+            salmon_strategy_type = _require_string(salmon.get("strategy"), "salmon.strategy")
+        elif _is_prebuilt_salmon_declaration(salmon):
+            if transcript_fasta is None:
+                raise LocalReferenceError(
+                    "A built Salmon declaration requires files.transcript_fasta and its matching source checksum."
+                )
+            salmon_index, salmon_index_metadata, salmon_provenance, salmon_validation = _validated_prebuilt_salmon(
+                root, salmon, genome_fasta, transcript_fasta, annotation_gtf, identity=identity_for_salmon
             )
-            salmon_strategy_type = SALMON_STRATEGY_TRANSCRIPTOME_ONLY
+            salmon_transcriptome = transcript_fasta
+            salmon_strategy_type = _require_string(salmon.get("strategy"), "salmon.strategy")
+        elif strategy == SALMON_STRATEGY_TRANSCRIPTOME_ONLY:
+            raise LocalReferenceError("A transcriptome_only Salmon declaration requires salmon.transcriptome and its validation artifact.")
         else:
             # Existing manifests predate explicit strategy declaration. They are
             # deterministic legacy decoy-aware manifests when their immutable
@@ -1256,6 +1516,12 @@ def _concat_files(destination: Path, sources: tuple[Path, ...]) -> None:
                 shutil.copyfileobj(handle, target)
 
 
+def _write_json_atomically(path: Path, payload: dict[str, object]) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
 def _write_manifest_atomically(path: Path, manifest: dict[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
@@ -1338,7 +1604,7 @@ def adopt_local_salmon_index(
             "provenance": {"mode": ADOPTED_EXISTING_INDEX, "adopted_at": now().astimezone(UTC).replace(microsecond=0).isoformat()},
         }
         try:
-            _validated_transcriptome_only_salmon(root, _require_mapping(candidate["salmon"], "salmon"), reference.genome_fasta, reference.annotation_gtf, identity={"species": reference.species, "provider": reference.provider, "release": reference.release, "assembly": reference.assembly})
+            _validated_gtf_derived_salmon(root, _require_mapping(candidate["salmon"], "salmon"), reference.genome_fasta, reference.annotation_gtf, identity={"species": reference.species, "provider": reference.provider, "release": reference.release, "assembly": reference.assembly})
         except LocalReferenceError as exc:
             raise ReferenceAdoptionError(str(exc)) from exc
         _write_manifest_atomically(reference.manifest_path, candidate)
@@ -1369,118 +1635,280 @@ def adopt_local_salmon_index(
     }
     if strategy == SALMON_STRATEGY_DECOY_AWARE:
         candidate["salmon"]["source_genome_sha256"] = reference.genome_fasta.sha256
+    identity = {"species": reference.species, "provider": reference.provider, "release": reference.release,
+                "assembly": reference.assembly, "assembly_patch": reference.assembly_patch}
+    write_artifact: dict[str, object] | None = None
     if validation_artifact is not None:
         try:
             artifact_path = _resolve_under(root, validation_artifact, "adoption validation artifact")
         except LocalReferenceError as exc:
             raise ReferenceAdoptionError(str(exc)) from exc
-        candidate["salmon"]["provenance"]["validation_artifact"] = artifact_path.relative_to(root).as_posix()
+    else:
+        # The index transcriptome must share the GTF transcript_id namespace
+        # exactly; verify it now rather than trusting the transcriptome name.
+        artifact_path = index_path.parent / f"{index_path.name}.transcript_id_contract.json"
+        if artifact_path.exists():
+            raise ReferenceAdoptionError(f"Refusing to overwrite an existing validation artifact: {artifact_path}")
+        write_artifact = transcript_id_contract(
+            identity=identity, genome_fasta=reference.genome_fasta, annotation_gtf=reference.annotation_gtf,
+            transcriptome=reference.transcript_fasta.path, transcriptome_relative_path=reference.transcript_fasta.relative_path,
+        )
+        if write_artifact["status"] != "PASS":
+            raise ReferenceAdoptionError(
+                "The Salmon index transcriptome does not share the GTF transcript_id namespace: "
+                + transcript_id_contract_summary(write_artifact)
+            )
+    candidate["salmon"]["validation"] = {
+        "artifact": artifact_path.relative_to(root).as_posix(), "transcript_id_contract": "exact",
+    }
     try:
-        _validated_prebuilt_salmon(root, _require_mapping(candidate["salmon"], "salmon"), reference.genome_fasta, reference.transcript_fasta)
+        if write_artifact is not None:
+            _write_json_atomically(artifact_path, write_artifact)
+        _validated_prebuilt_salmon(
+            root, _require_mapping(candidate["salmon"], "salmon"), reference.genome_fasta, reference.transcript_fasta,
+            reference.annotation_gtf, identity=identity,
+        )
     except LocalReferenceError as exc:
+        if write_artifact is not None:
+            artifact_path.unlink(missing_ok=True)
         raise ReferenceAdoptionError(str(exc)) from exc
     _write_manifest_atomically(reference.manifest_path, candidate)
     return load_local_reference_root(root)
+
+
+def _conda_package_identity(executable: str, package: str) -> dict[str, str] | None:
+    """Conda metadata of the package that installed an executable, when it has any."""
+
+    prefix = Path(executable).resolve().parent.parent
+    for record in sorted((prefix / "conda-meta").glob(f"{package}-*.json")):
+        try:
+            payload = json.loads(record.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if payload.get("name") == package:
+            return {key: str(payload.get(key, "")) for key in ("name", "version", "build", "channel")}
+    return None
+
+
+def _rsem_tools(
+    *, route: str, runner: Callable[..., subprocess.CompletedProcess[str]],
+    resolver: Callable[[str], str | None], cwd: Path,
+) -> dict[str, dict[str, object]]:
+    """Resolve the RSEM that nf-core/rnaseq 3.26.0 pins (bioconda rsem=1.3.3).
+
+    ``rsem-prepare-reference`` has no version option; like nf-core, the
+    version is read from ``rsem-calculate-expression`` of the same install.
+    RSEM 1.3.3 reports ``v1.3.1``, so the Conda package is the identity.
+    """
+
+    calculate = _host_tool(
+        "rsem-calculate-expression", route=route, version_pattern=re.compile(r"RSEM v([0-9]+\.[0-9]+\.[0-9]+)"),
+        expected=f"RSEM {RSEM_VERSION}", runner=runner, resolver=resolver, cwd=cwd,
+    )
+    prepare = resolver("rsem-prepare-reference")
+    if not prepare:
+        raise ReferencePreparationError(
+            f"Missing required host executable 'rsem-prepare-reference' for {route} preparation; expected RSEM {RSEM_VERSION}. "
+            "Create the documented environment with: mamba env create -f environment.reference-builder.yml"
+        )
+    prepare_executable = str(Path(prepare).resolve())
+    if Path(prepare_executable).parent != Path(str(calculate["executable"])).parent:
+        raise ReferencePreparationError("rsem-prepare-reference and rsem-calculate-expression must come from one RSEM installation.")
+    package = _conda_package_identity(str(calculate["executable"]), "rsem")
+    if package is None or package["version"] != RSEM_VERSION:
+        raise ReferencePreparationError(
+            f"nf-core/rnaseq 3.26.0 derives transcripts with bioconda rsem={RSEM_VERSION}; observed Conda package "
+            f"{package or 'none'} for {calculate['executable']}. "
+            "Create the documented environment with: mamba env create -f environment.reference-builder.yml"
+        )
+    calculate["conda_package"] = package
+    return {
+        "rsem-calculate-expression": calculate,
+        "rsem-prepare-reference": {"name": "rsem-prepare-reference", "executable": prepare_executable,
+                                   "version": package["version"], "conda_package": package},
+    }
 
 
 def prepare_local_reference(
     reference_root: Path | str,
     *,
     threads: int = 4,
+    rebuild_salmon: bool = False,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     tool_resolver: Callable[[str], str | None] = shutil.which,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> LocalReference:
-    """Optionally build a host-native decoy-aware index from registered assets."""
+    """Build a decoy-aware Salmon index from a GTF-derived transcriptome, as nf-core does.
 
-    reference, manifest = _load_local_reference_root(
-        Path(reference_root).expanduser().resolve(), "reference_manifest.yaml", None
-    )
-    if reference.salmon_status == SALMON_BUILT:
-        raise ReferencePreparationError(
-            f"Local reference Salmon index is already built: {reference.salmon_index}."
-        )
-    if reference.salmon_status != SALMON_NOT_BUILT:
-        raise ReferencePreparationError(f"Unsupported local reference Salmon status: {reference.salmon_status}.")
-    if reference.transcript_fasta is None:
-        raise ReferencePreparationError(
-            "Host-native Salmon preparation requires files.transcript_fasta; "
-            "register the source transcriptome asset and SHA256 first."
-        )
+    The transcriptome is derived with RSEM from the genome FASTA and the
+    nf-core-filtered GTF, so its transcript names equal GTF transcript_id and
+    nf-core's CUSTOM_TX2GENE can match them exactly.  A PASS transcript-ID
+    contract is required before indexing.  ``rebuild_salmon`` replaces an
+    existing Salmon declaration: the previous manifest is archived under its
+    SHA256 and the previous index is left in place, untouched.
+    """
 
-    salmon_root = reference.root / "salmon"
-    final_index = salmon_root / "index"
-    if final_index.exists():
+    root = Path(reference_root).expanduser().resolve()
+    replaced_reason = "operator-requested rebuild"
+    try:
+        reference, manifest = _load_local_reference_root(root, "reference_manifest.yaml", None)
+    except LocalReferenceError as exc:
+        if not rebuild_salmon:
+            raise
+        reference, manifest = _load_local_reference_root(root, "reference_manifest.yaml", None, validate_salmon=False)
+        replaced_reason = f"rejected Salmon declaration: {exc}"
+    declared = manifest.get("salmon") if isinstance(manifest.get("salmon"), dict) else {}
+    already_built = declared.get("status") == SALMON_BUILT
+    if already_built and not rebuild_salmon:
         raise ReferencePreparationError(
-            f"Refusing to overwrite existing local reference index directory: {final_index}."
+            f"Local reference Salmon index is already built: {reference.salmon_index}. "
+            "Use --rebuild-salmon to replace it with a GTF-derived index; the current index is preserved."
         )
+    if not already_built and declared.get("status", SALMON_NOT_BUILT) != SALMON_NOT_BUILT:
+        raise ReferencePreparationError(f"Unsupported local reference Salmon status: {declared.get('status')}.")
+
+    destination = root / GTF_DERIVED_SALMON_DIR
+    if destination.exists():
+        raise ReferencePreparationError(f"Refusing to overwrite existing GTF-derived Salmon directory: {destination}.")
     preflight = _reference_build_preflight(reference, route="Salmon decoy-aware", threads=threads)
     tools = {
         "salmon": _host_tool(
             "salmon", route="Salmon decoy-aware", version_pattern=re.compile(r"(?:salmon\s+|version\s+)([0-9]+\.[0-9]+\.[0-9]+)", re.I),
-            expected=f"Salmon {SALMON_VERSION}", runner=runner, resolver=tool_resolver, cwd=reference.root,
+            expected=f"Salmon {SALMON_VERSION}", runner=runner, resolver=tool_resolver, cwd=root,
         ),
+        **_rsem_tools(route="Salmon decoy-aware", runner=runner, resolver=tool_resolver, cwd=root),
     }
-    temporary_root = reference.root / f".rnaseq-reference-prepare-{uuid.uuid4().hex}"
-    salmon_dir = temporary_root / "salmon"
-    temporary_index = salmon_dir / "index"
-    temporary_root.mkdir()
-    salmon_dir.mkdir()
-    decoys = salmon_dir / "decoys.txt"
-    gentrome = salmon_dir / "gentrome.fa"
+    identity = {"species": reference.species, "provider": reference.provider, "release": reference.release,
+                "assembly": reference.assembly, "assembly_patch": reference.assembly_patch}
+    temporary_root = root / f".rnaseq-reference-prepare-{uuid.uuid4().hex}"
+    work = temporary_root / "work"
+    publish = temporary_root / "gtf_derived"
+    (work / "rsem").mkdir(parents=True)
+    publish.mkdir()
+    filtered_gtf = work / "genome.filtered.gtf"
+    rsem_prefix = work / "rsem" / "genome"
+    derived = work / "rsem" / "genome.transcripts.fa"
+    transcriptome = publish / "genome.transcripts.fa"
+    artifact = publish / "transcript_id_contract.json"
+    temporary_index = publish / "index"
+    decoys = work / "decoys.txt"
+    gentrome = work / "gentrome.fa"
+    relative_dir = GTF_DERIVED_SALMON_DIR
+    rsem_command = [
+        str(tools["rsem-prepare-reference"]["executable"]), "--gtf", str(filtered_gtf),
+        "--num-threads", str(threads), str(reference.genome_fasta.path), str(rsem_prefix),
+    ]
     salmon_command = [
         str(tools["salmon"]["executable"]), "index", "--threads", str(threads), "-t", str(gentrome),
         "-d", str(decoys), "-i", str(temporary_index), "-k", str(SALMON_KMER_SIZE),
     ]
+    archive: Path | None = None
     try:
+        gtf_filter = filter_gtf_like_nfcore(reference.genome_fasta.path, reference.annotation_gtf.path, filtered_gtf)
+        _run_reference_command(rsem_command, runner, cwd=temporary_root)
+        if not derived.is_file():
+            raise ReferencePreparationError("rsem-prepare-reference did not produce the expected transcript FASTA.")
+        derived.replace(transcriptome)
+        contract = transcript_id_contract(
+            identity=identity, genome_fasta=reference.genome_fasta, annotation_gtf=reference.annotation_gtf,
+            transcriptome=transcriptome, transcriptome_relative_path=f"{relative_dir}/genome.transcripts.fa",
+        )
+        if contract["status"] != "PASS":
+            _write_json_atomically(work / "transcript_id_contract.BLOCKED.json", contract)
+            raise ReferencePreparationError(
+                "The GTF-derived transcriptome does not satisfy the transcript-ID contract: "
+                + transcript_id_contract_summary(contract)
+            )
+        _write_json_atomically(artifact, contract)
         _write_decoys(reference.genome_fasta.path, decoys)
-        _concat_files(gentrome, (reference.transcript_fasta.path, reference.genome_fasta.path))
+        _concat_files(gentrome, (transcriptome, reference.genome_fasta.path))
         _run_reference_command(salmon_command, runner, cwd=temporary_root)
         validate_salmon_index(temporary_index)
-        _assert_host_owned((temporary_index,))
-        salmon_root.mkdir(exist_ok=True)
-        temporary_index.replace(final_index)
+        index_metadata = _salmon_index_metadata(temporary_index)
+        _require_equal(index_metadata["salmon_version"], SALMON_VERSION, "built Salmon index version")
+        _require_equal(index_metadata["kmer_size"], SALMON_KMER_SIZE, "built Salmon index k")
+        if not isinstance(index_metadata["num_decoys"], int) or index_metadata["num_decoys"] <= 0:
+            raise ReferencePreparationError("The built decoy-aware Salmon index declares no decoys.")
+        _assert_host_owned((publish,))
+        replaces: dict[str, object] | None = None
+        if already_built:
+            old_manifest = reference.manifest_path.read_bytes()
+            old_sha256 = hashlib.sha256(old_manifest).hexdigest()
+            archive = root / f"reference_manifest.{old_sha256[:12]}.yaml"
+            if archive.exists() and archive.read_bytes() != old_manifest:
+                raise ReferencePreparationError(f"Manifest archive {archive} exists with different content.")
+            if not archive.exists():
+                archive.write_bytes(old_manifest)
+            replaces = {
+                "manifest_archive": archive.name,
+                "manifest_sha256": old_sha256,
+                "index": declared.get("index"),
+                "strategy": declared.get("strategy"),
+                "source_transcriptome_sha256": declared.get("source_transcriptome_sha256"),
+                "reason": replaced_reason,
+            }
+        destination.parent.mkdir(exist_ok=True)
+        publish.replace(destination)
         manifest["salmon"] = {
-            "index": "salmon/index",
             "status": SALMON_BUILT,
             "strategy": SALMON_STRATEGY_DECOY_AWARE,
+            "index": f"{relative_dir}/index",
             "version": SALMON_VERSION,
-            "source_transcriptome_sha256": reference.transcript_fasta.sha256,
+            "kmer_size": SALMON_KMER_SIZE,
+            "decoy_aware": True,
+            "num_decoys": index_metadata["num_decoys"],
             "source_genome_sha256": reference.genome_fasta.sha256,
+            "transcriptome": {
+                "path": f"{relative_dir}/genome.transcripts.fa",
+                "sha256": contract["generated_transcriptome"]["sha256"],
+                "source": GTF_DERIVED_TRANSCRIPTOME_SOURCE,
+            },
+            "index_metadata": {key: index_metadata[key] for key in (
+                "seq_hash", "name_hash", "info_index_version", "salmon_index_version", "seq_length", "num_kmers", "num_contigs",
+            )},
+            "validation": {
+                "artifact": f"{relative_dir}/transcript_id_contract.json",
+                "transcript_id_contract": "exact",
+                "fasta_only_transcripts": 0,
+                "zero_gene_mappings": 0,
+                "multi_gene_mappings": 0,
+            },
             "provenance": {
+                "mode": HOST_NATIVE_BUILD,
                 "builder": _host_builder_provenance(
-                    tools, preflight, {"salmon_index": salmon_command}
+                    tools, preflight, {"rsem_prepare_reference": rsem_command, "salmon_index": salmon_command}
                 ),
                 "salmon_version": SALMON_VERSION,
-                "index_path": "salmon/index",
+                "rsem_package": tools["rsem-prepare-reference"]["conda_package"],
                 "source_assets": _reference_source_assets(reference),
-                "source_transcriptome_sha256": reference.transcript_fasta.sha256,
                 "genome_fasta_sha256": reference.genome_fasta.sha256,
                 "annotation_gtf_sha256": reference.annotation_gtf.sha256,
-                "transcriptome_strategy": "manifest_registered_transcript_fasta",
+                "gtf_filter": gtf_filter,
+                "transcriptome_strategy": TRANSCRIPTOME_STRATEGY,
                 "decoy_strategy": DECOY_STRATEGY,
                 "kmer_size": SALMON_KMER_SIZE,
-                "commands": {"salmon_index": salmon_command},
+                "commands": {"rsem_prepare_reference": rsem_command, "salmon_index": salmon_command},
                 "index_validation": "required Salmon index artifacts present and non-empty",
                 "built_at": now().astimezone(UTC).replace(microsecond=0).isoformat(),
+                **({"replaces": replaces} if replaces is not None else {}),
             },
         }
         try:
             _write_manifest_atomically(reference.manifest_path, manifest)
         except Exception:
             # A manifest write failure must not strand an unregistered index in
-            # the final location. Put the newly built artifact back into the
+            # the final location. Put the newly built artifacts back into the
             # retained staging tree, leaving the old manifest untouched.
-            if final_index.exists() and not temporary_index.exists():
-                final_index.replace(temporary_index)
+            if destination.exists() and not publish.exists():
+                destination.replace(publish)
             raise
     except Exception:
         # Keep failed staging for an operator to inspect; publication has not
-        # happened because final_index is renamed only after validation.
+        # happened because the directory is renamed only after validation.
         raise
     else:
         shutil.rmtree(temporary_root, ignore_errors=True)
-    return load_local_reference_root(reference.root)
+    return load_local_reference_root(root)
 
 
 def prepare_local_hisat2_reference(

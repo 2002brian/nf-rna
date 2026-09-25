@@ -116,6 +116,8 @@ host-native conveniences and never invoke Docker or fall back to a container:
 mamba env create -f environment.reference-builder.yml
 mamba activate nf-rna-reference-builder
 rnaseq reference prepare /absolute/reference-root --threads 4
+# replace an existing Salmon declaration (for example a rejected cDNA index):
+rnaseq reference prepare /absolute/reference-root --threads 4 --rebuild-salmon
 rnaseq reference prepare-hisat2 /absolute/reference-root --threads 4
 rnaseq reference register /absolute/reference-root
 ```
@@ -127,8 +129,10 @@ candidate must be a production manifest and have the selected backend's fully
 validated asset; stale registrations are ignored so manual and custom routes
 remain usable.
 
-The separately pinned builder environment contains Salmon 1.10.3 and exactly
-HISAT2 2.2.3 (including `hisat2_extract_splice_sites.py`); RSEM is not required.
+The separately pinned builder environment contains Salmon 1.10.3, bioconda
+RSEM 1.3.3 (the version nf-core/rnaseq 3.26.0 uses; its binaries report
+`v1.3.1`, so the Conda package record is the checked identity), and exactly
+HISAT2 2.2.3 (including `hisat2_extract_splice_sites.py`).
 Other 2.2.x releases are rejected so that reference construction remains
 reproducible.
 `hisat2-build --version` is the authoritative version check. The splice-site
@@ -137,15 +141,36 @@ instead requires the helper beside `hisat2-build` and verifies its supported
 `-h` help contract. Provenance records the helper path and its association with
 the checked HISAT2 binary rather than inventing a helper version.
 Each command resolves absolute executable paths and validates versions before it
-creates staging output. Salmon uses the manifest-registered transcript FASTA
-and retains its decoy-aware gentrome strategy with `k=31`. HISAT2 builds a
-genome-only index and registers GTF-derived splice sites for the runtime
-`--known-splicesite-infile` argument. Docker remains required for FASTQ workflow
-execution and the downstream Nextflow task contract, not for index construction.
+creates staging output. Salmon preparation derives its transcriptome exactly as
+nf-core/rnaseq 3.26.0 does (`MAKE_TRANSCRIPTS_FASTA`): the GTF is filtered like
+`CUSTOM_GTFFILTER` (records on genome FASTA sequences that carry a
+`transcript_id`) and `rsem-prepare-reference --gtf` extracts transcripts from
+the genome FASTA, so transcript names equal GTF `transcript_id`. It then
+requires a PASS transcript-ID contract and builds the decoy-aware gentrome
+index with `k=31` under `salmon/gtf_derived/`. The registered
+`files.transcript_fasta` (for example Ensembl cDNA) is not used: its versioned
+IDs (`ENSMUST00000200568.2`) never equal an Ensembl GTF `transcript_id`
+(`ENSMUST00000200568` with a separate `transcript_version`), and `cdna.all`
+omits non-coding transcripts such as lncRNA.
 
-For a prebuilt Salmon index, declare `index`, `version`, `strategy`, and
-`source_transcriptome_sha256`; `decoy_aware` additionally requires the matching
-`source_genome_sha256`. For a prebuilt HISAT2 index, declare `index_prefix`,
+Every built Salmon declaration must reference a checksum-bound transcript-ID
+contract artifact (`salmon.validation.artifact`) with status PASS: every
+transcriptome ID equals exactly one GTF `transcript_id` with one `gene_id`, no
+ID is duplicated, and every GTF transcript on a genome FASTA sequence is in the
+transcriptome. No identifier is normalized. nf-core/rnaseq builds tx2gene by
+exact equality between Salmon transcript names and GTF attributes, so
+validation, planning, `rnaseq doctor`, and run preflight reject a Salmon
+reference without such a contract. `--rebuild-salmon` replaces such a
+declaration: the previous manifest is archived as
+`reference_manifest.<sha256-prefix>.yaml`, the previous index directory is left
+untouched, and the new provenance records what it replaced and why. HISAT2 builds a
+genome-only index and registers GTF-derived splice sites for the runtime
+`--known-splicesite-infile` argument.
+
+For a prebuilt Salmon index, declare `index`, `version`, `strategy`,
+`source_transcriptome_sha256`, and `validation.artifact` (a PASS transcript-ID
+contract; `rnaseq reference adopt-salmon-index` computes and writes it);
+`decoy_aware` additionally requires the matching `source_genome_sha256`. For a prebuilt HISAT2 index, declare `index_prefix`,
 `version`, `strategy: genome_only_runtime_splicesites`, `genome_fasta_sha256`,
 `source_gtf_sha256`, and a checksum-bound `splice_sites` asset. All paths are
 reference-root-relative. The manifest validates asset/index consistency; native
@@ -165,6 +190,7 @@ salmon:
   strategy: decoy_aware
   source_transcriptome_sha256: "<files.transcript_fasta SHA-256>"
   source_genome_sha256: "<files.genome_fasta SHA-256>"
+  validation: {artifact: vendor/salmon/index.transcript_id_contract.json, transcript_id_contract: exact}
 hisat2:
   status: built
   index_prefix: vendor/hisat2/genome

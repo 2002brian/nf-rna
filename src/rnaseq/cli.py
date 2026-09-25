@@ -175,11 +175,15 @@ def render_validation_report(report: ValidationReport) -> str:
 def prepare_reference_command(
     reference_root: Path,
     threads: int = typer.Option(4, "--threads", min=1, help="Host-native builder threads."),
+    rebuild_salmon: bool = typer.Option(
+        False, "--rebuild-salmon",
+        help="Replace an existing Salmon declaration with a GTF-derived index; the old manifest is archived and the old index kept.",
+    ),
 ) -> None:
-    """Optionally build a checksum-bound, host-native Salmon index."""
+    """Build a checksum-bound, host-native decoy-aware Salmon index from a GTF-derived transcriptome."""
 
     try:
-        reference = prepare_local_reference(reference_root, threads=threads)
+        reference = prepare_local_reference(reference_root, threads=threads, rebuild_salmon=rebuild_salmon)
     except (LocalReferenceError, ReferencePreparationError) as exc:
         typer.echo(f"ERROR: {exc}", err=True)
         raise typer.Exit(code=1) from exc

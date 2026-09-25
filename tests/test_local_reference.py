@@ -20,6 +20,8 @@ from rnaseq.planner import generate_plan
 from rnaseq.references import (
     ADOPTED_EXISTING_INDEX,
     DECOY_STRATEGY,
+    GTF_DERIVED_TRANSCRIPTOME_STRATEGY,
+    HOST_NATIVE_BUILD,
     REQUIRED_SALMON_INDEX_FILES,
     SALMON_BUILT,
     SALMON_KMER_SIZE,
@@ -31,9 +33,11 @@ from rnaseq.references import (
     TRANSCRIPTOME_STRATEGY,
     ReferenceAdoptionError,
     ReferencePreparationError,
+    _load_local_reference_root,
     adopt_local_salmon_index,
     compatible_registered_references,
     load_local_reference_root,
+    transcript_id_contract,
     prepare_local_reference,
     prepare_local_hisat2_reference,
     register_local_reference,
@@ -103,6 +107,40 @@ def _write_hisat2_index(index: Path) -> None:
     index.mkdir(parents=True, exist_ok=True)
     for number in range(1, 9):
         (index / f"genome.{number}.ht2").write_text("fixture\n", encoding="utf-8")
+
+
+def _fake_builder(
+    tmp_path: Path, *, transcripts: str = ">TX1\nACGT\n", rsem_version: str = "1.3.3",
+    commands: list[list[str]] | None = None, fail: str | None = None,
+):
+    """A host builder environment: Salmon 1.10.3 and bioconda RSEM (which reports v1.3.1)."""
+
+    prefix = tmp_path / "builder-env"
+    (prefix / "bin").mkdir(parents=True, exist_ok=True)
+    (prefix / "conda-meta").mkdir(exist_ok=True)
+    (prefix / "conda-meta" / f"rsem-{rsem_version}-pl5321h077b44d_12.json").write_text(json.dumps({
+        "name": "rsem", "version": rsem_version, "build": "pl5321h077b44d_12",
+        "channel": "https://conda.anaconda.org/bioconda/linux-64",
+    }), encoding="utf-8")
+
+    def resolver(name: str) -> str:
+        return str(prefix / "bin" / name)
+
+    def run(command, **_kwargs):
+        if commands is not None:
+            commands.append(command)
+        name = Path(command[0]).name
+        if command[-1] == "--version":
+            return subprocess.CompletedProcess(command, 0, "salmon 1.10.3" if name == "salmon" else "Current version: RSEM v1.3.1", "")
+        if name == fail:
+            return subprocess.CompletedProcess(command, 42, "", "fixture failure")
+        if name == "rsem-prepare-reference":
+            Path(command[-1] + ".transcripts.fa").write_text(transcripts, encoding="utf-8")
+        if name == "salmon":
+            _write_salmon_index(Path(command[command.index("-i") + 1]), num_decoys=1)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    return resolver, run
 
 
 def _write_gtf_derived_candidate(reference: Path) -> tuple[Path, Path, Path]:
@@ -600,57 +638,59 @@ def test_reference_strategy_validation_and_cli_adoption(tmp_path):
     assert "Salmon strategy: transcriptome_only" in result.output
 
 
-def test_reference_prepare_atomically_builds_and_registers_expected_nfcore_strategy(tmp_path):
+def test_reference_prepare_builds_decoy_aware_index_from_a_gtf_derived_transcriptome(tmp_path):
     _root, reference = _local_fastq_project(tmp_path)
     commands: list[list[str]] = []
-
-    def fake_runner(command, **_kwargs):
-        commands.append(command)
-        if command[-1] == "--version":
-            output = "salmon 1.10.3" if Path(command[0]).name == "salmon" else "RSEM v1.3.3"
-            return subprocess.CompletedProcess(command, 0, output, "")
-        if Path(command[0]).name == "salmon":
-            _write_salmon_index(Path(command[command.index("-i") + 1]), num_decoys=1)
-        return subprocess.CompletedProcess(command, 0, "", "")
+    resolver, fake_runner = _fake_builder(tmp_path, commands=commands)
 
     prepared = prepare_local_reference(
-        reference,
-        threads=5,
-        runner=fake_runner,
-        tool_resolver=lambda name: f"/tools/{name}",
+        reference, threads=5, runner=fake_runner, tool_resolver=resolver,
         now=lambda: datetime(2026, 8, 31, tzinfo=UTC),
     )
     assert prepared.salmon_status == SALMON_BUILT
-    assert prepared.salmon_index == reference / "salmon" / "index"
+    assert prepared.salmon_index == reference / "salmon" / "gtf_derived" / "index"
+    assert prepared.transcriptome_strategy == GTF_DERIVED_TRANSCRIPTOME_STRATEGY
+    assert not prepared.external_transcript_fasta_used
+    assert prepared.salmon_transcriptome.path == reference / "salmon" / "gtf_derived" / "genome.transcripts.fa"
+    # nf-core receives the genome, GTF and index; it derives the same transcript_id namespace itself.
+    assert [option for option, _path in prepared.nfcore_arguments()] == ["--fasta", "--gtf", "--salmon_index"]
     manifest = yaml.safe_load((reference / "reference_manifest.yaml").read_text(encoding="utf-8"))
-    assert manifest["salmon"]["status"] == SALMON_BUILT
-    assert manifest["salmon"]["index"] == "salmon/index"
-    assert manifest["salmon"]["provenance"]["kmer_size"] == 31
-    assert manifest["salmon"]["provenance"]["decoy_strategy"] == DECOY_STRATEGY
-    assert manifest["salmon"]["strategy"] == SALMON_STRATEGY_DECOY_AWARE
-    assert manifest["salmon"]["provenance"]["builder"]["mode"] == "host_native"
-    assert manifest["salmon"]["provenance"]["builder"]["tools"]["salmon"]["executable"] == "/tools/salmon"
-    assert manifest["salmon"]["provenance"]["builder"]["preflight"]["threads"] == 5
-    assert manifest["salmon"]["provenance"]["source_assets"]["genome_fasta"]["path"] == "fasta/Homo_sapiens.GRCh38.dna.primary_assembly.fa"
-    assert manifest["salmon"]["provenance"]["commands"]["salmon_index"][-1] == "31"
-    assert "--threads" in manifest["salmon"]["provenance"]["commands"]["salmon_index"]
+    salmon = manifest["salmon"]
+    assert salmon["status"] == SALMON_BUILT and salmon["strategy"] == SALMON_STRATEGY_DECOY_AWARE
+    assert salmon["index"] == "salmon/gtf_derived/index" and salmon["kmer_size"] == 31 and salmon["num_decoys"] == 1
+    assert salmon["transcriptome"]["source"] == "gtf_derived"
+    assert salmon["validation"]["transcript_id_contract"] == "exact"
+    artifact = json.loads((reference / salmon["validation"]["artifact"]).read_text(encoding="utf-8"))
+    assert artifact["status"] == "PASS" and artifact["identifier_compatibility"]["fasta_only"] == 0
+    assert artifact["contract"]["normalization"] == "none"
+    provenance = salmon["provenance"]
+    assert provenance["mode"] == HOST_NATIVE_BUILD
+    assert provenance["transcriptome_strategy"] == TRANSCRIPTOME_STRATEGY
+    assert provenance["decoy_strategy"] == DECOY_STRATEGY and provenance["kmer_size"] == 31
+    assert provenance["rsem_package"] == {
+        "name": "rsem", "version": "1.3.3", "build": "pl5321h077b44d_12", "channel": "https://conda.anaconda.org/bioconda/linux-64",
+    }
+    assert provenance["gtf_filter"]["strategy"] == "nfcore_rnaseq_3.26.0_custom_gtffilter"
+    assert provenance["builder"]["preflight"]["threads"] == 5
+    rsem = provenance["commands"]["rsem_prepare_reference"]
+    assert rsem[1:3] == ["--gtf", rsem[2]] and rsem[2].endswith("genome.filtered.gtf")
+    assert rsem[3:5] == ["--num-threads", "5"] and rsem[5].endswith("Homo_sapiens.GRCh38.dna.primary_assembly.fa")
+    salmon_index = provenance["commands"]["salmon_index"]
+    assert salmon_index[-2:] == ["-k", "31"] and "-d" in salmon_index
     assert all("docker" not in item for command in commands for item in command)
+    assert not list(reference.glob(".rnaseq-reference-prepare-*"))
 
 
-def test_reference_prepare_failure_leaves_manifest_not_built_and_no_index(tmp_path):
+@pytest.mark.parametrize("failing_tool", ["rsem-prepare-reference", "salmon"])
+def test_reference_prepare_failure_leaves_manifest_not_built_and_no_index(tmp_path, failing_tool):
     _root, reference = _local_fastq_project(tmp_path)
-
-    def failing_runner(command, **_kwargs):
-        if command[-1] == "--version":
-            output = "salmon 1.10.3" if Path(command[0]).name == "salmon" else "RSEM v1.3.3"
-            return subprocess.CompletedProcess(command, 0, output, "")
-        return subprocess.CompletedProcess(command, 42, "", "fixture failure")
+    resolver, failing_runner = _fake_builder(tmp_path, fail=failing_tool)
 
     with pytest.raises(ReferencePreparationError, match="exit 42"):
-        prepare_local_reference(reference, runner=failing_runner, tool_resolver=lambda name: f"/tools/{name}")
+        prepare_local_reference(reference, runner=failing_runner, tool_resolver=resolver)
     manifest = yaml.safe_load((reference / "reference_manifest.yaml").read_text(encoding="utf-8"))
     assert manifest["salmon"] == {"index": None, "status": "not_built"}
-    assert not (reference / "salmon" / "index").exists()
+    assert not (reference / "salmon" / "gtf_derived").exists()
     assert list(reference.glob(".rnaseq-reference-prepare-*"))
 
 
@@ -658,20 +698,14 @@ def test_manifest_publish_failure_returns_new_index_to_retained_staging(monkeypa
     _root, reference = _local_fastq_project(tmp_path)
     before = (reference / "reference_manifest.yaml").read_bytes()
 
-    def fake_runner(command, **_kwargs):
-        executable = Path(command[0]).name
-        if command[-1] == "--version":
-            return subprocess.CompletedProcess(command, 0, "salmon 1.10.3" if executable == "salmon" else "RSEM v1.3.3", "")
-        if executable == "salmon":
-            _write_salmon_index(Path(command[command.index("-i") + 1]), num_decoys=1)
-        return subprocess.CompletedProcess(command, 0, "", "")
+    resolver, fake_runner = _fake_builder(tmp_path)
 
     monkeypatch.setattr("rnaseq.references._write_manifest_atomically", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("fixture manifest failure")))
     with pytest.raises(OSError, match="fixture manifest failure"):
-        prepare_local_reference(reference, runner=fake_runner, tool_resolver=lambda name: f"/tools/{name}")
+        prepare_local_reference(reference, runner=fake_runner, tool_resolver=resolver)
     assert (reference / "reference_manifest.yaml").read_bytes() == before
-    assert not (reference / "salmon" / "index").exists()
-    assert any(path.joinpath("salmon", "index").is_dir() for path in reference.glob(".rnaseq-reference-prepare-*"))
+    assert not (reference / "salmon" / "gtf_derived").exists()
+    assert any(path.joinpath("gtf_derived", "index").is_dir() for path in reference.glob(".rnaseq-reference-prepare-*"))
 
 
 def test_host_native_reference_preflight_fails_before_staging_for_missing_or_unsupported_tools(tmp_path):
@@ -697,17 +731,9 @@ def test_host_native_reference_command_is_tokenized_for_paths_with_spaces(tmp_pa
     reference = tmp_path / "reference with spaces"
     _write_reference(reference)
     commands: list[list[str]] = []
+    resolver, fake_runner = _fake_builder(tmp_path / "tools with spaces", commands=commands)
 
-    def fake_runner(command, **_kwargs):
-        commands.append(command)
-        executable = Path(command[0]).name
-        if command[-1] == "--version":
-            return subprocess.CompletedProcess(command, 0, "salmon 1.10.3" if executable == "salmon" else "RSEM v1.3.3", "")
-        if executable == "salmon":
-            _write_salmon_index(Path(command[command.index("-i") + 1]), num_decoys=1)
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    prepare_local_reference(reference, runner=fake_runner, tool_resolver=lambda name: f"/tools/{name}")
+    prepare_local_reference(reference, runner=fake_runner, tool_resolver=resolver)
     assert any(str(reference) in argument for command in commands for argument in command)
     assert all(isinstance(argument, str) for command in commands for argument in command)
     assert all("docker" not in argument.lower() for command in commands for argument in command)
@@ -886,7 +912,7 @@ def test_genome_only_runtime_splices_require_registered_matching_nonempty_proven
         load_local_reference_root(reference)
 
 
-def test_manifest_accepts_prebuilt_salmon_without_nf_rna_builder_provenance(tmp_path):
+def test_manifest_accepts_prebuilt_salmon_only_with_a_passing_transcript_id_contract(tmp_path):
     _root, reference = _local_fastq_project(tmp_path)
     index = reference / "vendor indexes" / "salmon"
     _write_salmon_index(index)
@@ -901,6 +927,19 @@ def test_manifest_accepts_prebuilt_salmon_without_nf_rna_builder_provenance(tmp_
         "strategy": "transcriptome_only",
         "source_transcriptome_sha256": manifest["files"]["transcript_fasta"]["sha256"],
     }
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    with pytest.raises(LocalReferenceError, match="without a transcript-ID contract.*--rebuild-salmon"):
+        load_local_reference_root(reference)
+
+    unvalidated, _ = _load_local_reference_root(reference, "reference_manifest.yaml", None, validate_salmon=False)
+    artifact = reference / "vendor indexes" / "salmon.transcript_id_contract.json"
+    artifact.write_text(json.dumps(transcript_id_contract(
+        identity={"species": unvalidated.species, "provider": unvalidated.provider, "release": unvalidated.release,
+                  "assembly": unvalidated.assembly, "assembly_patch": unvalidated.assembly_patch},
+        genome_fasta=unvalidated.genome_fasta, annotation_gtf=unvalidated.annotation_gtf,
+        transcriptome=unvalidated.transcript_fasta.path, transcriptome_relative_path=unvalidated.transcript_fasta.relative_path,
+    )), encoding="utf-8")
+    manifest["salmon"]["validation"] = {"artifact": "vendor indexes/salmon.transcript_id_contract.json", "transcript_id_contract": "exact"}
     manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
 
     loaded = load_local_reference_root(reference)

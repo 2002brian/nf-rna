@@ -191,13 +191,15 @@ def render_analysis_plan(report: ValidationReport) -> str:
             ])
             if local.transcript_fasta is not None:
                 lines.append(
-                    f"- Transcript FASTA asset: `{local.transcript_fasta.path}` "
-                    f"(SHA256 `{local.transcript_fasta.sha256}`; runtime used: `{str(local.external_transcript_fasta_used).lower()}`)"
+                    f"- Registered transcript FASTA asset: `{local.transcript_fasta.path}` "
+                    f"(SHA256 `{local.transcript_fasta.sha256}`; Salmon index built from it: `{str(local.external_transcript_fasta_used).lower()}`)"
                 )
-            if local.salmon_transcriptome is not None:
+            if local.salmon_transcriptome is not None and not local.external_transcript_fasta_used:
+                artifact = local.salmon_validation.get("artifact") if local.salmon_validation else None
                 lines.append(
-                    f"- Adopted GTF-derived transcriptome: `{local.salmon_transcriptome.path}` "
-                    f"(SHA256 `{local.salmon_transcriptome.sha256}`; provenance only, not an nf-core `--transcript_fasta` argument)"
+                    f"- Salmon index transcriptome (GTF-derived; exact transcript_id contract `{artifact}`): "
+                    f"`{local.salmon_transcriptome.path}` (SHA256 `{local.salmon_transcriptome.sha256}`). "
+                    "It is not passed as `--transcript_fasta`; nf-core derives the same transcript_id namespace from `--fasta` and `--gtf`."
                 )
             if method == "salmon" and local.salmon_index is not None:
                 lines.append("- nf-core reference arguments: " + " ".join(
