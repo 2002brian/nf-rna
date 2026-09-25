@@ -67,6 +67,14 @@ def nfcore_compatible_conda_channels(request, monkeypatch):
     monkeypatch.setattr("rnaseq.service.check_conda_channels", lambda: compatible)
 
 
+@pytest.fixture(autouse=True)
+def isolated_fastq_checksum_cache(tmp_path_factory, monkeypatch):
+    """Never let tests write FASTQ checksum records into the user's real cache."""
+
+    cache = tmp_path_factory.mktemp("fastq-sha256") / "checksums.json"
+    monkeypatch.setattr("rnaseq.service._fastq_checksum_cache_path", lambda: cache)
+
+
 def base_config() -> dict[str, Any]:
     return {
         "schema_version": "1.0",

@@ -183,6 +183,81 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+# Raw FASTQs are referenced in place and never copied into a run.  Each run's
+# frozen input manifest records every file's SHA256, computed at most once per
+# file content and reused while this fingerprint is unchanged.
+FASTQ_IDENTITY_CONTRACT = {
+    "checksum": "sha256",
+    "checksum_reuse_key": "resolved_path + size_bytes + mtime_ns",
+    "staging": "referenced in place; not copied into the run",
+}
+
+
+def _fastq_checksum_cache_path() -> Path:
+    return resolve_execution_workspace("cache", "fastq-sha256").root / "checksums.json"
+
+
+def _fastq_fingerprint(path: Path) -> tuple[int, int]:
+    status = path.stat()
+    return status.st_size, status.st_mtime_ns
+
+
+def _fastq_sha256(path: Path) -> tuple[str, str]:
+    """SHA256 of a raw FASTQ, read at most once while its fingerprint is unchanged.
+
+    Returns the digest and whether it was ``computed`` now or reused from the
+    ``cache``.  A file that changes while it is being hashed is rejected.
+    """
+
+    resolved = str(path.resolve())
+    size, mtime_ns = _fastq_fingerprint(path)
+    cache_path = _fastq_checksum_cache_path()
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        cache = cache if isinstance(cache, dict) else {}
+    except (OSError, ValueError):
+        cache = {}
+    entry = cache.get(resolved)
+    if isinstance(entry, dict) and entry.get("size_bytes") == size and entry.get("mtime_ns") == mtime_ns and isinstance(entry.get("sha256"), str):
+        return entry["sha256"], "cache"
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    if _fastq_fingerprint(path) != (size, mtime_ns):
+        raise ExecutionPreflightError(f"FASTQ changed while its checksum was computed: {path}")
+    value = digest.hexdigest()
+    cache[resolved] = {"size_bytes": size, "mtime_ns": mtime_ns, "sha256": value}
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = cache_path.with_name(f".{cache_path.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(cache, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(cache_path)
+    except OSError:
+        pass  # The cache only avoids re-reading; the digest itself is already exact.
+    return value, "computed"
+
+
+def _attach_fastq_checksums(report: ValidationReport, manifest: dict[str, Any]) -> None:
+    """Complete the frozen FASTQ identities with one SHA256 per file."""
+
+    assert report.fastq is not None
+    entries = {entry["relative_path"]: entry for entry in manifest["input"]["files"]}
+    project = report.project_dir.resolve()
+    for record in report.fastq.records:
+        for path in (record.fastq_1, record.fastq_2):
+            if path is None:
+                continue
+            entry = entries[path.resolve().relative_to(project).as_posix()]
+            if "sha256" in entry:
+                continue
+            if _fastq_fingerprint(path) != (entry["size_bytes"], entry["mtime_ns"]):
+                raise ExecutionPreflightError(f"FASTQ changed after validation: {path}. Run 'rnaseq plan PROJECT' again.")
+            entry["resolved_path"] = str(path.resolve())
+            entry["sha256"], entry["sha256_source"] = _fastq_sha256(path)
+    manifest["input"]["identity_contract"] = dict(FASTQ_IDENTITY_CONTRACT)
+
+
 def _native_runtime_snapshot() -> RuntimeSnapshot:
     """Describe host capacity without querying Docker for raw-count execution."""
 
@@ -616,12 +691,14 @@ def _copy_delivery_artifact(source: Path, destination: Path) -> None:
     shutil.copyfile(source, destination)
 
 
-def _staged_fastq_samplesheet(report: ValidationReport, fastq_root: Path) -> str:
+def _staged_fastq_samplesheet(report: ValidationReport) -> str:
+    """Point the frozen samplesheet at the validated raw FASTQs in place."""
+
     assert report.fastq is not None and report.config is not None
     output: list[list[str]] = [["sample", "fastq_1", "fastq_2", "strandedness"]]
     for record in report.fastq.records:
-        first = fastq_root / record.fastq_1.name
-        second = fastq_root / record.fastq_2.name if record.fastq_2 else None
+        first = record.fastq_1
+        second = record.fastq_2
         output.append([record.sample_id, str(first.resolve()), str(second.resolve()) if second else "", report.config.upstream.strandedness or "auto"])
     from io import StringIO
 
@@ -649,6 +726,8 @@ def freeze_case_inputs(
 
     manifest = yaml.safe_load(render_manifest(report))
     assert isinstance(manifest, dict)
+    if report.config.input.type is InputType.FASTQ:
+        _attach_fastq_checksums(report, manifest)
     manifest_path = frozen / "input_manifest.yaml"
     _write_yaml(manifest_path, manifest)
     staged_input = frozen / "input"
@@ -688,18 +767,10 @@ def freeze_case_inputs(
         source = {"type": "raw_counts", "construction_method": "DESeqDataSetFromMatrix", "counts": str(counts.resolve())}
     else:
         assert report.fastq is not None
-        fastq_dir = staged_input / "fastq"
-        staged: set[str] = set()
-        for record in report.fastq.records:
-            for item in (record.fastq_1, record.fastq_2):
-                if item is None or _is_appledouble(item):
-                    continue
-                if item.name in staged:
-                    continue
-                staged.add(item.name)
-                _copy_snapshot(item, fastq_dir / item.name)
+        # Raw FASTQs stay where they are; the frozen manifest pins their
+        # identity (see FASTQ_IDENTITY_CONTRACT) instead of a multi-GB copy.
         samplesheet = frozen / "samplesheet.csv"
-        _write_text(samplesheet, _staged_fastq_samplesheet(report, fastq_dir))
+        _write_text(samplesheet, _staged_fastq_samplesheet(report))
         method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
         source = {
             "type": "salmon_tximport" if method == "salmon" else "featurecounts_raw_counts",
@@ -1637,6 +1708,14 @@ def _validate_frozen_manifest(run: CaseRun) -> None:
         for item in files:
             if not isinstance(item, dict) or not isinstance(item.get("relative_path"), str) or not isinstance(item.get("sha256"), str):
                 raise ExecutionPreflightError("Retry source FASTQ manifest is malformed.")
+            if isinstance(item.get("resolved_path"), str):
+                # Referenced in place: unchanged metadata keeps the frozen
+                # SHA256; otherwise the content must still hash to it.
+                path = Path(item["resolved_path"])
+                _require_immutable_file(path, "referenced FASTQ")
+                if _fastq_fingerprint(path) != (item.get("size_bytes"), item.get("mtime_ns")) and _fastq_sha256(path)[0] != item["sha256"]:
+                    raise ExecutionPreflightError(f"Retry source FASTQ no longer matches its frozen identity: {path}")
+                continue
             path = frozen / "input" / "fastq" / Path(item["relative_path"]).name
             _require_immutable_file(path, "frozen FASTQ")
             if _sha256(path) != item["sha256"]:
@@ -1764,6 +1843,9 @@ def _create_retry_case_run(project_dir: Path, source: RetrySource) -> CaseRun:
 
 
 def _rewrite_retry_samplesheet(path: Path, frozen: Path) -> None:
+    if not (frozen / "input" / "fastq").is_dir():
+        # FASTQs are referenced in place; the frozen samplesheet already names them.
+        return
     try:
         with path.open(encoding="utf-8", newline="") as handle:
             rows = list(csv.DictReader(handle))

@@ -242,11 +242,24 @@ def render_analysis_plan(report: ValidationReport) -> str:
     return "\n".join(lines)
 
 
-def _fastq_manifest_files(report: ValidationReport) -> list[dict[str, str]]:
+def _fastq_manifest_files(report: ValidationReport) -> list[dict[str, object]]:
+    """Identify raw FASTQs by metadata only.
+
+    Raw sequencing data can be tens of GB on a slow (for example WSL 9p)
+    mount, so planning, freshness checks and doctor never read FASTQ
+    contents.  A run adds one SHA256 per file when it freezes its input
+    manifest (``rnaseq.service``), reusing it while the file's resolved
+    path, size and mtime are unchanged.
+    """
+
     assert report.fastq is not None
     files = [record.fastq_1 for record in report.fastq.records]
     files.extend(record.fastq_2 for record in report.fastq.records if record.fastq_2)
-    return [{"relative_path": _relative_to_project(report, path), "sha256": sha256_file(path)} for path in sorted(files)]
+    identities: list[dict[str, object]] = []
+    for path in sorted(files):
+        status = path.stat()
+        identities.append({"relative_path": _relative_to_project(report, path), "size_bytes": status.st_size, "mtime_ns": status.st_mtime_ns})
+    return identities
 
 
 def render_manifest(report: ValidationReport) -> str:
