@@ -18,6 +18,7 @@ from rnaseq.execution import RuntimeCheck, load_run_states
 from rnaseq.planner import generate_plan
 from rnaseq.service import (
     FrozenInputs,
+    _validate_delivery_count_matrix,
     _sanitize_delivery_appledouble,
     _assert_delivery_appledouble_free,
     assemble_delivery,
@@ -67,6 +68,17 @@ def _frozen_run(project_factory) -> tuple[Path, object, object]:
     run = create_case_run(report, "CASE-20260828-001", moment=datetime(2026, 8, 28, 11, 51, 11))
     freeze_case_inputs(report, run, profile="local", command=["rnaseq", "run"])
     return root, report, run
+
+
+def test_shipped_simple_two_group_counts_pass_delivery_validation():
+    example = Path(__file__).parents[1] / "examples" / "simple_two_group"
+    report = validate_project(example)
+    assert report.is_valid
+    with (example / "metadata.csv").open(encoding="utf-8", newline="") as handle:
+        samples = tuple(row["sample_id"] for row in csv.DictReader(handle))
+    assert _validate_delivery_count_matrix(
+        example / "counts.csv", samples, integer_required=True,
+    ) == (100, 6, samples)
 
 
 def test_freeze_defers_downstream_runtime_identity_until_after_confirmation(project_factory):
@@ -690,7 +702,8 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     local_root = tmp_path / "local-nextflow-cache"
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(local_root))
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "25.10.4"))
-    monkeypatch.setattr("rnaseq.service.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "Docker daemon is available."))
+    monkeypatch.setattr("rnaseq.service.check_docker", lambda: (_ for _ in ()).throw(AssertionError("Salmon must not query Docker")))
+    monkeypatch.setattr("rnaseq.service.check_upstream_conda", lambda: RuntimeCheck("Conda", "FOUND", "conda 25.3.1"))
     observed: list[tuple[list[str], Path]] = []
 
     def fake_nextflow(command, *, cwd, stdout_path, stderr_path):
@@ -720,10 +733,15 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     monkeypatch.setattr("rnaseq.service._run_command", fake_nextflow)
     run = execute_service_run(report, case_id="CASE-20260828-001")
     assert len(observed) == 2
+    assert observed[0][0][observed[0][0].index("-profile") + 1] == "conda"
+    assert (local_root / "cache" / "upstream-conda").is_dir()
     assert all(cwd == local_root / run.case_id / run.run_id / "launch" for _command, cwd in observed)
     assert all("-work-dir" in command for command, _cwd in observed)
     local_resource_config = run.run_dir / "frozen" / "nfcore.local.config"
     assert all(str(local_resource_config.resolve()) in command for command, _cwd in observed)
+    upstream_conda_config = run.run_dir / "frozen" / "nfcore.conda.config"
+    assert str(upstream_conda_config.resolve()) in observed[0][0]
+    assert str(upstream_conda_config.resolve()) not in observed[1][0]
     assert (local_root / run.case_id / run.run_id / "launch" / ".nextflow" / "cache" / "000003.log").is_file()
     assert not (run.run_dir / ".nextflow").exists()
     assert not (run.run_dir / "work").exists()
@@ -761,14 +779,27 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     assert len(provenance["salmon_tx2gene"]["sha256"]) == 64
     assert provenance["downstream_runtime"]["kind"] == "conda"
     assert provenance["downstream_runtime"]["wheel"]["sha256"] == "b" * 64
-    assert provenance["upstream_container_runtime"] == "docker"
+    assert provenance["upstream_container_runtime"] is None
+    assert provenance["upstream_runtime"]["kind"] == "conda"
+    assert provenance["upstream_runtime"]["version"] == "3.26.0"
+    assert provenance["upstream_runtime"]["revision"] == "e7ca46272c8f9d5ceee3f71759f4ba551d3217a4"
+    assert provenance["upstream_runtime"]["profile"] == "conda"
+    assert provenance["upstream_runtime"]["cache_dir"] == str(local_root / "cache" / "upstream-conda")
+    assert "conda.enabled = true" in upstream_conda_config.read_text(encoding="utf-8")
+    assert "docker.enabled = false" in upstream_conda_config.read_text(encoding="utf-8")
+    assert f'conda.cacheDir = "{local_root / "cache" / "upstream-conda"}"' in upstream_conda_config.read_text(encoding="utf-8")
+    assert "conda.cacheDir" not in local_resource_config.read_text(encoding="utf-8")
+    assert provenance["frozen_upstream_conda_config"]["path"] == "frozen/nfcore.conda.config"
     assert provenance["production_intended"] is False
     assert set(provenance["workflow_sha256"]) == {"workflow/main.nf", "workflow/hisat2_featurecounts.nf"}
     assert all(len(value) == 64 for value in provenance["workflow_sha256"].values())
     assert provenance["runtime_resources"]["resource_profile"] == "M5_LOCAL_SMALL_MEDIUM_LARGE"
     assert "host_architecture" in provenance["runtime_resources"]
-    assert provenance["runtime_resources"]["requested"] == {"cpus": 8, "memory_gib": 12}
-    assert provenance["runtime_resources"]["effective"] == {"cpus": 8, "memory_gib": 12}
+    # No execution block: auto = 16 CPUs / 64 GiB (conftest host) minus the OS reserve.
+    assert provenance["runtime_resources"]["requested"] == {"cpus": 14, "memory_gib": 54}
+    assert provenance["runtime_resources"]["effective"] == {"cpus": 14, "memory_gib": 54}
+    assert provenance["runtime_resources"]["policy"]["cpu_mode"] == "auto"
+    assert provenance["runtime_resources"]["policy"]["os_reserve"] == {"cpus": 2, "memory_gib": 10}
     assert provenance["frozen_local_nextflow_config"]["path"] == "frozen/nfcore.local.config"
     assert len(provenance["frozen_local_nextflow_config"]["sha256"]) == 64
     execution_manifest = yaml.safe_load((run.run_dir / "frozen" / "execution_manifest.yaml").read_text(encoding="utf-8"))
@@ -920,3 +951,74 @@ def test_raw_counts_with_different_valid_metadata_order_stages_and_delivers(proj
     assert target.read_bytes() == source.read_bytes()
     artifact = json.loads((delivery / "counts" / "artifact_manifest.json").read_text(encoding="utf-8"))["artifacts"][0]
     assert artifact["ordered_sample_ids"] == ["S3", "S1", "S2", "T3", "T1", "T2"]
+
+
+_DELIVERY_HEADER = "gene_id,C1,C2,C3,T1,T2,T3\n"
+_DELIVERY_GENES = "GeneA,10,12,9,40,45,43\nGeneB,100,110,98,95,102,99\nGeneC,5,6,7,8,9,10\n"
+
+
+@pytest.mark.parametrize(
+    "counts",
+    [
+        _DELIVERY_HEADER + _DELIVERY_GENES,
+        _DELIVERY_HEADER + _DELIVERY_GENES + "\n",
+        (_DELIVERY_HEADER + _DELIVERY_GENES + "\n").replace("\n", "\r\n"),
+        _DELIVERY_HEADER + _DELIVERY_GENES + "\n\n\n",
+        _DELIVERY_HEADER + "GeneA,10,12,9,40,45,43\n\nGeneB,100,110,98,95,102,99\nGeneC,5,6,7,8,9,10\n",
+    ],
+    ids=["clean", "one-trailing-blank", "crlf-trailing-blank", "multiple-trailing-blanks", "interior-blank"],
+)
+def test_raw_counts_delivery_ignores_only_physical_blank_records(project_factory, counts):
+    root = project_factory(counts=counts)
+    report = validate_project(root)
+    assert report.is_valid, report.errors
+    assert report.counts.gene_count == 3
+    generate_plan(report)
+    run = create_case_run(report, "CASE-20260924-001", moment=datetime(2026, 9, 24, 10, 0, 0))
+    freeze_case_inputs(report, run, profile="local", command=["rnaseq", "run"])
+
+    delivery = assemble_delivery(run)
+
+    source = run.run_dir / "frozen" / "input" / "counts.csv"
+    target = delivery / "counts" / "raw_counts.csv"
+    assert source.read_bytes() == counts.encode("utf-8")
+    assert target.read_bytes() == source.read_bytes()
+    artifact = json.loads((delivery / "counts" / "artifact_manifest.json").read_text(encoding="utf-8"))["artifacts"][0]
+    assert artifact["rows"] == 3
+    assert artifact["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("counts", "message"),
+    [
+        (_DELIVERY_HEADER + _DELIVERY_GENES + ",,,,,,\n", "invalid gene identifiers"),
+        (_DELIVERY_HEADER + _DELIVERY_GENES + ",1,2,3,4,5,6\n", "invalid gene identifiers"),
+        (_DELIVERY_HEADER + _DELIVERY_GENES + "GeneA,1,2,3,4,5,6\n", "invalid gene identifiers"),
+        (_DELIVERY_HEADER + _DELIVERY_GENES + "GeneD,1,2,3\n", "invalid gene identifiers"),
+        (_DELIVERY_HEADER + "\n\n", "no gene rows"),
+        # A reordered header is valid for raw counts (see the metadata-order test above); a sample set
+        # that disagrees with the frozen metadata is not.
+        ("gene_id,C1,C2,C3,T1,T2,X9\n" + _DELIVERY_GENES, "sample IDs disagree with frozen metadata"),
+    ],
+    ids=["empty-field-record", "empty-gene-id", "duplicate-gene-id", "short-row", "only-blank-records", "sample-set-mismatch"],
+)
+def test_raw_counts_delivery_still_rejects_malformed_matrices(project_factory, counts, message):
+    _root, _report, run = _frozen_run(project_factory)
+    (run.run_dir / "frozen" / "input" / "counts.csv").write_text(counts, encoding="utf-8")
+
+    with pytest.raises(UpstreamExecutionError, match=message):
+        assemble_delivery(run)
+
+
+@pytest.mark.parametrize(
+    ("counts", "code"),
+    [
+        (_DELIVERY_HEADER + _DELIVERY_GENES + ",1,2,3,4,5,6\n", "blank_gene_id"),
+        (_DELIVERY_HEADER + _DELIVERY_GENES + "GeneA,1,2,3,4,5,6\n", "duplicate_gene_id"),
+        (_DELIVERY_HEADER + _DELIVERY_GENES + "GeneD,1,2,3\n", "malformed_count_row"),
+        (_DELIVERY_HEADER + "\n\n", "missing_genes"),
+    ],
+)
+def test_count_validation_still_rejects_malformed_records_around_blank_lines(project_factory, counts, code):
+    report = validate_project(project_factory(counts=counts + "\n"))
+    assert code in {issue.code for issue in report.errors}

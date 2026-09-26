@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
 
@@ -438,8 +438,10 @@ class ExecutionConfig(StrictModel):
     """Portable aggregate local execution ceiling, not a scientific setting."""
 
     profile: Literal["local"] = "local"
-    max_cpus: int = Field(default=8, ge=1)
-    max_memory_gb: int = Field(default=12, ge=1)
+    # ``auto`` sizes the ceiling from this machine at run time (capacity minus
+    # an OS reserve); an explicit integer is a deliberate user limit.
+    max_cpus: Annotated[int, Field(ge=1)] | Literal["auto"] = "auto"
+    max_memory_gb: Annotated[int, Field(ge=1)] | Literal["auto"] = "auto"
 
 
 class ProjectConfig(StrictModel):

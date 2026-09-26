@@ -2,18 +2,32 @@
 
 This module intentionally owns only the nf-rna downstream Conda environment.
 Upstream nf-core and featureCounts containers remain outside this contract.
+
+The nf-rna wheel installed into the locked prefix comes from one of two sources:
+
+* a normal (non-editable) installation: the installed distribution is verified
+  against its pip ``RECORD`` hashes and re-packed, with the standard library
+  only, into a deterministic canonical wheel; no build tool, network, or Git
+  checkout is involved;
+* a development source checkout (including editable installs): the wheel is
+  built from the checkout with ``python -m build`` (the ``dev`` extra).
 """
 
 from __future__ import annotations
 
+import base64
+import csv
 import hashlib
+import io
 import json
 import os
 import platform
 import subprocess
 import sys
+import tempfile
+import zipfile
 from dataclasses import dataclass
-from importlib import resources
+from importlib import metadata, resources
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +37,12 @@ from rnaseq.errors import ExecutionPreflightError
 
 
 RUNTIME_SCHEMA = "nf-rna.downstream-conda-runtime.v1"
+DISTRIBUTION_NAME = "nf-rna"
+WHEEL_ORIGIN_SOURCE = "source-checkout-build"
+WHEEL_ORIGIN_INSTALLED = "installed-distribution"
+# pip writes these at install time; they are not part of the distributed wheel.
+INSTALLER_GENERATED = frozenset({"INSTALLER", "REQUESTED", "direct_url.json", "RECORD"})
+CANONICAL_WHEEL_TIMESTAMP = (2020, 2, 2, 0, 0, 0)
 LOCKS_PACKAGE = "rnaseq.workflows"
 REQUIRED_R_PACKAGES = (
     "DESeq2", "tximport", "clusterProfiler", "AnnotationDbi", "org.Hs.eg.db",
@@ -44,6 +64,7 @@ class DownstreamRuntime:
     source_revision: str | None
     r_scripts: tuple[dict[str, str], ...]
     r_scripts_sha256: str
+    wheel_origin: str = WHEEL_ORIGIN_SOURCE
 
     def identity(self) -> dict[str, Any]:
         return {
@@ -52,7 +73,7 @@ class DownstreamRuntime:
             "platform": self.platform,
             "prefix": str(self.prefix),
             "lock": {"filename": self.lock_filename, "sha256": self.lock_sha256},
-            "wheel": {"filename": self.wheel_filename, "sha256": self.wheel_sha256},
+            "wheel": {"filename": self.wheel_filename, "sha256": self.wheel_sha256, "origin": self.wheel_origin},
             "nf_rna_version": self.nf_rna_version,
             "source_revision": self.source_revision,
             "r_scripts": {"inventory": list(self.r_scripts), "sha256": self.r_scripts_sha256},
@@ -133,13 +154,168 @@ def _runtime_root() -> Path:
     return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "nf-rna" / "runtime"
 
 
+def _source_checkout() -> Path | None:
+    """Return the repository root only when this module runs from its ``src/`` tree."""
+
+    module = Path(__file__).resolve()
+    root = module.parents[2]
+    if module.parents[1].name == "src" and (root / "pyproject.toml").is_file():
+        return root
+    return None
+
+
 def _source_root() -> Path:
-    root = Path(__file__).resolve().parents[2]
-    if not (root / "pyproject.toml").is_file():
-        raise ExecutionPreflightError(
-            "No packaged nf-rna wheel is available and this invocation is not a source checkout."
-        )
+    root = _source_checkout()
+    if root is None:
+        raise ExecutionPreflightError("This nf-rna invocation is not a source checkout.")
     return root
+
+
+def _installed_distribution() -> metadata.Distribution:
+    """Return the installed distribution that owns the running ``rnaseq`` package."""
+
+    import rnaseq
+
+    package = Path(rnaseq.__file__).resolve()
+    for distribution in metadata.distributions(name=DISTRIBUTION_NAME):
+        if Path(distribution.locate_file("rnaseq/__init__.py")).resolve() == package:
+            return distribution
+    raise ExecutionPreflightError(
+        f"The running nf-rna package ({package.parent}) is neither a source checkout nor owned by an "
+        "installed nf-rna distribution; install nf-rna with pip (for example 'pip install nf-rna')."
+    )
+
+
+def _record_sha256(data: bytes) -> str:
+    return "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode("ascii")
+
+
+def _installed_wheel_members(distribution: metadata.Distribution) -> tuple[str, dict[str, bytes]]:
+    """Return the verified distributed files of an installed nf-rna.
+
+    Every packaged file must still match the SHA-256 pip recorded at install
+    time, so a locally modified installation is refused rather than provisioned.
+    """
+
+    record = distribution.read_text("RECORD")
+    if not record:
+        raise ExecutionPreflightError("The installed nf-rna distribution has no RECORD; reinstall nf-rna with pip.")
+    rows = list(csv.reader(io.StringIO(record)))
+    info_dirs = {row[0].split("/", 1)[0] for row in rows if row and row[0].endswith(".dist-info/METADATA") and row[0].count("/") == 1}
+    if len(info_dirs) != 1:
+        raise ExecutionPreflightError("The installed nf-rna RECORD does not identify exactly one .dist-info directory.")
+    info_dir = info_dirs.pop()
+    members: dict[str, bytes] = {}
+    for row in rows:
+        if len(row) != 3:
+            raise ExecutionPreflightError(f"The installed nf-rna RECORD has a malformed row: {row!r}.")
+        path, digest, _size = row
+        top, _, name = path.partition("/")
+        if top not in {"rnaseq", info_dir} or "__pycache__/" in path or path.endswith(".pyc"):
+            continue
+        if top == info_dir and name in INSTALLER_GENERATED:
+            continue
+        if not digest.startswith("sha256="):
+            raise ExecutionPreflightError(f"The installed nf-rna RECORD has no SHA-256 for {path}; reinstall nf-rna.")
+        try:
+            data = Path(distribution.locate_file(path)).read_bytes()
+        except OSError as exc:
+            raise ExecutionPreflightError(f"Installed nf-rna file is missing: {path}; reinstall nf-rna.") from exc
+        if _record_sha256(data) != digest:
+            raise ExecutionPreflightError(f"Installed nf-rna file was modified after installation: {path}; reinstall nf-rna.")
+        members[path] = data
+    required = ("rnaseq/workflow_support.py", "rnaseq/workflows/main.nf", "rnaseq/workflows/envs/locks/SHA256SUMS", f"{info_dir}/METADATA", f"{info_dir}/WHEEL")
+    missing = [path for path in required if path not in members]
+    if missing or not any(path.startswith("rnaseq/r/") and path.endswith(".R") for path in members):
+        raise ExecutionPreflightError("The installed nf-rna distribution is incomplete: " + ", ".join(missing or ["rnaseq/r/*.R"]))
+    return info_dir, members
+
+
+def _canonical_wheel_bytes(info_dir: str, members: dict[str, bytes]) -> bytes:
+    """Deterministic, uncompressed wheel: identical content always yields identical bytes."""
+
+    ordered = sorted(path for path in members if not path.startswith(info_dir + "/"))
+    ordered += sorted(path for path in members if path.startswith(info_dir + "/"))
+    record = "".join(f"{path},{_record_sha256(members[path])},{len(members[path])}\n" for path in ordered)
+    entries = [(path, members[path]) for path in ordered] + [(f"{info_dir}/RECORD", (record + f"{info_dir}/RECORD,,\n").encode())]
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for path, data in entries:
+            info = zipfile.ZipInfo(path, CANONICAL_WHEEL_TIMESTAMP)
+            info.compress_type = zipfile.ZIP_STORED
+            info.create_system = 3
+            info.external_attr = 0o100644 << 16
+            archive.writestr(info, data)
+    return buffer.getvalue()
+
+
+def _installed_wheel_filename(info_dir: str, members: dict[str, bytes]) -> str:
+    wheel_metadata = members[f"{info_dir}/WHEEL"].decode("utf-8")
+    tags = [line.split(":", 1)[1].strip() for line in wheel_metadata.splitlines() if line.startswith("Tag:")]
+    if len(tags) != 1:
+        raise ExecutionPreflightError(f"The installed nf-rna WHEEL metadata must declare exactly one tag; found {tags}.")
+    return f"{info_dir.removesuffix('.dist-info')}-{tags[0]}.whl"
+
+
+def _installed_revision(distribution: metadata.Distribution) -> str | None:
+    """Use the VCS commit pip recorded for a Git-URL install; releases carry none."""
+
+    try:
+        direct = json.loads(distribution.read_text("direct_url.json") or "{}")
+    except json.JSONDecodeError:
+        return None
+    commit = direct.get("vcs_info", {}).get("commit_id") if isinstance(direct.get("vcs_info"), dict) else None
+    return commit if isinstance(commit, str) and commit else None
+
+
+def _materialize_installed_wheel(cache: Path) -> tuple[Path, str | None]:
+    """Re-pack the verified installed distribution into a content-addressed canonical wheel."""
+
+    distribution = _installed_distribution()
+    info_dir, members = _installed_wheel_members(distribution)
+    data = _canonical_wheel_bytes(info_dir, members)
+    digest = hashlib.sha256(data).hexdigest()
+    target = cache / "wheels" / "installed" / digest / _installed_wheel_filename(info_dir, members)
+    if not target.is_file() or _sha256(target) != digest:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as handle:
+            handle.write(data)
+        os.replace(handle.name, target)
+    return target.resolve(), _installed_revision(distribution)
+
+
+def _runtime_wheel(cache: Path) -> tuple[Path, str | None, str]:
+    """Select the nf-rna wheel for the downstream prefix without needing a checkout in production."""
+
+    if _source_checkout() is not None:
+        wheel, revision = _build_wheel(cache)
+        return wheel, revision, WHEEL_ORIGIN_SOURCE
+    wheel, revision = _materialize_installed_wheel(cache)
+    return wheel, revision, WHEEL_ORIGIN_INSTALLED
+
+
+def wheel_source_status() -> tuple[bool, str]:
+    """Non-mutating doctor view of where the downstream nf-rna wheel will come from."""
+
+    source = _source_checkout()
+    if source is not None:
+        import importlib.util
+
+        if importlib.util.find_spec("build") is None:
+            return False, (
+                f"source checkout {source} builds the downstream wheel with '{sys.executable} -m build', which is "
+                "not importable; install the 'dev' extra, or install nf-rna normally (non-editable) for production."
+            )
+        return True, f"source checkout {source}; development wheel built with '{sys.executable} -m build'."
+    try:
+        distribution = _installed_distribution()
+        info_dir, members = _installed_wheel_members(distribution)
+    except ExecutionPreflightError as exc:
+        return False, str(exc)
+    return True, (
+        f"installed distribution {info_dir.removesuffix('.dist-info')}; {len(members)} files verified against RECORD; "
+        "canonical wheel is re-packed without build tools."
+    )
 
 
 def _source_revision(source: Path) -> str | None:
@@ -168,7 +344,10 @@ def _build_wheel(cache: Path) -> tuple[Path, str | None]:
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
-        raise ExecutionPreflightError(f"Could not build the nf-rna downstream wheel: {detail}")
+        raise ExecutionPreflightError(
+            f"Could not build the nf-rna downstream wheel from source checkout {source}: {detail} "
+            "(development mode needs the 'dev' extra; production installs do not build wheels)."
+        )
     wheels = sorted(wheel_dir.glob("nf_rna-*.whl"), key=lambda item: item.stat().st_mtime_ns)
     if not wheels:
         raise ExecutionPreflightError("Wheel build completed without an nf-rna wheel artifact.")
@@ -225,14 +404,66 @@ print(json.dumps({'version': rnaseq.__version__, 'file': str(root)}))
     installed_wheel = prefix / "runtime" / "nf-rna-wheel.json"
     if installed_wheel.is_file():
         recorded = json.loads(installed_wheel.read_text(encoding="utf-8"))
-        if recorded.get("sha256") != _sha256(expected_wheel):
-            raise ExecutionPreflightError("Cached downstream runtime wheel identity does not match the requested wheel.")
+        expected_sha = _sha256(expected_wheel)
+        if recorded.get("sha256") != expected_sha:
+            raise ExecutionPreflightError(
+                "Cached downstream runtime wheel identity does not match the requested wheel: "
+                f"prefix {prefix} holds {recorded.get('filename')} sha256={recorded.get('sha256')}, "
+                f"requested {expected_wheel.name} sha256={expected_sha}. The prefix is never updated in place; "
+                "remove it manually or set RNASEQ_RUNTIME_ROOT to a separate runtime root."
+            )
     return str(identity["version"]), scripts, digest
+
+
+def runtime_prefix(root: Path, target: str, lock_sha: str, wheel_sha: str) -> Path:
+    """One immutable prefix per (platform lock, nf-rna wheel) pair.
+
+    Upgrading nf-rna therefore provisions a new prefix instead of colliding
+    with a prefix that a completed run froze as its analysis environment.
+    """
+
+    return root / "prefixes" / f"nf-rna-downstream-{target}-{lock_sha[:16]}-{wheel_sha[:16]}"
+
+
+def runtime_source_revision() -> str | None:
+    """The git commit of the nf-rna source that this invocation would execute.
+
+    A source checkout reports its HEAD (``+dirty`` with uncommitted changes); an
+    installed distribution reports the commit pip recorded for a git install.
+    """
+
+    source = _source_checkout()
+    if source is not None:
+        return _source_revision(source)
+    try:
+        return _installed_revision(_installed_distribution())
+    except ExecutionPreflightError:
+        return None
+
+
+def require_identified_source() -> str:
+    """Refuse execution unless one clean git commit identifies the nf-rna source."""
+
+    revision = runtime_source_revision()
+    if revision is None:
+        raise ExecutionPreflightError(
+            "The nf-rna source revision is unavailable, so a run could not state which commit produced it. "
+            "Install nf-rna from a git commit, for example "
+            "'python -m pip install \"git+https://github.com/2002brian/nf-rna@v1.3.0\"' "
+            "(or 'git+file:///path/to/nf-rna@<commit>'); a plain directory, sdist, or wheel install records no commit."
+        )
+    if revision.endswith("+dirty"):
+        raise ExecutionPreflightError(
+            f"The nf-rna source checkout has uncommitted changes ({revision}); commit them so the run is "
+            "attributable to one exact source revision."
+        )
+    return revision
 
 
 def downstream_runtime_preflight() -> None:
     """Verify immutable inputs without creating a Conda environment."""
 
+    require_identified_source()
     lock = lock_path_for_platform()
     _lock_checksum(lock)
     if not shutil_which("conda"):
@@ -253,9 +484,9 @@ def ensure_downstream_runtime() -> DownstreamRuntime:
     lock = lock_path_for_platform(target)
     lock_sha = _lock_checksum(lock)
     root = _runtime_root().resolve()
-    prefix = root / "prefixes" / f"nf-rna-downstream-{target}-{lock_sha[:16]}"
-    wheel, revision = _build_wheel(root)
+    wheel, revision, origin = _runtime_wheel(root)
     wheel_sha = _sha256(wheel)
+    prefix = runtime_prefix(root, target, lock_sha, wheel_sha)
     marker = prefix / "runtime" / "nf-rna-wheel.json"
     if not prefix.is_dir():
         env = {**os.environ, "CONDA_NO_PLUGINS": "true", "CONDA_SOLVER": "classic"}
@@ -273,10 +504,10 @@ def ensure_downstream_runtime() -> DownstreamRuntime:
         if install.returncode != 0:
             raise ExecutionPreflightError(f"Could not install non-editable nf-rna wheel: {(install.stderr or install.stdout).strip()}")
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(json.dumps({"filename": wheel.name, "sha256": wheel_sha}, indent=2) + "\n", encoding="utf-8")
+        marker.write_text(json.dumps({"filename": wheel.name, "sha256": wheel_sha, "origin": origin}, indent=2) + "\n", encoding="utf-8")
     elif not marker.is_file():
         raise ExecutionPreflightError(
             f"Existing downstream runtime prefix lacks its wheel identity marker: {prefix}. Remove it manually and retry."
         )
     version, scripts, scripts_sha = _probe(prefix, wheel)
-    return DownstreamRuntime(prefix, target, lock.name, lock_sha, wheel.name, wheel_sha, version, revision, scripts, scripts_sha)
+    return DownstreamRuntime(prefix, target, lock.name, lock_sha, wheel.name, wheel_sha, version, revision, scripts, scripts_sha, origin)

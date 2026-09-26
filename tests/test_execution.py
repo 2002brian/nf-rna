@@ -33,6 +33,7 @@ from rnaseq.execution import (
     load_run_states,
     prepare_run,
     render_local_resource_config,
+    render_upstream_conda_config,
     suggested_local_resources,
     validate_local_execution_budget,
     resolve_execution_workspace,
@@ -45,6 +46,23 @@ from rnaseq.planner import generate_plan
 from rnaseq.validators import validate_project
 
 runner = CliRunner()
+
+
+def test_experimental_osx_arm64_nfcore_conda_overrides_are_withdrawn(monkeypatch, tmp_path):
+    """macOS uses Docker; the experimental per-process Conda overrides must not return."""
+    monkeypatch.setattr("rnaseq.execution.native_platform", lambda: "osx-arm64")
+    config = render_upstream_conda_config(tmp_path / "cache")
+    assert "EAUTILS_GTF2BED" not in config and "TXIMETA_TXIMPORT" not in config
+    assert "withName:" not in config
+
+
+@pytest.mark.parametrize("platform", ["linux-64", "osx-64"])
+def test_upstream_conda_config_has_no_process_overrides(monkeypatch, tmp_path, platform):
+    monkeypatch.setattr("rnaseq.execution.native_platform", lambda: platform)
+    config = render_upstream_conda_config(tmp_path / "cache")
+    assert "withName:" not in config
+    assert "process {" not in config
+    assert "conda.enabled = true" in config
 
 
 def _ready_fastq_project(tmp_path: Path) -> Path:
@@ -146,11 +164,12 @@ def test_safe_pinned_command(monkeypatch, tmp_path, production_capable_execution
         profile="local",
         work_dir=root.parent / "local-execution-root" / "work" / "upstream",
     )
-    assert command[:7] == ["nextflow", "run", "nf-core/rnaseq", "-r", "3.26.0", "-profile", "docker"]
+    assert command[:7] == ["nextflow", "run", "nf-core/rnaseq", "-r", "3.26.0", "-profile", "conda"]
     assert "--pseudo_aligner" in command and "salmon" in command
     assert "--skip_alignment" not in command
     assert command[command.index("-work-dir") + 1].endswith("local-execution-root/work/upstream")
     assert "test_reference" in command
+    assert prepared.container_runtime == "conda"
 
 
 def test_successful_mocked_execution_freezes_state_and_handoff(monkeypatch, tmp_path, production_capable_execution_capacity):
@@ -187,7 +206,8 @@ def test_successful_mocked_execution_freezes_state_and_handoff(monkeypatch, tmp_
     assert runtime_params["skip_alignment"] is True
     assert "skip_trimming" not in runtime_params
     resource_config = (result.run_dir / "frozen" / "local.nextflow.config").read_text()
-    assert "memory: '12.GB'" in resource_config
+    effective = yaml.safe_load((result.run_dir / "provenance" / "run_provenance.yaml").read_text())["runtime_resources"]["effective"]
+    assert f"memory: '{effective['memory_gib']}.GB'" in resource_config
     assert "SALMON_QUANT" not in resource_config and "maxForks" not in resource_config
     assert handoff["gene_level_counts"]["format"] == "TSV"
     assert handoff["gene_level_counts"]["identifier_column"] == "gene_id"
@@ -312,6 +332,8 @@ def test_container_runtime_probe_reports_the_failed_prerequisite(monkeypatch):
 
 
 def test_doctor_reports_a_successful_container_probe(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
     monkeypatch.setattr("rnaseq.execution.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "available"))
     monkeypatch.setattr("rnaseq.execution.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "available"))
     monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda *_args: RuntimeCheck("First-party execution image", "FOUND", "available"))
@@ -321,6 +343,8 @@ def test_doctor_reports_a_successful_container_probe(monkeypatch):
 
 
 def test_doctor_reports_requested_and_observed_image_identity(monkeypatch, project_factory):
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
     root = project_factory()
     config_path = root / "project.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -346,6 +370,8 @@ def test_doctor_reports_requested_and_observed_image_identity(monkeypatch, proje
 
 
 def test_doctor_distinguishes_missing_nextflow_and_docker_from_architecture_warnings(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
     monkeypatch.setattr("rnaseq.execution.check_nextflow", lambda: RuntimeCheck("Nextflow", "NOT FOUND", "not installed"))
     monkeypatch.setattr("rnaseq.execution.check_docker", lambda: RuntimeCheck("Docker", "NOT FOUND", "daemon unavailable"))
     monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda *_args: RuntimeCheck("First-party execution image", "NOT FOUND", "daemon unavailable"))

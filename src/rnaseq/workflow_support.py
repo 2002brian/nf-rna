@@ -151,21 +151,25 @@ def _validated_design_variable_types(contract: dict[str, Any], project: dict[str
     return {}
 
 
-def _experimental_design_html(project: dict[str, Any], contrasts: list[dict[str, str]]) -> list[str]:
-    """Render the compact typed-design contract without claiming batch removal."""
+def _experimental_design_html(
+    project: dict[str, Any], contrasts: list[dict[str, str]], contract: dict[str, Any],
+) -> list[str]:
+    """Render the frozen typed-design contract without claiming batch removal."""
 
     design = project.get("design", {})
-    variables = design.get("variables", {}) if isinstance(design, dict) else {}
+    # The same frozen types that L1/L2 received; undeclared ones were inferred at validation.
+    variables = _validated_design_variable_types(contract, project)
+    origin = "" if isinstance(design, dict) and isinstance(design.get("variables"), dict) else " (inferred)"
     rows = ["<h2>Experimental design</h2>", f"<p>Design: <code>{escape(str(design.get('formula', 'not available')))}</code></p>"]
-    if isinstance(variables, dict) and variables:
+    if variables:
         rows.extend(["<table><thead><tr><th>Variable</th><th>Type</th></tr></thead><tbody>"])
-        rows.extend(f"<tr><td>{escape(str(name))}</td><td>{escape(str(kind))}</td></tr>" for name, kind in variables.items())
+        rows.extend(f"<tr><td>{escape(name)}</td><td>{escape(kind + origin)}</td></tr>" for name, kind in variables.items())
         rows.append("</tbody></table>")
     for contrast in contrasts:
-        adjustments = [name for name in variables if name != contrast["factor"]] if isinstance(variables, dict) else []
+        adjustments = [name for name in variables if name != contrast["factor"]]
         adjustment_text = f", adjusted for {', '.join(adjustments)}" if adjustments else ""
         rows.append(f"<p>Differential expression: {escape(contrast['numerator'])} vs {escape(contrast['denominator'])}{escape(adjustment_text)}.</p>")
-    if isinstance(variables, dict) and variables.get("batch") == "categorical":
+    if variables.get("batch") == "categorical":
         rows.append("<p>Known batch was included as a categorical DESeq2 adjustment covariate; raw counts were not batch-corrected before inference.</p>")
     return rows
 
@@ -216,16 +220,20 @@ def _runtime_provenance(contract: dict[str, Any], script: str, module: str) -> d
 
     execution = contract.get("execution") if isinstance(contract.get("execution"), dict) else {}
     runtime = execution.get("downstream_runtime") if isinstance(execution.get("downstream_runtime"), dict) else {}
+    # The macOS Docker backend has no Conda runtime identity; it records the
+    # frozen execution image and its OCI source revision instead.
+    docker = not runtime and bool(execution.get("image"))
     return {
         "module": module,
         "script": script,
-        "runtime_kind": runtime.get("kind"),
+        "runtime_kind": "docker" if docker else runtime.get("kind"),
         "platform": runtime.get("platform"),
         "lock": runtime.get("lock"),
         "wheel": runtime.get("wheel"),
         "nf_rna_version": runtime.get("nf_rna_version"),
-        "source_revision": runtime.get("source_revision"),
+        "source_revision": execution.get("source_revision") if docker else runtime.get("source_revision"),
         "r_scripts": runtime.get("r_scripts"),
+        "container_image": execution.get("image") if docker else None,
         "output_schema": "nf-rna.scientific-provenance.v1",
     }
 
@@ -402,9 +410,14 @@ def _pipeline_provenance_line(execution: object, project_pipeline: object) -> st
 
 
 def _source_revision_line(execution: object) -> str:
-    """Render the frozen execution-image revision without a host fallback."""
+    """Render the frozen runtime revision without a host fallback."""
 
-    revision = execution.get("source_revision") if isinstance(execution, dict) else None
+    execution = execution if isinstance(execution, dict) else {}
+    runtime = execution.get("downstream_runtime")
+    if isinstance(runtime, dict):
+        revision = runtime.get("source_revision")
+        return f"Runtime: Nextflow + Conda; nf-rna source revision: {escape(str(revision)) if revision else 'not available'}."
+    revision = execution.get("source_revision")
     if revision:
         return f"Execution-image source revision: {escape(str(revision))}."
     return "Execution-image source revision: not available."
@@ -444,6 +457,25 @@ def _annotation_qc_report_lines(ranking: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _ora_significance_html(contract: dict[str, Any], module: str) -> str:
+    """State the delivered ORA significance predicate with its frozen cutoffs.
+
+    Mirrors go_analysis.R/kegg_analysis.R: pvalue <= pvalue_cutoff and
+    qvalue <= qvalue_cutoff. p.adjust is reported but is not part of it.
+    """
+
+    annotation = contract.get("annotation")
+    enrichment = annotation.get("enrichment", {}) if isinstance(annotation, dict) else {}
+    settings = enrichment.get("go") if module == "go" else (enrichment.get("kegg") or {}).get("ora")
+    settings = settings if isinstance(settings, dict) else {}
+    return (
+        f"<p>Significant terms: raw p-value &le; {_value(settings, 'pvalue_cutoff')} and "
+        f"q-value &le; {_value(settings, 'qvalue_cutoff')}. The adjusted p-value "
+        f"(p.adjust, {_value(settings, 'p_adjust_method')}) is reported but is not a selection criterion, "
+        "so a significant term can have p.adjust above the p-value cutoff.</p>"
+    )
+
+
 def _evaluated_terms(summary: dict[str, Any]) -> str:
     """Prefer the explicit GSEA calculation count, with legacy fallback."""
 
@@ -481,7 +513,7 @@ def _report_l1_only(
         f"<li>Configured contrasts: {len(contrasts)}</li>"
         "<li>Requested analysis level: L1</li>"
         "</ul>",
-        *_experimental_design_html(project, contrasts),
+        *_experimental_design_html(project, contrasts, contract),
         "<h2>L1 — quality control</h2>",
         "<ul>"
         f"<li>Genes input: {_value(l1_summary, 'genes_input')}</li>"
@@ -556,7 +588,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
         f"<li>Design: <code>{escape(str(project['design']['formula']))}</code></li>"
         f"<li>Configured contrasts: {len(contrasts)}</li>"
         "</ul>",
-        *_experimental_design_html(project, contrasts),
+        *_experimental_design_html(project, contrasts, contract),
         "<h2>L1 — quality control</h2>",
         "<ul>"
         f"<li>Genes input: {_value(l1_summary, 'genes_input')}</li>"
@@ -614,6 +646,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
                 raise ValueError(f"final report requires enabled {label} artifacts")
             summary = _read_json_artifact(root / summary_name, f"{label} backend summary")
             sections.append(f"<h3>{label}</h3><p>Module state: <strong>{escape(str(summary.get('status', 'not available')))}</strong>.</p>")
+            sections.append(_ora_significance_html(contract, module))
             by_contrast = {str(item.get("contrast_id")): item for item in summary.get("contrasts", []) if isinstance(item, dict)}
             for contrast in contrasts:
                 item = by_contrast.get(contrast["contrast_id"])

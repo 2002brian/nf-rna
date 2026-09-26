@@ -25,6 +25,7 @@ params.subread_container = 'quay.io/biocontainers/subread:2.0.6--he4a0461_2'
 params.fastp_container = 'quay.io/biocontainers/fastp:0.24.0--h125f33a_0'
 params.fastqc_container = 'quay.io/biocontainers/fastqc:0.12.1--hdfd78af_0'
 params.multiqc_container = 'community.wave.seqera.io/library/multiqc:1.33--ee7739d47738383b'
+params.hisat2_linux_conda = "${projectDir}/envs/hisat2-featurecounts-linux-64.yml"
 
 def hisatStrand(value, layout) {
     if (value == 'unstranded') return ''
@@ -37,6 +38,7 @@ def featureCountsStrand(value) { ['unstranded':'0', 'forward':'1', 'reverse':'2'
 process FASTQC_RAW {
     tag { "raw ${sample}" }
     container params.fastqc_container
+    conda params.hisat2_linux_conda
     cpus 2
     memory '2 GB'
     publishDir "${params.outdir}/qc/fastqc/raw", mode: 'copy', overwrite: false
@@ -55,6 +57,7 @@ process FASTQC_RAW {
 process FASTP_PREPARE {
     tag { sample }
     container params.fastp_container
+    conda params.hisat2_linux_conda
     cpus 4
     memory '6 GB'
     publishDir "${params.outdir}/qc/fastp", mode: 'copy', overwrite: false
@@ -89,6 +92,7 @@ process FASTP_PREPARE {
 process HISAT2_ALIGN {
     tag { sample }
     container params.hisat2_container
+    conda params.hisat2_linux_conda
     cpus 4
     memory '6 GB'
     publishDir "${params.outdir}/alignment/lane_summaries", mode: 'copy', overwrite: false
@@ -112,6 +116,7 @@ process HISAT2_ALIGN {
 process FASTQC_PROCESSED {
     tag { "processed ${sample}" }
     container params.fastqc_container
+    conda params.hisat2_linux_conda
     cpus 2
     memory '2 GB'
     publishDir "${params.outdir}/qc/fastqc/processed", mode: 'copy', overwrite: false
@@ -130,6 +135,7 @@ process FASTQC_PROCESSED {
 process SORT_LANE_BAM {
     tag { sample }
     container params.samtools_container
+    conda params.hisat2_linux_conda
     cpus 4
     memory '6 GB'
     input:
@@ -146,6 +152,7 @@ process SORT_LANE_BAM {
 process MERGE_AND_INDEX {
     tag { sample }
     container params.samtools_container
+    conda params.hisat2_linux_conda
     cpus 4
     memory '6 GB'
     publishDir "${params.outdir}/bam", mode: 'copy', overwrite: false
@@ -170,6 +177,7 @@ process MERGE_AND_INDEX {
 process FEATURECOUNTS {
     tag { sample }
     container params.subread_container
+    conda params.hisat2_linux_conda
     cpus 4
     memory '6 GB'
     publishDir "${params.outdir}/counts/per_sample", mode: 'copy', overwrite: false
@@ -189,6 +197,7 @@ process FEATURECOUNTS {
 process PREPARE_COUNT_BAM {
     tag { sample }
     container params.samtools_container
+    conda params.hisat2_linux_conda
     cpus 2
     memory '3 GB'
     publishDir "${params.outdir}/bam/count_only", mode: 'copy', overwrite: false
@@ -210,6 +219,7 @@ process PREPARE_COUNT_BAM {
 process ASSEMBLE_COUNTS {
     tag 'canonical featureCounts matrix'
     container 'quay.io/biocontainers/python:3.10.4'
+    conda params.hisat2_linux_conda
     cpus 1
     memory '2 GB'
     publishDir "${params.outdir}/counts", mode: 'copy', overwrite: false
@@ -231,6 +241,7 @@ process ASSEMBLE_COUNTS {
 process MULTIQC {
     tag 'MultiQC'
     container params.multiqc_container
+    conda params.hisat2_linux_conda
     cpus 1
     memory '2 GB'
     publishDir "${params.outdir}/multiqc", mode: 'copy', overwrite: false

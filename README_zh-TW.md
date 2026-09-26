@@ -4,13 +4,13 @@
 
 `nf-rna` 是可重現的 bulk RNA-seq workflow，支援 FASTQ 與 raw-count 專案。它會驗證已宣告的輸入與實驗設計，執行選定的 QC 與分析階段，並產生圖表、表格、technical report 與凍結的 provenance。
 
-`rnaseq` 是 control plane，Nextflow 是 execution plane，Docker 是 process runtime。production 使用者透過 `rnaseq` 執行，不需要自行 build execution image 或呼叫內部 Nextflow module。
+`rnaseq` 是 control plane，Nextflow 是 execution plane，所有 process 環境皆由 Conda 提供。v1.3.0 支援的 runtime 為 **Linux x86-64 或 Windows WSL2，搭配 Nextflow 與 Conda**，不需要 Docker。production 使用者透過 `rnaseq` 執行，不需要呼叫內部 Nextflow module。
 
 ## 功能
 
 - FASTQ 專案可使用 nf-core/rnaseq 的 Salmon/tximport，或 first-party HISAT2 + featureCounts。
 - Raw-count 專案提供已驗證 metadata、明確 contrast、QC、differential expression 與選用的 preranked GSEA。
-- Immutable run 會凍結設定、execution-image identity、workflow hash，並建立 curated delivery artifact。
+- Immutable run 會凍結設定、精確的 nf-rna source commit、locked Conda runtime identity、workflow hash，並建立 curated delivery artifact。
 
 ## 架構
 
@@ -41,7 +41,7 @@ L1 提供表現品質控制與探索。L2 必須明確選擇：它會對已宣�
 
 ### 輸出
 
-每次授權執行都會在 `runs/<case-id>/<run-id>/` 建立 immutable run。run 會保留凍結的 inputs 與 configuration、execution-image 與 workflow identity，以及 provenance 和分析 artifact。
+每次授權執行都會在 `runs/<case-id>/<run-id>/` 建立 immutable run。run 會保留凍結的 inputs 與 configuration、nf-rna source commit、Conda runtime 與 workflow identity，以及 provenance 和分析 artifact。
 
 - **Upstream count data：** FASTQ 專案保留 upstream QC 與 Salmon/tximport 或 featureCounts 的 count handoff；count-matrix 專案保留已驗證的 imported count source。
 - **L1 QC：** filtering 與 normalization 記錄、用於 visualization 的 transformed expression、PCA、sample correlation，以及 QC table 與 figure。
@@ -51,52 +51,55 @@ L1 提供表現品質控制與探索。L2 必須明確選擇：它會對已宣�
 
 ## 系統需求
 
-請使用支援的 Linux 或 WSL workstation，並準備：
+請使用 Linux x86-64 workstation，或 Windows 的 WSL2（v1.3.0 不支援 native Windows 與 macOS），並準備：
 
-- Python 3.11+（含 `venv`）與 Git；
-- 已啟動的 Docker daemon；
+- Python 3.11+ 與 Git；
+- 位於 `PATH` 的 Conda（例如 Miniforge），並依 nf-core 要求依序設定 `conda-forge` 與 `bioconda` channel（`conda config --add channels bioconda && conda config --add channels conda-forge && conda config --set channel_priority strict`）；
 - 位於 `PATH` 的 Bash、Java 17+ 與 Nextflow；以及
-- 足夠儲存 reference 與 Nextflow work data 的本機空間。
+- 足夠儲存 reference、Conda environment 與 Nextflow work data 的本機空間。
 
-Java 與 Nextflow 在 host 執行。R、DESeq2、HISAT2、featureCounts、SAMtools 與 Salmon 由 execution image 提供，一般使用者不需要在 host 安裝。請參考 [Nextflow 官方文件](https://docs.seqera.io/nextflow/install)。
+不需要 Docker。Java、Nextflow 與 Conda 在 host 執行。nf-core/rnaseq 3.26.0 以 `-profile conda` 執行；HISAT2/featureCounts 使用精確 pin 的 Conda environment；R、DESeq2、tximport 與 enrichment 套件在 nf-rna 首次使用時建立的 locked linux-64 Conda environment 中執行。一般使用者不需要手動安裝這些工具。請參考 [Nextflow 官方文件](https://docs.seqera.io/nextflow/install)。
 
 ## 安裝
 
-nf-rna 沒有 PyPI distribution。自 `v1.1.2` release 起，official image 會以
-`ghcr.io/2002brian/nf-rna:X.Y.Z` 發布；請從 Git tag 安裝已發布的 CLI，並 pull
-對應 image。將 `X.Y.Z` 換成想使用的已發布版本：
+nf-rna 沒有 PyPI distribution。請從 Git tag 安裝已發布的 CLI。從 Git 安裝時，
+pip 會記錄精確的 source commit，而每次 run 都必須記錄它；若安裝方式沒有 commit
+（例如直接安裝目錄、sdist 或 wheel），nf-rna 會拒絕執行。將 `X.Y.Z` 換成想使用的
+已發布版本：
 
 ```bash
 RELEASE_VERSION=X.Y.Z
-python3.11 -m venv ~/.venvs/nf-rna-${RELEASE_VERSION}
-source ~/.venvs/nf-rna-${RELEASE_VERSION}/bin/activate
+conda create --yes --name nf-rna python=3.11
+conda activate nf-rna
 python -m pip install --upgrade pip
 python -m pip install "git+https://github.com/2002brian/nf-rna.git@v${RELEASE_VERSION}"
-docker pull ghcr.io/2002brian/nf-rna:${RELEASE_VERSION}
 rnaseq --version
 rnaseq doctor
 ```
 
+首次執行時，nf-rna 會在 runtime cache 建立 locked downstream Conda environment
+（每個 lock 與已安裝 nf-rna build 各一個），之後的 run 會重複使用。nf-core/rnaseq
+與 HISAT2/featureCounts 的 process environment 由 Nextflow 建立於共用的 upstream
+Conda cache。
+
 release contract 為：
 
 ```text
-CLI X.Y.Z  ↔  Git tag vX.Y.Z  ↔  ghcr.io/2002brian/nf-rna:X.Y.Z
+CLI X.Y.Z  ↔  Git tag vX.Y.Z  ↔  單一 source commit（記錄於每次 run）
 ```
 
-`v1.0.0` 是 immutable 的歷史 GitHub Release，早於 GHCR publication，
-因此沒有 official container image。若需使用該歷史版本或進行開發，請自行
-從 source build image。
+`rnaseq doctor` 是 read-only 檢查；它會檢查 Java、Nextflow、Conda 與其 channel 設定、
+nf-core/rnaseq pin、downstream Conda lock 與 nf-rna source revision，最後輸出
+`Overall: READY` 或 `Overall: NOT READY`（exit code 1）。它不會建立 environment 或下載
+pipeline。
 
-`v1.1.0` 與 `v1.1.1` 仍是有效的 source release，但兩者的 publication workflow
-都在 image build 或 push 前停止，因此沒有 official GHCR image。official GHCR
-distribution 自 `v1.1.2` 開始；此 release 不改變 scientific analysis、R 或
-Nextflow。
+### 歷史 Docker release
 
-官方 GHCR 執行映像目前僅針對 `linux/amd64` 完成資格驗證。
-`linux/arm64` 尚未經獨立驗證，不應視為正式支援的平台。正式分析應使用明確的
-version tag 或 immutable digest；`latest` 僅為 convenience tag。
-
-`rnaseq doctor` 是 read-only 檢查；它會驗證 host 與本機 image，但不會 pull 或 build image。
+`v1.1.2` 至 `v1.2.1` 的 process 在 Docker 中執行，並以
+`ghcr.io/2002brian/nf-rna:X.Y.Z` 發布 official image（僅針對 `linux/amd64` 完成
+資格驗證）。`v1.2.1` 是最後一個以 Docker 為基礎的 release；v1.3.0 不需要也不驗證
+Docker image。`v1.0.0` 早於 GHCR publication；`v1.1.0`/`v1.1.1` 仍是有效的 source
+release，但 publication workflow 在 image build 或 push 前停止，因此沒有 official image。
 
 ## 快速開始
 
@@ -111,7 +114,11 @@ rnaseq validate .
 rnaseq plan .
 rnaseq doctor .
 rnaseq run . --case-id CASE-001 --profile local --yes
+rnaseq status .            # 最新 run 的狀態、phase 與 task 進度
+rnaseq status . --watch    # 持續更新直到 run 結束
 ```
+
+最終結果位於 `runs/<case-id>/<run-id>/delivery/`。新專案預設依硬體自動設定 CPU／記憶體上限（`execution.max_cpus: auto`、`execution.max_memory_gb: auto`）；`project.yaml` 中明確指定的整數上限會被保留。
 
 wizard 只建立 project scaffold，不會推測科學輸入。FASTQ 專案還需要 execution-ready reference；可用 `rnaseq reference register /absolute/reference-root` 註冊既有的 checksum-bound managed reference，或設定支援的 reference route。詳細內容請見 [Quick Start](docs/quickstart.md)。
 
@@ -137,9 +144,9 @@ design:
 
 ## 可重現性
 
-新專案使用與已安裝 CLI 版本相符的 execution image。prerelease CLI 也使用明確相符的 prerelease tag；使用 prerelease 前必須先發布並驗證該 image。
+每次 run 都會記錄 nf-rna source commit、downstream Conda lock 與其 SHA-256、已安裝 nf-rna wheel 的 SHA-256、bundled R-script inventory、nf-core/rnaseq version 與 revision，以及 reference manifest 與檔案 checksum。若 source commit 未知，或 source checkout 有未 commit 的變更，nf-rna 會拒絕開始 run。
 
-正式分析應使用明確的 release tag 或 immutable digest。`ghcr.io/2002brian/nf-rna:latest` 只是 convenience tag，不應用於進行中的 production analysis。`rnaseq doctor PROJECT` 會報告 requested 與 Docker 實際觀察到的 image identity。
+正式分析應安裝明確的 release tag。`rnaseq doctor PROJECT` 會在執行前報告 source revision、Conda lock 與已建立的 runtime。
 
 ## 文件
 
@@ -150,4 +157,4 @@ design:
 
 ## 開發
 
-git clone、editable install、local image build 與 tests 都是 contributor activity。請見 [Development installation](docs/development.md)。
+git clone、editable install 與 tests 都是 contributor activity。請見 [Development installation](docs/development.md)。

@@ -8,15 +8,18 @@ nextflow.enable.dsl=2
 params.contract = null
 params.inputs = null
 params.outdir = null
-// The rnaseq control plane writes an absolute prefix for its verified,
-// non-editable downstream Conda runtime into a frozen per-run config.
+// The rnaseq control plane freezes exactly one downstream runtime per run:
+// on linux-64/WSL2 the absolute prefix of its verified, non-editable Conda
+// runtime; on macOS Apple Silicon the first-party Docker execution image.
 params.downstream_runtime_prefix = null
+params.first_party_image = null
 params.enrichment = ''
 params.analysis_level = null
 
 process L1_ANALYSIS {
     tag 'L1 expression QC'
     conda params.downstream_runtime_prefix
+    container params.first_party_image
     publishDir params.outdir, mode: 'copy', overwrite: false
     stageInMode 'copy'
     input:
@@ -34,6 +37,7 @@ process L1_ANALYSIS {
 process L2_ANALYSIS {
     tag 'L2 DESeq2'
     conda params.downstream_runtime_prefix
+    container params.first_party_image
     publishDir params.outdir, mode: 'copy', overwrite: false
     stageInMode 'copy'
     input:
@@ -52,6 +56,7 @@ process L2_ANALYSIS {
 process TECHNICAL_REPORT {
     tag 'HTML technical report'
     conda params.downstream_runtime_prefix
+    container params.first_party_image
     publishDir params.outdir, mode: 'copy', overwrite: false
     stageInMode 'copy'
     input:
@@ -71,6 +76,7 @@ process TECHNICAL_REPORT {
 process TECHNICAL_REPORT_NO_ENRICHMENT {
     tag 'HTML technical report (no enrichment selected)'
     conda params.downstream_runtime_prefix
+    container params.first_party_image
     publishDir params.outdir, mode: 'copy', overwrite: false
     stageInMode 'copy'
     input:
@@ -89,6 +95,7 @@ process TECHNICAL_REPORT_NO_ENRICHMENT {
 process TECHNICAL_REPORT_L1 {
     tag 'HTML technical report (L1 only)'
     conda params.downstream_runtime_prefix
+    container params.first_party_image
     publishDir params.outdir, mode: 'copy', overwrite: false
     stageInMode 'copy'
     input:
@@ -106,6 +113,7 @@ process TECHNICAL_REPORT_L1 {
 process ENRICHMENT_ANALYSIS {
     tag { module }
     conda params.downstream_runtime_prefix
+    container params.first_party_image
     // Each task emits exactly one backend-specific directory.  Publishing the
     // shared parent directory would make gsea-go and gsea-kegg collide.
     publishDir "${params.outdir}/l2", mode: 'copy', overwrite: false
@@ -126,7 +134,7 @@ process ENRICHMENT_ANALYSIS {
 
 workflow {
     if( !params.contract || !params.inputs || !params.outdir || !params.analysis_level ) error 'Specify --contract, --inputs, --outdir and --analysis_level'
-    if( !params.downstream_runtime_prefix ) error 'Specify --downstream_runtime_prefix through rnaseq; direct downstream Nextflow execution is not a supported user entry point'
+    if( !params.downstream_runtime_prefix == !params.first_party_image ) error 'Specify exactly one of --downstream_runtime_prefix or --first_party_image through rnaseq; direct downstream Nextflow execution is not a supported user entry point'
     if( !(params.analysis_level in ['L1', 'L2']) ) error 'analysis_level must be L1 or L2'
     contract = Channel.value(file(params.contract))
     inputs = Channel.value(file(params.inputs))

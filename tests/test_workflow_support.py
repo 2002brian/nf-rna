@@ -16,7 +16,10 @@ from conftest import base_config
 from rnaseq.planner import generate_plan
 from rnaseq.service import create_case_run, freeze_case_inputs, resolve_downstream_inputs
 from rnaseq.validators import validate_project
-from rnaseq.workflow_support import _samples, _source_import_label, enrichment_config, l1_config, l2_config, report
+from rnaseq.workflow_support import (
+    _experimental_design_html, _samples, _source_import_label, _validated_design_variable_types, enrichment_config,
+    l1_config, l2_config, report,
+)
 
 
 @pytest.mark.parametrize(
@@ -251,6 +254,90 @@ T3,P3,B1,Treatment
     }
     report = validate_project(project_factory(config=config, metadata=rank_deficient, contrasts=contrasts))
     assert "rank_deficient_design" in {item.code for item in report.errors}
+
+
+def test_production_bridge_passes_declared_categorical_for_leading_zero_batch(project_factory, tmp_path):
+    metadata = """sample_id,batch,age,condition
+C1,1,30,Control
+C2,01,34,Control
+C3,2,32,Control
+T1,1,31,Treatment
+T2,01,35,Treatment
+T3,2,39,Treatment
+"""
+    contrasts = "contrast_id,factor,numerator,denominator\nTreatment_vs_Control,condition,Treatment,Control\n"
+    types = {"batch": "categorical", "age": "continuous", "condition": "categorical"}
+    contract, inputs, _validation = _typed_batch_l2_contract(
+        project_factory,
+        design_type="two_group",
+        formula="~ batch + age + condition",
+        variables=types,
+        metadata=metadata,
+        contrasts=contrasts,
+    )
+    assert l1_config(contract, inputs, tmp_path / "l1")["design_variable_types"] == types
+    assert l2_config(contract, inputs, tmp_path / "l1", tmp_path / "l2")["design_variable_types"] == types
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "formula", "metadata", "expected"),
+    (
+        (
+            "1.0", "~ condition",
+            "sample_id,condition\nC1,Control\nC2,Control\nC3,Control\nT1,Treatment\nT2,Treatment\nT3,Treatment\n",
+            {"condition": "categorical"},
+        ),
+        (
+            "1.2", "~ batch + condition",
+            "sample_id,batch,condition\nC1,1,Control\nC2,2,Control\nC3,3,Control\nT1,1,Treatment\nT2,2,Treatment\nT3,3,Treatment\n",
+            {"batch": "continuous", "condition": "categorical"},
+        ),
+    ),
+)
+def test_legacy_bridge_reproduces_existing_resolved_types(project_factory, tmp_path, schema_version, formula, metadata, expected):
+    config = base_config()
+    config["schema_version"] = schema_version
+    if schema_version != "1.0":
+        config["analysis"] = {"enrichment": []}
+    config["design"] = {"type": "two_group", "formula": formula}
+    root = project_factory(config=config, metadata=metadata)
+    validation = validate_project(root)
+    assert validation.is_valid, validation.errors
+    generate_plan(validation)
+    run = create_case_run(validation, "CASE-LEGACY-BRIDGE", moment=datetime(2026, 9, 22, 12, 0, 0))
+    frozen = freeze_case_inputs(validation, run, profile="local", command=["rnaseq", "run"])
+    inputs = resolve_downstream_inputs(run).root
+    frozen_types = json.loads(frozen.contract.read_text(encoding="utf-8"))["design"]["variables"]
+    assert dict(validation.design_variable_types) == frozen_types == expected
+    assert l1_config(frozen.contract, inputs, tmp_path / "l1")["design_variable_types"] == expected
+    assert l2_config(frozen.contract, inputs, tmp_path / "l1", tmp_path / "l2")["design_variable_types"] == expected
+
+
+@pytest.mark.parametrize(
+    ("project_design", "expected"),
+    (
+        ({"formula": "~ condition", "variables": {"condition": "categorical"}}, {"condition": "categorical"}),
+        ({"formula": "~ condition"}, {}),
+    ),
+)
+def test_bridge_falls_back_to_project_types_for_contracts_without_design(project_design, expected):
+    assert _validated_design_variable_types({"schema_version": "1.0"}, {"design": project_design}) == expected
+
+
+def test_report_design_table_shows_frozen_types_and_marks_undeclared_ones_inferred():
+    contract = {"design": {"variables": {"batch": "categorical", "age": "continuous", "condition": "categorical"}}}
+    contrasts = [{"contrast_id": "T_vs_C", "factor": "condition", "numerator": "Treatment", "denominator": "Control"}]
+    legacy = "\n".join(_experimental_design_html({"design": {"formula": "~ batch + age + condition"}}, contrasts, contract))
+    assert "<tr><td>batch</td><td>categorical (inferred)</td></tr>" in legacy
+    assert "<tr><td>age</td><td>continuous (inferred)</td></tr>" in legacy
+    assert "<tr><td>condition</td><td>categorical (inferred)</td></tr>" in legacy
+    assert "Treatment vs Control, adjusted for batch, age." in legacy
+    # A declared project still reports the frozen contract types, without the inferred marker.
+    declared_project = {"design": {"formula": "~ batch + age + condition", "variables": {"batch": "continuous"}}}
+    declared = "\n".join(_experimental_design_html(declared_project, contrasts, contract))
+    assert "<tr><td>batch</td><td>categorical</td></tr>" in declared
+    assert "<tr><td>age</td><td>continuous</td></tr>" in declared
+    assert "(inferred)" not in declared
 
 
 def test_active_nextflow_l2_process_uses_the_guarded_config_builder():
@@ -492,6 +579,52 @@ def test_report_cli_accepts_all_enrichment_paths_and_rejects_incomplete_or_unkno
     assert "unrecognized arguments" in unknown.stderr
 
 
+def _render_enrichment_report(project_factory, selection: list[str], ora_cutoffs: dict[str, tuple[float, float]] | None = None) -> str:
+    contract, contract_path, l2, inputs = _frozen_contract(project_factory, schema_version="1.1")
+    contract["analysis"] = {"enrichment": selection}
+    for module, (pvalue_cutoff, qvalue_cutoff) in (ora_cutoffs or {}).items():
+        settings = contract["annotation"]["enrichment"]["go"] if module == "go" else contract["annotation"]["enrichment"]["kegg"]["ora"]
+        settings.update({"pvalue_cutoff": pvalue_cutoff, "qvalue_cutoff": qvalue_cutoff})
+    contract_path.write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    l1, gsea_go, gsea_kegg = _write_report_artifacts(inputs / "contrasts.csv", l2)
+    enrichment_dirs = [gsea_go, gsea_kegg] if "gsea" in selection else []
+    for module, summary_name in (("go", "go_backend_summary.json"), ("kegg", "kegg_backend_summary.json")):
+        if module in selection:
+            root = l2 / "enrichment" / module
+            root.mkdir(parents=True)
+            (root / summary_name).write_text(json.dumps({"status": "SUCCESS", "contrasts": []}), encoding="utf-8")
+            enrichment_dirs.append(root)
+    output = l2.parent / "enrichment-report"
+    report(contract_path, inputs, l1, l2, output, enrichment_dirs)
+    return (output / "report.html").read_text(encoding="utf-8")
+
+
+def test_report_states_go_and_kegg_ora_significance_rule_from_frozen_contract(project_factory):
+    # Differs from the staged project.yaml (GO 0.031/0.17, KEGG 0.021/0.19): the frozen contract is the source.
+    text = _render_enrichment_report(project_factory, ["go", "kegg"], {"go": (0.013, 0.11), "kegg": (0.007, 0.13)})
+    go_section = text[text.index("<h3>GO ORA</h3>"):text.index("<h3>KEGG ORA</h3>")]
+    kegg_section = text[text.index("<h3>KEGG ORA</h3>"):]
+    assert "Significant terms: raw p-value &le; 0.013 and q-value &le; 0.11." in go_section
+    assert "Significant terms: raw p-value &le; 0.007 and q-value &le; 0.13." in kegg_section
+    for section in (go_section, kegg_section):
+        assert "(p.adjust, BH) is reported but is not a selection criterion" in section
+    assert "0.031" not in text and "0.021" not in text
+
+
+def test_report_states_only_the_enabled_ora_module_rule(project_factory):
+    text = _render_enrichment_report(project_factory, ["kegg"])
+    assert "<h3>GO ORA</h3>" not in text
+    assert text.count("Significant terms: raw p-value") == 1
+    assert "Significant terms: raw p-value &le; 0.021 and q-value &le; 0.19." in text
+
+
+def test_gsea_only_report_does_not_present_the_ora_rule(project_factory):
+    text = _render_enrichment_report(project_factory, ["gsea"])
+    assert "L2 — preranked GSEA" in text
+    assert "over-representation analysis" not in text
+    assert "Significant terms: raw p-value" not in text
+
+
 def test_report_cli_without_enrichment_remains_supported(project_factory):
     _contract, contract_path, l2, inputs = _frozen_contract(project_factory, schema_version="1.0")
     l1, _go_root, _kegg_root = _write_report_artifacts(inputs / "contrasts.csv", l2)
@@ -519,6 +652,8 @@ def test_l1_report_requires_no_l2_artifacts_and_cli_does_not_require_l2(project_
     assert "Requested analysis level: L1" in report_text
     assert "Not requested for this L1 project." in report_text
     assert "L2 summary" not in report_text
+    # Legacy schema 1.0: the frozen resolved type is shown and marked as inferred.
+    assert "<tr><td>condition</td><td>categorical (inferred)</td></tr>" in report_text
 
     result = subprocess.run(
         [

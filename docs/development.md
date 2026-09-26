@@ -12,18 +12,25 @@ conda activate nf-rna
 python -m pip install -e '.[dev]'
 ```
 
-The shared Conda environment provides the development and image-build R stack. Contributors use editable installation so source changes are immediately visible; production users should use the non-editable, release-pinned installation in the [README](../README.md).
+The shared Conda environment provides the development R stack for real-R tests. Contributors use editable installation so source changes are immediately visible; production users should use the non-editable, release-pinned installation in the [README](../README.md).
 
-## Local execution-image build
+## Development runs
 
-Only build locally when developing or validating the image itself:
+A development run executes from the source checkout and records its `HEAD` as
+the source revision. nf-rna refuses to start a run while the checkout has
+uncommitted changes, so commit (or stash) work before an end-to-end run. The
+downstream wheel for a source checkout is built with `python -m build` from the
+`dev` extra.
+
+## Historical Docker image build (v1.2.1 and earlier)
+
+Releases up to v1.2.1 ran downstream tasks in a first-party Docker image. The
+`Dockerfile` remains for that historical path only; v1.3.0 does not use it:
 
 ```bash
 docker build --build-arg NF_RNA_SOURCE_REVISION="$(git rev-parse HEAD)" -t nf-rna:dev .
 docker run --rm nf-rna:dev rnaseq --version
 ```
-
-Set `runtime.execution_image: nf-rna:dev` only in a development project. It is not an official image and is not valid for production acceptance.
 
 ## Validation
 

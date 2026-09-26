@@ -26,6 +26,55 @@ Treatment_vs_Control,condition,Treatment,Control
 """
 
 
+IDENTIFIED_TEST_REVISION = "0123456789abcdef0123456789abcdef01234567"
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "real_source_revision: use the real nf-rna source-revision lookup instead of a clean test revision",
+    )
+    config.addinivalue_line(
+        "markers", "real_conda_channels: use the real Conda channel check instead of an nf-core-compatible test result",
+    )
+
+
+@pytest.fixture(autouse=True)
+def identified_nf_rna_source(request, monkeypatch):
+    """Keep tests independent of this checkout's git state.
+
+    Runs refuse an unidentified or dirty nf-rna source.  Tests that exercise
+    that guard opt out with ``@pytest.mark.real_source_revision``.
+    """
+
+    if request.node.get_closest_marker("real_source_revision"):
+        return
+    monkeypatch.setattr("rnaseq.downstream_runtime.runtime_source_revision", lambda: IDENTIFIED_TEST_REVISION)
+    monkeypatch.setattr("rnaseq.service.runtime_source_revision", lambda: IDENTIFIED_TEST_REVISION)
+
+
+@pytest.fixture(autouse=True)
+def nfcore_compatible_conda_channels(request, monkeypatch):
+    """Keep run preflight independent of the developer's real Conda configuration.
+
+    Tests of the channel check itself opt out with ``@pytest.mark.real_conda_channels``.
+    """
+
+    if request.node.get_closest_marker("real_conda_channels"):
+        return
+    from rnaseq.execution import RuntimeCheck
+
+    compatible = RuntimeCheck("Conda channels for nf-core", "FOUND", "observed channels=['conda-forge', 'bioconda']")
+    monkeypatch.setattr("rnaseq.service.check_conda_channels", lambda: compatible)
+
+
+@pytest.fixture(autouse=True)
+def isolated_fastq_checksum_cache(tmp_path_factory, monkeypatch):
+    """Never let tests write FASTQ checksum records into the user's real cache."""
+
+    cache = tmp_path_factory.mktemp("fastq-sha256") / "checksums.json"
+    monkeypatch.setattr("rnaseq.service._fastq_checksum_cache_path", lambda: cache)
+
+
 def base_config() -> dict[str, Any]:
     return {
         "schema_version": "1.0",

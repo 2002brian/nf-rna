@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
 from rnaseq.downstream_runtime import DownstreamRuntime
 from rnaseq.execution import RuntimeCheck
 from rnaseq.planner import generate_plan
+from rnaseq.run_status import current_process_identity
 from rnaseq.service import (
     _write_state,
     create_case_run,
@@ -108,7 +111,7 @@ def test_retry_rejects_success_and_malformed_source_before_creating_attempt(monk
     _mock_runtime(monkeypatch, root)
     before = sorted((root / "runs" / source.case_id).iterdir())
     _write_state(source, "SUCCESS")
-    with pytest.raises(ExecutionPreflightError, match="Only FAILED"):
+    with pytest.raises(ExecutionPreflightError, match="Only FAILED or INTERRUPTED runs may be retried; the source run is SUCCESS"):
         execute_retry_service_run(root, retry_of=f"{source.case_id}/{source.run_id}")
     assert sorted((root / "runs" / source.case_id).iterdir()) == before
 
@@ -200,6 +203,8 @@ def test_retry_restarts_failed_upstream_from_frozen_fastqs_and_only_then_uses_re
     assert json.loads(source.state_path.read_text(encoding="utf-8"))["status"] == "FAILED"
     assert len(seen) == 2
     assert "nf-core/rnaseq" in seen[0]
+    assert seen[0][seen[0].index("-profile") + 1] == "conda"
+    assert "conda.cacheDir" in (retry.run_dir / "frozen" / "nfcore.conda.config").read_text(encoding="utf-8")
     assert all("-resume" in command for command in seen)
     assert (retry.run_dir / "logs" / "upstream.stdout.log").is_file()
     assert (retry.run_dir / "logs" / "downstream.stdout.log").is_file()
@@ -211,8 +216,158 @@ def test_status_labels_retry_attempt(monkeypatch, project_factory):
     monkeypatch.setattr("rnaseq.service._run_command", _successful_downstream)
     execute_retry_service_run(root, retry_of=f"{source.case_id}/{source.run_id}")
 
-    result = runner.invoke(app, ["status", str(root)])
+    result = runner.invoke(app, ["status", str(root), "--all"])
     assert result.exit_code == 0, result.output
     assert "Status: FAILED (original run)" in result.output
     assert "Status: SUCCESS (retry attempt)" in result.output
     assert f"Retry of: {source.case_id}/{source.run_id} (source status: FAILED)" in result.output
+
+
+def test_status_default_view_shows_latest_retry_attempt(monkeypatch, project_factory):
+    root, source = _failed_frozen_run(project_factory)
+    _mock_runtime(monkeypatch, root)
+    monkeypatch.setattr("rnaseq.service._run_command", _successful_downstream)
+    retry = execute_retry_service_run(root, retry_of=f"{source.case_id}/{source.run_id}")
+
+    result = runner.invoke(app, ["status", str(root)])
+    assert result.exit_code == 0, result.output
+    assert f"Run:        {retry.run_id} (retry of {source.case_id}/{source.run_id})" in result.output
+    assert "State:      SUCCESS" in result.output
+    log = (retry.run_dir / "logs" / "rnaseq.log").read_text(encoding="utf-8")
+    assert "frozen resource configuration is inherited from the source run" in log
+    assert "run finished: SUCCESS" in log
+
+
+# ------------------------------------------------------------------ retry-state semantics
+#
+# Retry decides from the durable run_state.json alone:
+#   FAILED, INTERRUPTED -> retryable (the source keeps its own recorded state)
+#   SUCCESS             -> rejected
+#   CREATED, RUNNING    -> rejected, whether the recorded process is alive or
+#                          gone; 'rnaseq status' may *display* a dead RUNNING run
+#                          as INTERRUPTED (stale), but it never rewrites the state,
+#                          so such a run is not retryable.
+
+
+def _interrupted_frozen_run(project_factory):
+    root, run = _failed_frozen_run(project_factory)
+    _write_state(run, "INTERRUPTED", phase="downstream", interrupted_by="SIGTERM", error="Interrupted by SIGTERM; the run did not finish.")
+    return root, run
+
+
+def _dead_pid() -> int:
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait()
+    return process.pid
+
+
+def _run_dirs(root: Path, case_id: str) -> list[Path]:
+    return sorted((root / "runs" / case_id).iterdir())
+
+
+@pytest.mark.parametrize("source_status", ["FAILED", "INTERRUPTED"])
+def test_retry_accepts_failed_and_interrupted_and_records_the_source_state(monkeypatch, project_factory, source_status):
+    root, source = _failed_frozen_run(project_factory) if source_status == "FAILED" else _interrupted_frozen_run(project_factory)
+    _mock_runtime(monkeypatch, root)
+    monkeypatch.setattr("rnaseq.service._run_command", _successful_downstream)
+    source_state = source.state_path.read_bytes()
+
+    retry = execute_retry_service_run(root, retry_of=f"{source.case_id}/{source.run_id}")
+
+    assert json.loads(retry.state_path.read_text(encoding="utf-8"))["status"] == "SUCCESS"
+    assert json.loads(retry.state_path.read_text(encoding="utf-8"))["retry_of"]["status"] == source_status
+    execution = yaml.safe_load((retry.run_dir / "frozen" / "execution_manifest.yaml").read_text(encoding="utf-8"))
+    assert execution["retry"]["source_status"] == source_status
+    # The source keeps its own recorded state; INTERRUPTED is never rewritten as FAILED.
+    assert source.state_path.read_bytes() == source_state
+
+
+def test_retry_cli_accepts_an_interrupted_source(monkeypatch, project_factory):
+    root, source = _interrupted_frozen_run(project_factory)
+    _mock_runtime(monkeypatch, root)
+    monkeypatch.setattr("rnaseq.service._run_command", _successful_downstream)
+    result = runner.invoke(app, ["retry", str(root), "--retry-of", f"{source.case_id}/{source.run_id}", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "Case retry: SUCCESS" in result.output
+    status = runner.invoke(app, ["status", str(root), "--all"])
+    assert "Status: INTERRUPTED (original run)" in status.output
+    assert f"Retry of: {source.case_id}/{source.run_id} (source status: INTERRUPTED)" in status.output
+
+
+@pytest.mark.parametrize("recorded", ["RUNNING", "CREATED"])
+def test_retry_rejects_an_active_run(monkeypatch, project_factory, recorded):
+    root, source = _failed_frozen_run(project_factory)
+    _mock_runtime(monkeypatch, root)
+    _write_state(source, recorded, phase="downstream")
+    (source.run_dir / "logs" / "rnaseq.process.json").write_text(json.dumps(current_process_identity()), encoding="utf-8")
+    before, state = _run_dirs(root, source.case_id), source.state_path.read_bytes()
+
+    with pytest.raises(ExecutionPreflightError, match=f"recorded as {recorded}; only FAILED or INTERRUPTED"):
+        execute_retry_service_run(root, retry_of=f"{source.case_id}/{source.run_id}")
+
+    assert _run_dirs(root, source.case_id) == before
+    assert source.state_path.read_bytes() == state
+
+
+def test_stale_running_is_shown_interrupted_by_status_but_is_not_retryable(monkeypatch, project_factory):
+    """Intended behavior: status reports the stale run without mutating it, and retry refuses it."""
+
+    root, source = _failed_frozen_run(project_factory)
+    _mock_runtime(monkeypatch, root)
+    _write_state(source, "RUNNING", phase="downstream")
+    identity = {**current_process_identity(), "pid": _dead_pid()}
+    (source.run_dir / "logs" / "rnaseq.process.json").write_text(json.dumps(identity), encoding="utf-8")
+    before, state = _run_dirs(root, source.case_id), source.state_path.read_bytes()
+
+    status = runner.invoke(app, ["status", str(root), "--case", source.case_id, "--run", source.run_id])
+    assert status.exit_code == 0, status.output
+    assert "State:      INTERRUPTED" in status.output and "stale: recorded RUNNING" in status.output
+    assert source.state_path.read_bytes() == state  # status is read-only
+
+    with pytest.raises(ExecutionPreflightError, match="recorded as RUNNING.*stale.*start a new run"):
+        execute_retry_service_run(root, retry_of=f"{source.case_id}/{source.run_id}")
+    result = runner.invoke(app, ["retry", str(root), "--retry-of", f"{source.case_id}/{source.run_id}", "--yes"])
+    assert result.exit_code == 1 and "recorded as RUNNING" in result.output
+
+    assert _run_dirs(root, source.case_id) == before
+    assert json.loads(source.state_path.read_text(encoding="utf-8"))["status"] == "RUNNING"
+    assert source.state_path.read_bytes() == state
+
+
+def test_interrupted_retry_keeps_the_frozen_contract_and_identity_checks(monkeypatch, project_factory):
+    root, source = _interrupted_frozen_run(project_factory)
+    _mock_runtime(monkeypatch, root)
+    monkeypatch.setattr("rnaseq.service._run_command", _successful_downstream)
+    reference = f"{source.case_id}/{source.run_id}"
+    before = _run_dirs(root, source.case_id)
+    frozen = source.run_dir / "frozen"
+    original = {name: (frozen / name).read_bytes() for name in ("project.yaml", "metadata.csv", "contrasts.csv", "input_manifest.yaml", "downstream_contract.json")}
+
+    # Case/run identity mismatch in the recorded state.
+    state = json.loads(source.state_path.read_text(encoding="utf-8"))
+    source.state_path.write_text(json.dumps({**state, "run_id": "other-run"}), encoding="utf-8")
+    with pytest.raises(ExecutionPreflightError, match="does not match its case/run directory"):
+        execute_retry_service_run(root, retry_of=reference)
+    source.state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    # A tampered frozen snapshot no longer matches its checksum.
+    (frozen / "metadata.csv").write_text("sample_id,condition\nchanged,Changed\n", encoding="utf-8")
+    with pytest.raises(ExecutionPreflightError, match="frozen metadata checksum does not match its input manifest"):
+        execute_retry_service_run(root, retry_of=reference)
+    (frozen / "metadata.csv").write_bytes(original["metadata.csv"])
+
+    # Missing provenance.
+    provenance = source.run_dir / "provenance" / "run_provenance.yaml"
+    provenance_bytes = provenance.read_bytes()
+    provenance.unlink()
+    with pytest.raises(ExecutionPreflightError, match="missing regular retry source provenance"):
+        execute_retry_service_run(root, retry_of=reference)
+    provenance.write_bytes(provenance_bytes)
+    assert _run_dirs(root, source.case_id) == before
+
+    # With the contract intact, mutable project inputs are ignored and the frozen contract is reused.
+    (root / "metadata.csv").write_text("sample_id,condition\nchanged,Changed\n", encoding="utf-8")
+    retry = execute_retry_service_run(root, retry_of=reference)
+    for name in ("project.yaml", "metadata.csv", "contrasts.csv", "input_manifest.yaml"):
+        assert (retry.run_dir / "frozen" / name).read_bytes() == original[name]
+    assert json.loads(source.state_path.read_text(encoding="utf-8"))["status"] == "INTERRUPTED"

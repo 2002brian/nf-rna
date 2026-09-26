@@ -3,27 +3,13 @@ if (length(args) != 2 || args[[1]] != "--config") stop("usage: l2_analysis.R --c
 script_arg <- commandArgs(trailingOnly = FALSE)
 script_file <- sub("^--file=", "", script_arg[grep("^--file=", script_arg)][[1]])
 source(file.path(dirname(normalizePath(script_file)), "provenance.R"))
+source(file.path(dirname(normalizePath(script_file)), "design_metadata.R"))
+source(file.path(dirname(normalizePath(script_file)), "sample_inputs.R"))
 suppressPackageStartupMessages({ library(jsonlite); library(DESeq2); library(ggplot2); library(pheatmap) })
 cfg <- fromJSON(args[[2]], simplifyVector = FALSE)
 dir.create(cfg$output_dir, recursive = TRUE, showWarnings = FALSE)
-metadata <- read.csv(cfg$metadata, check.names = FALSE, stringsAsFactors = FALSE)
-rownames(metadata) <- metadata$sample_id
 samples <- unlist(cfg$samples, use.names = FALSE)
-metadata <- metadata[samples, , drop = FALSE]
-if (!is.null(cfg$design_variable_types)) {
-  for (variable in names(cfg$design_variable_types)) {
-    if (!(variable %in% colnames(metadata))) stop(paste("configured design variable is absent from metadata:", variable))
-    if (cfg$design_variable_types[[variable]] == "categorical") metadata[[variable]] <- factor(metadata[[variable]])
-    if (cfg$design_variable_types[[variable]] == "continuous") {
-      metadata[[variable]] <- as.numeric(metadata[[variable]])
-      if (any(!is.finite(metadata[[variable]]))) stop(paste("continuous design variable is not finite:", variable))
-    }
-  }
-}
-if (!is.null(cfg$pair_id)) {
-  if (!(cfg$pair_id %in% colnames(metadata))) stop("configured pair_id is absent from metadata")
-  metadata[[cfg$pair_id]] <- factor(metadata[[cfg$pair_id]])
-}
+metadata <- nf_rna_design_metadata(cfg, samples)
 for (factor_name in unique(vapply(cfg$contrasts, function(item) item$factor, character(1)))) {
   if (!(factor_name %in% colnames(metadata))) stop(paste("contrast factor is absent from metadata:", factor_name))
   if (!is.null(cfg$design_variable_types) && identical(cfg$design_variable_types[[factor_name]], "continuous")) stop(paste("continuous variable cannot be used as contrast factor:", factor_name))
@@ -40,10 +26,10 @@ if (cfg$source_type == "raw_counts" || cfg$source_type == "featurecounts_raw_cou
   source_counts <- matrix_counts
 } else if (cfg$source_type == "salmon_tximport") {
   suppressPackageStartupMessages(library(tximport))
-  files <- unlist(cfg$quant_sf, use.names = FALSE); names(files) <- samples
+  files <- nf_rna_quant_sf_files(cfg$quant_sf, samples)
   tx2gene <- read.delim(cfg$tx2gene, check.names = FALSE, stringsAsFactors = FALSE)[, 1:2]
   txi <- tximport(files, type = "salmon", tx2gene = tx2gene)
-  source_counts <- txi$counts; colnames(source_counts) <- samples
+  source_counts <- nf_rna_tximport_counts(txi, samples)
   dds <- DESeqDataSetFromTximport(txi, colData = metadata, design = formula)
 } else stop("unsupported source_type")
 all_zero <- rowSums(source_counts) == 0

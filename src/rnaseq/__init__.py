@@ -2,4 +2,4 @@
 
 # This is the single release version source for both Hatch package metadata and
 # the runtime control plane.  See ``[tool.hatch.version]`` in pyproject.toml.
-__version__ = "1.2.0"
+__version__ = "1.3.0"

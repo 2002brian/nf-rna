@@ -1,8 +1,10 @@
-# Shared annotation-mapping QC for the two preranked GSEA backends.
+# Shared annotation-mapping QC for all four enrichment backends (GO/KEGG ORA
+# and GO/KEGG preranked GSEA).
 #
-# Mapping quality is distinct from GSEA rank construction: callers always map
-# every finite DESeq2 Wald-statistic source gene before this policy decides
-# whether GSEA can proceed.
+# Mapping quality is distinct from GSEA rank construction: GSEA callers map
+# every finite DESeq2 Wald-statistic source gene, and ORA callers map every
+# statistically tested gene, before this policy decides whether the backend
+# can proceed.
 annotation_mapping_qc <- function(mapping_rate, annotation) {
   # Direct R callers from the pre-dual-threshold contract may not have passed
   # a warning threshold.  Their legacy value remains a hard block; normal
@@ -43,7 +45,8 @@ annotation_mapping_qc <- function(mapping_rate, annotation) {
 
 annotation_qc_status <- function(contrast_summaries) {
   statuses <- vapply(contrast_summaries, function(item) {
-    qc <- item$ranking$annotation_qc
+    # GSEA records QC on its ranking; ORA records it on its tested-gene universe.
+    qc <- if (!is.null(item$ranking)) item$ranking$annotation_qc else item$universe$annotation_qc
     if (is.null(qc$status)) "BLOCKED" else qc$status
   }, character(1))
   if (any(statuses == "BLOCKED")) "BLOCKED" else if (any(statuses == "WARNING")) "WARNING" else "PASS"

@@ -199,8 +199,8 @@ def test_interactive_fastq_new_retries_only_invalid_choice_and_creates_scaffold(
         "\n"  # auto strandedness
         "\n"  # iGenomes
         "qc\n"
-        "\n"  # suggested CPUs
-        "\n"  # suggested memory
+        "\n"  # CPU limit: accept auto
+        "\n"  # memory limit: accept auto
         "y\n"
     ))
 
@@ -215,7 +215,9 @@ def test_interactive_fastq_new_retries_only_invalid_choice_and_creates_scaffold(
     config = yaml.safe_load((root / "project.yaml").read_text(encoding="utf-8"))
     assert config["organism"]["species"] == "Mus musculus"
     assert config["input"]["layout"] == "paired_end"
-    assert config["execution"] == {"profile": "local", "max_cpus": 16, "max_memory_gb": 48}
+    # Accepting the defaults sizes limits from whichever machine runs the case.
+    assert config["execution"] == {"profile": "local", "max_cpus": "auto", "max_memory_gb": "auto"}
+    assert "auto on this machine: 17 CPUs / 54 GiB" in result.output
     assert (root / "input" / "fastq").is_dir()
     assert not any((root / "input" / "fastq").iterdir())
 
@@ -280,13 +282,15 @@ def test_interactive_raw_count_new_is_scaffold_first_and_retries_bad_integer(mon
         "L2\n"
         "two_group\n"
         "sixteen\n"
-        "\n"
-        "\n"
+        "16\n"  # a deliberate explicit CPU limit
+        "\n"  # memory: accept auto
         "y\n"
     ))
 
     assert result.exit_code == 0, result.output
-    assert "Invalid value 'sixteen'. Please enter a positive integer." in result.output
+    assert "Invalid value 'sixteen'. Please enter a positive integer or 'auto'." in result.output
+    config = yaml.safe_load((tmp_path / "count_scaffold" / "project.yaml").read_text(encoding="utf-8"))
+    assert config["execution"] == {"profile": "local", "max_cpus": 16, "max_memory_gb": "auto"}
     assert "Import existing inputs now?" not in result.output
     root = tmp_path / "count_scaffold"
     assert (root / "input").is_dir()

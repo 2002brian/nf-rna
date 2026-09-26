@@ -47,16 +47,21 @@ The graph does not infer L2 from the presence of contrasts, condition metadata, 
 `rnaseq` is the control plane: it validates and freezes the project, authorizes
 an immutable run or retry, materializes narrow stageable inputs, records
 provenance, and assembles delivery. It starts Nextflow but never schedules an
-L1, L2, GSEA, or report container itself. Nextflow is the execution plane: its
+L1, L2, GSEA, or report task itself. Nextflow is the execution plane: its
 explicit `L1_ANALYSIS`, `L2_ANALYSIS`, enrichment, and report processes all
-declare `container params.first_party_image`. The per-run generated config
-freezes that parameter as `params.first_party_image`; it does not inject a
-global `process.container` or depend on a source checkout mounted into a task.
+declare `conda params.downstream_runtime_prefix`. The per-run generated config
+freezes that parameter to the verified, locked downstream Conda prefix; it does
+not inject a global process environment or depend on a source checkout mounted
+into a task. R scripts are located inside the installed nf-rna wheel with
+`importlib.resources`.
 
-The one first-party image contains the installed `rnaseq.workflow_support`
-package and a copied `/opt/nf-rna/r` script bundle. Docker is the current local
-Nextflow process runtime. A future Apptainer profile can select the same
-process image without moving scientific execution back into Python.
+The downstream prefix is created from the reviewed linux-64 Conda lock and
+holds the non-editable nf-rna wheel, so `rnaseq.workflow_support` and the R
+scripts in every task come from the same recorded source commit. Upstream,
+nf-core/rnaseq runs with `-profile conda` and the HISAT2/featureCounts graph
+uses its exactly pinned Conda environment. The same processes also declare
+`container params.first_party_image`, used only by the historical Docker
+runtime of v1.2.1 and earlier.
 
 `paired_two_group` is a specialization of the existing additive-design path, not a separate analysis pipeline. Its explicit `pair_id` column, formula, contrast-specific pair membership, complete-pair counts, and analyzed-sample counts are validated before execution and frozen into the input manifest and downstream contract. L1, the single DESeq2 L2 fit, explicit contrast extraction, and optional preranked GSEA then follow the same graph as unpaired projects.
 
@@ -70,7 +75,7 @@ FASTQ preprocessing is declared as `raw` or `pretrimmed`. The Salmon route maps 
 
 Every authorized execution creates `runs/<case-id>/<run-id>/` with frozen configuration/contracts, logs, upstream outputs, staged downstream inputs, downstream artifacts, provenance, and a curated delivery tree. The run ID is an internal identity; client-facing delivery filenames use the date only.
 
-Nextflow launch/cache/work state belongs in a local execution root outside the persistent immutable run. Reuse of upstream data is explicit and requires a matching frozen contract. Delivery finalization uses an allowlist and a scoped, symlink-safe AppleDouble cleanup pass restricted to the new delivery root. It then writes `delivery_manifest.yaml`: a deterministic relative-path SHA-256 and byte-size inventory of delivered files. The manifest is deliberately excluded from its own inventory.
+Raw FASTQs are referenced in place, never copied into a run. Planning, freshness checks, validation and `rnaseq doctor` identify each FASTQ by its project-relative path, size and modification time without reading its contents. When a run freezes its input manifest it records each file's resolved path, size, mtime and SHA256; the SHA256 is computed at most once per file and reused, from a checksum cache in the local execution root, while resolved path, size and mtime are unchanged. A changed FASTQ therefore requires re-planning, and a retry refuses a FASTQ whose metadata or content no longer matches its frozen identity. Nextflow launch/cache/work state belongs in a local execution root outside the persistent immutable run. Reuse of upstream data is explicit and requires a matching frozen contract. Delivery finalization uses an allowlist and a scoped, symlink-safe AppleDouble cleanup pass restricted to the new delivery root. It then writes `delivery_manifest.yaml`: a deterministic relative-path SHA-256 and byte-size inventory of delivered files. The manifest is deliberately excluded from its own inventory.
 
 ## Reproducibility boundaries
 

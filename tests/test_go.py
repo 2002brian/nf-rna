@@ -154,7 +154,7 @@ def test_go_ora_uses_finite_pvalue_mapped_universe_and_emits_not_applicable_sche
     output = tmp_path / "go"
     config = {
         "output_dir": str(output), "orgdb_package": "org.Mm.eg.db",
-        "annotation": {"organism": "Mus musculus", "input_id_type": "ENTREZID", "target_id_type": "ENTREZID", "mapping_warning_rate": 0, "minimum_mapped_foreground": 3, "enrichment": {"go": {"pvalue_cutoff": 0.05, "qvalue_cutoff": 0.2, "p_adjust_method": "BH"}}},
+        "annotation": {"organism": "Mus musculus", "input_id_type": "ENTREZID", "target_id_type": "ENTREZID", "mapping_warning_rate": 0, "minimum_mapping_rate": 0, "minimum_mapped_foreground": 3, "enrichment": {"go": {"pvalue_cutoff": 0.05, "qvalue_cutoff": 0.2, "p_adjust_method": "BH"}}},
         "contrasts": [{"contrast_id": "fixture", "all_genes": str(all_genes), "significant": str(significant), "up": str(empty), "down": str(empty)}],
         "runtime": {"script": "go_analysis.R", "source_revision": "fixture", "container_image": "fixture", "output_schema": "nf-rna.scientific-provenance.v1"},
     }

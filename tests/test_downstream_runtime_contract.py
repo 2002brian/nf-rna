@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 
 import yaml
+
+from rnaseq.downstream_runtime import _source_revision
 
 
 ROOT = Path(__file__).parents[1]
@@ -17,6 +20,27 @@ LOCKS = (
     ROOT / "workflow" / "envs" / "locks" / "nf-rna-downstream-osx-arm64.lock.yml",
 )
 CHECKSUMS = ROOT / "workflow" / "envs" / "locks" / "SHA256SUMS"
+
+
+def test_nextflow_root_temp_is_ignored_without_hiding_tracked_source_changes(tmp_path):
+    source = tmp_path / "checkout"
+    source.mkdir()
+    (source / ".gitignore").write_bytes((ROOT / ".gitignore").read_bytes())
+    tracked = source / "source.py"
+    tracked.write_text("version = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+    subprocess.run(["git", "add", ".gitignore", "source.py"], cwd=source, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "baseline"],
+        cwd=source, check=True,
+    )
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+
+    (source / "nxf-tmp.pcJ4CY").touch()
+    assert _source_revision(source) == revision
+
+    tracked.write_text("version = 2\n", encoding="utf-8")
+    assert _source_revision(source) == revision + "+dirty"
 
 
 def _distribution_name(specification: str) -> str:

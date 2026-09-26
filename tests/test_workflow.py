@@ -80,33 +80,37 @@ def test_downstream_nextflow_profiles_parse(profile: str):
     assert result.returncode == 0, result.stderr
 
 
-def test_all_downstream_processes_explicitly_use_the_frozen_conda_runtime():
+def test_all_downstream_processes_declare_both_frozen_backend_runtimes():
+    """linux-64/WSL2 activates the frozen Conda prefix; macOS runs the frozen Docker image."""
     main = (WORKFLOW / "main.nf").read_text(encoding="utf-8")
     config = (WORKFLOW / "nextflow.config").read_text(encoding="utf-8")
     assert "params.downstream_runtime_prefix = null" in main
-    assert "Specify --downstream_runtime_prefix through rnaseq" in main
+    assert "params.first_party_image = null" in main
+    assert "Specify exactly one of --downstream_runtime_prefix or --first_party_image through rnaseq" in main
     assert "ghcr.io/2002brian/nf-rna:" not in main
     for name in ("L1_ANALYSIS", "L2_ANALYSIS", "ENRICHMENT_ANALYSIS", "TECHNICAL_REPORT", "TECHNICAL_REPORT_NO_ENRICHMENT", "TECHNICAL_REPORT_L1"):
         body = re.search(rf"process {name} \{{(?P<body>.*?)^\}}", main, flags=re.DOTALL | re.MULTILINE)
         assert body is not None
         assert "conda params.downstream_runtime_prefix" in body.group("body")
-        assert "container " not in body.group("body")
+        assert "container params.first_party_image" in body.group("body")
+        assert "/opt/nf-rna/r" not in body.group("body")
     assert "process.container" not in config
 
 
-def test_direct_downstream_execution_rejects_a_missing_frozen_runtime_prefix(tmp_path):
+@pytest.mark.parametrize("frozen", [[], ["--downstream_runtime_prefix", "/p", "--first_party_image", "img:1"]])
+def test_direct_downstream_execution_requires_exactly_one_frozen_runtime(tmp_path, frozen):
     if shutil.which("nextflow") is None:
         pytest.skip("Nextflow unavailable")
     result = subprocess.run(
         [
             "nextflow", "run", str(WORKFLOW / "main.nf"), "-c", str(WORKFLOW / "nextflow.config"),
             "--contract", str(tmp_path / "contract.json"), "--inputs", str(tmp_path / "inputs"),
-            "--outdir", str(tmp_path / "out"), "--analysis_level", "L1",
+            "--outdir", str(tmp_path / "out"), "--analysis_level", "L1", *frozen,
         ],
         cwd=tmp_path, capture_output=True, text=True, check=False,
     )
     assert result.returncode != 0
-    assert "Specify --downstream_runtime_prefix through rnaseq" in result.stdout + result.stderr
+    assert "Specify exactly one of --downstream_runtime_prefix or --first_party_image through rnaseq" in result.stdout + result.stderr
 
 
 def test_downstream_resource_contracts_are_explicit_without_artificial_serialization():
