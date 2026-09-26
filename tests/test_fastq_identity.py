@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import collections
 import csv
+import json
 import os
 from pathlib import Path
 
@@ -146,7 +147,8 @@ def test_changed_fastq_requires_replanning_and_gets_a_new_checksum(monkeypatch, 
     assert {key: value for key, value in before_sha.items() if key != relative} == {key: value for key, value in after_sha.items() if key != relative}
 
 
-def test_retry_refuses_a_fastq_that_no_longer_matches_its_frozen_identity(monkeypatch, tmp_path, linux_host):
+@pytest.mark.parametrize("source_status", ["FAILED", "INTERRUPTED"])
+def test_retry_refuses_a_fastq_that_no_longer_matches_its_frozen_identity(monkeypatch, tmp_path, linux_host, source_status):
     report = _salmon_report(tmp_path / "project")
     root = report.project_dir
     generate_plan(report)
@@ -154,6 +156,9 @@ def test_retry_refuses_a_fastq_that_no_longer_matches_its_frozen_identity(monkey
     with pytest.raises(Exception):
         execute_service_run(validate_project(root), case_id="CASE-FAILED")
     (source,) = (root / "runs" / "CASE-FAILED").iterdir()
+    state = json.loads((source / "run_state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "FAILED"
+    (source / "run_state.json").write_text(json.dumps({**state, "status": source_status}), encoding="utf-8")
     changed = _fastqs(root)[0]
     changed.write_bytes(b"different content")
     with pytest.raises(ExecutionPreflightError, match="no longer matches its frozen identity"):

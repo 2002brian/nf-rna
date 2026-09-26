@@ -87,6 +87,11 @@ CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 RUN_ID_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}\+[0-9]{4}(?:-[0-9]{2,3})?$")
 TAIPEI = ZoneInfo("Asia/Taipei")
 FINAL_STATES = {"SUCCESS", "FAILED", "INTERRUPTED"}
+# Terminal states that did not finish.  Retry trusts only the durable recorded
+# state: a run still recorded RUNNING/CREATED is never retryable, even when
+# 'rnaseq status' shows it as stale (its process is gone), because status is
+# read-only and never rewrites run_state.json.
+RETRYABLE_STATES = {"FAILED", "INTERRUPTED"}
 # nf-rna-owned, per-run execution records.  They live under logs/, which is
 # never copied into a delivery package.
 EXECUTION_LOG = Path("logs") / "rnaseq.log"
@@ -1871,7 +1876,7 @@ def _validate_retry_upstream_handoff(run: CaseRun, contract: dict[str, Any]) -> 
 
 
 def _load_retry_source(project_dir: Path, retry_of: str) -> RetrySource:
-    """Resolve a FAILED source run and prove its immutable contract is usable."""
+    """Resolve a FAILED or INTERRUPTED source run and prove its immutable contract is usable."""
 
     case_id, run_id = _parse_retry_reference(retry_of)
     runs_dir = (project_dir / "runs").resolve()
@@ -1890,8 +1895,15 @@ def _load_retry_source(project_dir: Path, retry_of: str) -> RetrySource:
     state = _read_json_mapping(run.state_path, "retry source run state")
     if state.get("case_id") != case_id or state.get("run_id") != run_id:
         raise ExecutionPreflightError("Retry source run state does not match its case/run directory.")
-    if state.get("status") != "FAILED":
-        raise ExecutionPreflightError("Only FAILED runs may be retried; successful runs are not failed-run retries.")
+    status = state.get("status")
+    if status in {"CREATED", "RUNNING"}:
+        raise ExecutionPreflightError(
+            f"Retry source is recorded as {status}; only FAILED or INTERRUPTED runs may be retried. "
+            "If 'rnaseq status' reports it as stale, its process is gone but it never recorded an end state; "
+            "start a new run instead."
+        )
+    if status not in RETRYABLE_STATES:
+        raise ExecutionPreflightError(f"Only FAILED or INTERRUPTED runs may be retried; the source run is {status}.")
     frozen = source_dir / "frozen"
     if frozen.is_symlink() or not frozen.is_dir():
         raise ExecutionPreflightError("Retry source is incomplete: frozen contract directory is missing.")
@@ -2247,7 +2259,7 @@ def _execute_service_run(
 def execute_retry_service_run(
     project_dir: Path, *, retry_of: str, nextflow_resume: bool = False,
 ) -> CaseRun:
-    """Execute a new immutable attempt from one validated FAILED run.
+    """Execute a new immutable attempt from one validated FAILED or INTERRUPTED run.
 
     This intentionally does not call :func:`validate_project` or consult the
     project's planning directory: biological intent comes solely from the

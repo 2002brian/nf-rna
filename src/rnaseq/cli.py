@@ -823,11 +823,11 @@ def run_command(
 @app.command("retry")
 def retry_command(
     project_dir: Path,
-    retry_of: str = typer.Option(..., "--retry-of", help="Required failed CASE-ID/RUN-ID source run."),
+    retry_of: str = typer.Option(..., "--retry-of", help="Required FAILED or INTERRUPTED CASE-ID/RUN-ID source run."),
     nextflow_resume: bool = typer.Option(False, "--nextflow-resume", help="Opt in to Nextflow -resume for this new retry attempt."),
     yes: bool = typer.Option(False, "--yes", help="Authorize retry without an interactive prompt."),
 ) -> None:
-    """Create a new immutable attempt from one FAILED run's frozen contract."""
+    """Create a new immutable attempt from one FAILED or INTERRUPTED run's frozen contract."""
 
     try:
         if not yes:

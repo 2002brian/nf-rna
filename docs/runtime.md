@@ -346,6 +346,14 @@ diagnostics. Interrupting `rnaseq run` (Ctrl-C, SIGTERM, or SIGHUP when not
 ignored) stops Nextflow and records the run as INTERRUPTED; an unexpected error
 records FAILED. None of these logs is copied into the delivery package.
 
+`rnaseq retry PROJECT --retry-of CASE/RUN` accepts a source run recorded as
+FAILED or INTERRUPTED; it refuses SUCCESS and any run still recorded as CREATED
+or RUNNING. Retry reads only the durable `run_state.json`: a RUNNING run that
+`rnaseq status` shows as INTERRUPTED (stale) has never recorded an end state and
+is not retryable, because status never rewrites it; start a new run instead. The
+source run keeps its recorded state, and the new attempt records it as
+`retry_of.status`.
+
 The default local contracts are intentionally conservative:
 
 | class | CPUs | memory | time |

@@ -10,6 +10,7 @@ Runtime and usability changes after the 1.3.0 qualification. DESeq2, tximport, s
 - With a prebuilt Salmon index, nf-core/rnaseq `SALMON_QUANT`'s memory *request* is sized from the index (frozen as `frozen/nfcore.tuning.config`) so samples can quantify concurrently; its CPUs and all Salmon arguments are unchanged. The HISAT2 route now writes a Nextflow trace to `provenance/upstream.trace.txt`.
 - `rnaseq status PROJECT` shows the latest run's state, phase, per-stage task progress (completed/cached/failed, running task names), delivery state and effective resources; `--watch` refreshes until the run finishes; `--case`/`--run` select a run; `--all` keeps the previous one-block-per-run listing. It is read-only, and reports a RUNNING run whose `rnaseq` process has gone as INTERRUPTED rather than guessing success.
 - Each run writes its own execution log, `logs/rnaseq.log`, and process record; two launches with the same case ID no longer share a log. Ctrl-C/SIGTERM/SIGHUP during a run now records `INTERRUPTED` (previously the run stayed `RUNNING`), and unexpected errors record `FAILED` with a traceback in the run log. The delivery package still excludes logs.
+- `rnaseq retry` accepts INTERRUPTED source runs as well as FAILED ones, with the same frozen-contract, identity and provenance checks. SUCCESS runs and runs still recorded RUNNING/CREATED (including a stale RUNNING run whose process has gone) remain non-retryable; the source run's INTERRUPTED state is kept as is.
 
 ## 1.3.0 — 2026-09-24
 
