@@ -271,23 +271,80 @@ The successful run retained synchronized R1/R2 pairs after raw fastp processing,
 
 ## Local resource policy
 
-`rnaseq new` records an optional aggregate local execution ceiling under
-`execution.max_cpus` and `execution.max_memory_gb`. It is an execution
-preference, not a biological or statistical setting. The interactive wizard
-detects host CPU/memory on Linux/WSL and macOS, reserves approximately 20%, and
-rounds memory conservatively; a 20-CPU / 64-GiB machine normally suggests 16
-CPUs / 48 GiB. Existing projects without this section retain 8 CPUs / 12 GiB.
+`execution.max_cpus` and `execution.max_memory_gb` set the aggregate local
+execution ceiling. They are execution preferences, not biological or
+statistical settings. Each accepts a positive integer or `auto`:
+
+- `auto` (the default for new projects and for projects without an
+  `execution` section) sizes the ceiling from the machine that runs the case:
+  the CPUs and memory available to the process (CPU affinity and cgroup v1/v2
+  CPU/memory limits are respected) minus an OS reserve of
+  `max(1, ceil(CPUs / 8))` CPUs and `max(4, ceil(15% of memory))` GiB. It never
+  selects less than the 8 CPU / 12 GiB contract floor when the machine itself
+  has that much, so small machines behave as the former fixed default did. On a
+  28-CPU / 94-GiB WSL host, `auto` selects 24 CPUs / 79 GiB.
+- An explicit integer is a deliberate limit and is used unchanged. It is only
+  clamped, with a visible warning, when it exceeds the machine's capacity.
+- If capacity cannot be detected, `auto` falls back to 8 CPUs / 12 GiB instead
+  of blocking the run.
+
+`rnaseq new` writes `auto` unless `--cpus`/`--memory-gb` are given; the
+interactive wizard shows what `auto` selects on the current machine.
 `rnaseq doctor PROJECT` reports host capacity, container-runtime capacity, the
-requested project budget, and the effective budget on the machine actually
-running the project. Docker Desktop and WSL allocations constrain the effective
+requested project budget and how it was chosen, and the effective budget on the
+machine actually running the project. Docker Desktop and WSL allocations constrain the effective
 budget; native Linux uses the host ceiling rather than double-counting Docker's
 repeated host values. Each run freezes that effective local Nextflow
 configuration for upstream and downstream workflows.
 
 The ceiling is total executor capacity, not a per-task request. HISAT2,
-Salmon, featureCounts, and other process directives keep their own declared
-requests. Reference preparation remains independent: use its explicit
-`--threads` option.
+featureCounts, and other process directives keep their own declared requests,
+and no task's CPU count (tool thread count) is changed. The single per-process
+adjustment is a scheduling request for nf-core/rnaseq `SALMON_QUANT` when a
+prebuilt Salmon index is used: its memory request is sized from the index on
+disk (`ceil(index GiB x 1.15 + 2)`, capped at nf-core's own 36 GB) and frozen as
+`frozen/nfcore.tuning.config`, which is passed only to nf-core/rnaseq. Salmon's
+peak memory is dominated by the in-memory index, so this lets several samples
+quantify concurrently instead of each request claiming the whole ceiling; Salmon
+arguments, including `--threads`, are unchanged. Reference preparation remains
+independent: use its explicit `--threads` option.
+
+Every run records the decision in `provenance/run_provenance.yaml` and
+`frozen/execution_manifest.yaml` (`resource_policy`): detected usable CPUs and
+memory (with affinity and cgroup observations), the OS reserve, the selected and
+effective ceilings, whether each was `auto` or explicit, any fallback, and the
+Salmon scheduling request. A retry inherits the source run's frozen resource
+configuration.
+
+## Monitoring a run
+
+```bash
+rnaseq status PROJECT            # latest run: state, phase, task progress, resources
+rnaseq status PROJECT --watch    # refresh every 10 s (--interval N, minimum 2) until it finishes; Ctrl-C stops watching only
+rnaseq status PROJECT --case CASE-ID [--run RUN-ID]
+rnaseq status PROJECT --all      # one summary block per recorded run
+```
+
+`rnaseq status` is read-only and does not need Nextflow to be running. It reads
+the run's `run_state.json`, its own logs, the nf-core/rnaseq execution trace
+(`upstream/nfcore_rnaseq/pipeline_info/`), the HISAT2 route's
+`provenance/upstream.trace.txt`, the downstream trace, and frozen provenance.
+Running task names come from Nextflow's plain log minus the tasks the trace has
+already finished. A run is SUCCESS only when its durable state says so. A run
+recorded as RUNNING whose `rnaseq` process no longer exists (checked by PID,
+process start time and boot ID) is shown as INTERRUPTED (stale); one launched on
+another host, or before per-run process records existed, is shown as RUNNING
+(unverified).
+
+Each run owns its execution log, `runs/CASE/RUN/logs/rnaseq.log`: start (PID,
+host, command), selected resources, every state/phase transition, each Nextflow
+launch and exit code, and the final outcome, including a traceback for an
+unexpected error. Nextflow's output stays in `logs/upstream.*.log` and
+`logs/downstream.*.log`. Two launches with the same case ID therefore never share
+a log, and redirecting `rnaseq run` output to a file is not needed for
+diagnostics. Interrupting `rnaseq run` (Ctrl-C, SIGTERM, or SIGHUP when not
+ignored) stops Nextflow and records the run as INTERRUPTED; an unexpected error
+records FAILED. None of these logs is copied into the delivery package.
 
 The default local contracts are intentionally conservative:
 

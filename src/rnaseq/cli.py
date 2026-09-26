@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import sys
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,11 +15,12 @@ import typer
 from rnaseq.errors import ExecutionPreflightError, ProjectCreationError, UpstreamExecutionError
 from rnaseq.execution import (
     detect_local_resource_capacity, doctor_checks, doctor_readiness, load_run_states,
-    suggested_local_resources, validate_local_execution_budget,
+    validate_local_execution_budget,
 )
-from rnaseq.service import execute_retry_service_run, execute_service_run, prepare_service_run, sanitize_completed_delivery, validate_case_id
+from rnaseq.service import RunTermination, execute_retry_service_run, execute_service_run, prepare_service_run, sanitize_completed_delivery, validate_case_id
 from rnaseq.models import DesignType, FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, SequencingLayout, Species
 from rnaseq.planner import generate_plan
+from rnaseq.resource_policy import AUTO, GIB, DetectedResources, resolve_policy
 from rnaseq.project import create_project
 from rnaseq.references import (
     LocalReferenceError,
@@ -383,18 +385,20 @@ def _wizard_choice(label: str, choices: list[tuple[str, str]], *, default: str |
         typer.echo("Please choose one of: " + ", ".join(allowed) + ".")
 
 
-def _wizard_positive_integer(label: str, *, default: int) -> int:
-    """Prompt one positive integer without exposing a conversion traceback."""
+def _wizard_positive_integer(label: str, *, default: int | str, allow_auto: bool = False) -> int | str:
+    """Prompt one positive integer (or ``auto``) without exposing a conversion traceback."""
 
     while True:
         raw = typer.prompt(label, default=str(default))
+        if allow_auto and raw.strip().lower() == AUTO:
+            return AUTO
         try:
             value = int(raw)
         except (TypeError, ValueError):
             value = 0
         if value > 0:
             return value
-        typer.echo(f"Invalid value {raw!r}. Please enter a positive integer.")
+        typer.echo(f"Invalid value {raw!r}. Please enter a positive integer" + (" or 'auto'." if allow_auto else "."))
 
 
 def _is_interactive_terminal() -> bool:
@@ -603,12 +607,17 @@ def new_project(
                         raise ProjectCreationError("Paired design needs a pairing field besides the condition field.")
                     pair_id = _wizard_choice("Pairing metadata column", [(field, f"levels: {', '.join(fields_by_level[field]) or 'none'}") for field in candidates], default=candidates[0])
             capacity = detect_local_resource_capacity()
-            suggested_cpus, suggested_memory = suggested_local_resources(capacity)
+            preview = resolve_policy(AUTO, AUTO, DetectedResources(
+                capacity.logical_cpus,
+                capacity.total_memory_gib * GIB if capacity.total_memory_gib is not None else None,
+            ))
+            suggested_cpus, suggested_memory = preview.requested_cpus, preview.requested_memory_gib
             typer.echo("\nLocal execution resources\n-------------------------")
             typer.echo(f"Detected: {capacity.logical_cpus or 'unavailable'} logical CPUs / {capacity.available_memory_gib or capacity.total_memory_gib or 'unavailable'} GiB memory")
-            typer.echo(f"Suggested: {suggested_cpus} CPUs / {suggested_memory} GiB memory")
-            cpus = _wizard_positive_integer("CPU limit", default=suggested_cpus)
-            memory_gb = _wizard_positive_integer("Memory limit in GiB", default=suggested_memory)
+            typer.echo(f"auto on this machine: {suggested_cpus} CPUs / {suggested_memory} GiB memory (resolved again on each run's machine)")
+            typer.echo("Enter 'auto' to size limits from the running machine, or a number to fix a deliberate limit.")
+            cpus = _wizard_positive_integer("CPU limit", default=AUTO, allow_auto=True)
+            memory_gb = _wizard_positive_integer("Memory limit in GiB", default=AUTO, allow_auto=True)
             execution_profile = "local"
 
         if preset is not None and preset.lower() == "qc" and design_type is None:
@@ -679,7 +688,7 @@ def new_project(
             reference = _reference_options(source=source, species=normalized_species, method=normalized_method, local_root=reference_root, local_manifest=reference_manifest, fasta=reference_fasta, gtf=reference_gtf, transcript_fasta=reference_transcript_fasta, salmon_index=reference_salmon_index, hisat2_index=reference_hisat2_index)
         if execution_profile not in {None, "local"}:
             raise ProjectCreationError("Only --execution-profile local is supported.")
-        selected_cpus, selected_memory = cpus or 8, memory_gb or 12
+        selected_cpus, selected_memory = cpus or AUTO, memory_gb or AUTO
         validate_local_execution_budget(selected_cpus, selected_memory, detect_local_resource_capacity())
         execution = {"profile": "local", "max_cpus": selected_cpus, "max_memory_gb": selected_memory}
         review_reference = (
@@ -687,7 +696,7 @@ def new_project(
             if selected_managed_reference is not None
             else reference.get("source")
         )
-        review = {"Project": name, "Destination": destination, "Species": normalized_species.value, "Input": normalized_input.value, "Input handling": "scaffold — add data after project creation" if scaffold else "import supplied inputs", "Scope": normalized_preset.value, "Design": "not applicable for QC" if normalized_preset is Preset.QC else normalized_design.value, "Backend": normalized_method if normalized_input is InputType.FASTQ else "external raw counts", "Reference": review_reference, "Execution": f"local, {selected_cpus} CPUs / {selected_memory} GiB"}
+        review = {"Project": name, "Destination": destination, "Species": normalized_species.value, "Input": normalized_input.value, "Input handling": "scaffold — add data after project creation" if scaffold else "import supplied inputs", "Scope": normalized_preset.value, "Design": "not applicable for QC" if normalized_preset is Preset.QC else normalized_design.value, "Backend": normalized_method if normalized_input is InputType.FASTQ else "external raw counts", "Reference": review_reference, "Execution": f"local, {selected_cpus} CPUs / {selected_memory} GiB" if AUTO not in (selected_cpus, selected_memory) else f"local, CPUs={selected_cpus} / memory GiB={selected_memory} (auto = sized from the running machine)"}
         _new_summary(review)
         if not yes and not typer.confirm("Create this project?", default=True):
             if not noninteractive and typer.confirm("Revise choices?", default=True):
@@ -795,6 +804,8 @@ def run_command(
         result = execute_service_run(report, case_id=case_id, profile=profile, reuse_upstream=reuse_upstream)
     except typer.Exit:
         raise
+    except (KeyboardInterrupt, RunTermination) as exc:
+        _report_interruption(exc)
     except ExecutionPreflightError as exc:
         typer.echo(f"ERROR: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -830,6 +841,8 @@ def retry_command(
         result = execute_retry_service_run(project_dir, retry_of=retry_of, nextflow_resume=nextflow_resume)
     except typer.Exit:
         raise
+    except (KeyboardInterrupt, RunTermination) as exc:
+        _report_interruption(exc)
     except (ExecutionPreflightError, UpstreamExecutionError) as exc:
         typer.echo(f"ERROR: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -841,10 +854,66 @@ def retry_command(
     typer.echo(f"Delivery package: {result.run_dir / 'delivery'}")
 
 
-@app.command("status")
-def status_command(project_dir: Path) -> None:
-    """Show persisted case/run states without inspecting live processes."""
+def _report_interruption(exc: BaseException) -> None:
+    name = str(exc) if isinstance(exc, RunTermination) and str(exc) else "SIGINT"
+    typer.echo(f"INTERRUPTED: rnaseq received {name}. A run that had started was stopped (Nextflow included) and recorded as INTERRUPTED; see 'rnaseq status'.", err=True)
+    raise typer.Exit(code=130 if name == "SIGINT" else 143)
 
+
+@app.command("status")
+def status_command(
+    project_dir: Path,
+    watch: bool = typer.Option(False, "--watch", "-w", help="Refresh until the run finishes or Ctrl-C."),
+    interval: float = typer.Option(10.0, "--interval", min=2.0, help="Seconds between --watch refreshes (minimum 2)."),
+    case_id: str | None = typer.Option(None, "--case", help="Show the latest run of this case ID."),
+    run_id: str | None = typer.Option(None, "--run", help="Show this run ID."),
+    all_runs: bool = typer.Option(False, "--all", help="List every recorded run (summary view)."),
+) -> None:
+    """Show the progress of the latest run; read-only, Nextflow need not be running."""
+
+    if all_runs:
+        _list_run_states(project_dir)
+        return
+    from rnaseq.run_status import _Cache, build_status, render_status, select_run
+
+    project = project_dir.resolve()
+    if not project.is_dir():
+        typer.echo(f"ERROR: project directory not found: {project}", err=True)
+        raise typer.Exit(code=1)
+    cache = _Cache()
+
+    def snapshot() -> tuple[str, bool]:
+        selected = select_run(project, case_id, run_id)
+        if selected is None:
+            if case_id or run_id:
+                return "No recorded run matches the requested case/run.", True
+            planned = (project / "planning" / "manifest.preview.yaml").is_file()
+            return ("State:      PLANNED\nNo case runs recorded yet; start one with: rnaseq run PROJECT --case-id CASE-ID"
+                    if planned else "No recorded case runs."), True
+        status = build_status(*selected, cache=cache)
+        return render_status(status), status.is_final
+
+    text, final = snapshot()
+    if not watch:
+        typer.echo(text)
+        return
+    clear = sys.stdout.isatty()
+    try:
+        while True:
+            if clear:
+                typer.echo("\033[H\033[2J", nl=False)
+            typer.echo(text)
+            if final:
+                return
+            typer.echo(f"\nRefreshing every {interval:g}s; Ctrl-C to stop watching (the run is not affected).")
+            time.sleep(interval)
+            text, final = snapshot()
+    except KeyboardInterrupt:
+        typer.echo("\nStopped watching; the run itself was not affected.")
+        raise typer.Exit(code=0)
+
+
+def _list_run_states(project_dir: Path) -> None:
     states = load_run_states(project_dir.resolve())
     if not states:
         typer.echo("No recorded case runs.")

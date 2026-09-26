@@ -165,6 +165,11 @@ def test_hisat2_command_uses_first_party_workflow_and_custom_index(tmp_path: Pat
     assert command[command.index("-profile") + 1] == "conda"
     assert command[command.index("--strandedness") + 1] == "reverse"
     assert command[command.index("--hisat2_index") + 1] == str(index)
+    observers = root / "upstream.observers.config"
+    observers.write_text("trace { enabled = true }\n", encoding="utf-8")
+    traced = build_hisat2_featurecounts_command(report, samplesheet=root / "samples.csv", output_dir=root / "out", profile="local", config_file=local_config, conda_config_file=conda_config, observer_config_file=observers)
+    assert traced[traced.index(str(observers.resolve())) - 1] == "-c"
+    assert [item for item in traced if item != str(observers.resolve()) and item != "-c"] == [item for item in command if item != "-c"]
     resolved = resolved_upstream_implementation(report)
     assert resolved["implementation"]["name"] == "nf-rna/hisat2_featurecounts"
     assert resolved["implementation"]["workflow_path"] == "workflow/hisat2_featurecounts.nf"

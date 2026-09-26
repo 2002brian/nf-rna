@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+Runtime and usability changes after the 1.3.0 qualification. DESeq2, tximport, sample identity, enrichment, references and delivered scientific results are unchanged.
+
+- `execution.max_cpus` / `execution.max_memory_gb` accept `auto`, now the default for new projects and for projects without an `execution` section: the local Nextflow ceiling is sized from the running machine (CPU affinity and cgroup limits respected) minus an OS reserve, never below the 8 CPU / 12 GiB contract floor when the machine has it, and falling back to 8 CPUs / 12 GiB if capacity cannot be detected. Explicit integers are used unchanged. The decision is recorded as `resource_policy` in provenance and the frozen execution manifest.
+- With a prebuilt Salmon index, nf-core/rnaseq `SALMON_QUANT`'s memory *request* is sized from the index (frozen as `frozen/nfcore.tuning.config`) so samples can quantify concurrently; its CPUs and all Salmon arguments are unchanged. The HISAT2 route now writes a Nextflow trace to `provenance/upstream.trace.txt`.
+- `rnaseq status PROJECT` shows the latest run's state, phase, per-stage task progress (completed/cached/failed, running task names), delivery state and effective resources; `--watch` refreshes until the run finishes; `--case`/`--run` select a run; `--all` keeps the previous one-block-per-run listing. It is read-only, and reports a RUNNING run whose `rnaseq` process has gone as INTERRUPTED rather than guessing success.
+- Each run writes its own execution log, `logs/rnaseq.log`, and process record; two launches with the same case ID no longer share a log. Ctrl-C/SIGTERM/SIGHUP during a run now records `INTERRUPTED` (previously the run stayed `RUNNING`), and unexpected errors record `FAILED` with a traceback in the run log. The delivery package still excludes logs.
+
 ## 1.3.0 — 2026-09-24
 
 Runtime release. The supported runtime is now **Linux x86-64 or Windows WSL2 with Nextflow and Conda**; Docker is no longer required or used. nf-core/rnaseq 3.26.0, DESeq2, tximport, contrast semantics, and the enrichment methods are unchanged apart from the ORA mapping-QC correction below.

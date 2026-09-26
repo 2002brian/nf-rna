@@ -213,8 +213,23 @@ def test_status_labels_retry_attempt(monkeypatch, project_factory):
     monkeypatch.setattr("rnaseq.service._run_command", _successful_downstream)
     execute_retry_service_run(root, retry_of=f"{source.case_id}/{source.run_id}")
 
-    result = runner.invoke(app, ["status", str(root)])
+    result = runner.invoke(app, ["status", str(root), "--all"])
     assert result.exit_code == 0, result.output
     assert "Status: FAILED (original run)" in result.output
     assert "Status: SUCCESS (retry attempt)" in result.output
     assert f"Retry of: {source.case_id}/{source.run_id} (source status: FAILED)" in result.output
+
+
+def test_status_default_view_shows_latest_retry_attempt(monkeypatch, project_factory):
+    root, source = _failed_frozen_run(project_factory)
+    _mock_runtime(monkeypatch, root)
+    monkeypatch.setattr("rnaseq.service._run_command", _successful_downstream)
+    retry = execute_retry_service_run(root, retry_of=f"{source.case_id}/{source.run_id}")
+
+    result = runner.invoke(app, ["status", str(root)])
+    assert result.exit_code == 0, result.output
+    assert f"Run:        {retry.run_id} (retry of {source.case_id}/{source.run_id})" in result.output
+    assert "State:      SUCCESS" in result.output
+    log = (retry.run_dir / "logs" / "rnaseq.log").read_text(encoding="utf-8")
+    assert "frozen resource configuration is inherited from the source run" in log
+    assert "run finished: SUCCESS" in log

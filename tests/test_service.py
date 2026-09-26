@@ -795,8 +795,11 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     assert all(len(value) == 64 for value in provenance["workflow_sha256"].values())
     assert provenance["runtime_resources"]["resource_profile"] == "M5_LOCAL_SMALL_MEDIUM_LARGE"
     assert "host_architecture" in provenance["runtime_resources"]
-    assert provenance["runtime_resources"]["requested"] == {"cpus": 8, "memory_gib": 12}
-    assert provenance["runtime_resources"]["effective"] == {"cpus": 8, "memory_gib": 12}
+    # No execution block: auto = 16 CPUs / 64 GiB (conftest host) minus the OS reserve.
+    assert provenance["runtime_resources"]["requested"] == {"cpus": 14, "memory_gib": 54}
+    assert provenance["runtime_resources"]["effective"] == {"cpus": 14, "memory_gib": 54}
+    assert provenance["runtime_resources"]["policy"]["cpu_mode"] == "auto"
+    assert provenance["runtime_resources"]["policy"]["os_reserve"] == {"cpus": 2, "memory_gib": 10}
     assert provenance["frozen_local_nextflow_config"]["path"] == "frozen/nfcore.local.config"
     assert len(provenance["frozen_local_nextflow_config"]["sha256"]) == 64
     execution_manifest = yaml.safe_load((run.run_dir / "frozen" / "execution_manifest.yaml").read_text(encoding="utf-8"))

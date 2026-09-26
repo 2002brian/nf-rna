@@ -206,7 +206,8 @@ def test_successful_mocked_execution_freezes_state_and_handoff(monkeypatch, tmp_
     assert runtime_params["skip_alignment"] is True
     assert "skip_trimming" not in runtime_params
     resource_config = (result.run_dir / "frozen" / "local.nextflow.config").read_text()
-    assert "memory: '12.GB'" in resource_config
+    effective = yaml.safe_load((result.run_dir / "provenance" / "run_provenance.yaml").read_text())["runtime_resources"]["effective"]
+    assert f"memory: '{effective['memory_gib']}.GB'" in resource_config
     assert "SALMON_QUANT" not in resource_config and "maxForks" not in resource_config
     assert handoff["gene_level_counts"]["format"] == "TSV"
     assert handoff["gene_level_counts"]["identifier_column"] == "gene_id"

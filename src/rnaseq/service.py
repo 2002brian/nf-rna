@@ -17,10 +17,11 @@ import signal
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 from zoneinfo import ZoneInfo
 
 import yaml
@@ -58,7 +59,7 @@ from rnaseq.execution import (
     render_upstream_conda_config,
     upstream_conda_cache,
     prepare_execution_workspace,
-    project_execution_budget,
+    resolve_project_resources,
     RESOURCE_CONTRACTS,
     render_local_resource_config,
     require_fresh_plan,
@@ -79,12 +80,18 @@ from rnaseq.project import LoadedProject
 from rnaseq.hisat2_featurecounts import FASTP_IMAGE, FASTP_VERSION, FASTQC_IMAGE, FASTQC_VERSION, HISAT2_IMAGE, HISAT2_VERSION, MULTIQC_IMAGE, MULTIQC_VERSION, SAMTOOLS_IMAGE, SAMTOOLS_VERSION, SUBREAD_IMAGE, SUBREAD_VERSION
 from rnaseq.planner import pairing_contract, render_manifest
 from rnaseq.validators import FastqRecord, FastqSummary, ValidationReport
+from rnaseq.resource_policy import describe_policy, render_process_tuning_config, salmon_quant_tuning
 from rnaseq.workflow_assets import workflow_asset_path
 
 CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 RUN_ID_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}\+[0-9]{4}(?:-[0-9]{2,3})?$")
 TAIPEI = ZoneInfo("Asia/Taipei")
-FINAL_STATES = {"SUCCESS", "FAILED"}
+FINAL_STATES = {"SUCCESS", "FAILED", "INTERRUPTED"}
+# nf-rna-owned, per-run execution records.  They live under logs/, which is
+# never copied into a delivery package.
+EXECUTION_LOG = Path("logs") / "rnaseq.log"
+NFCORE_TUNING_CONFIG = "nfcore.tuning.config"
+PROCESS_RECORD = Path("logs") / "rnaseq.process.json"
 DELIVERY_MANIFEST_FILENAME = "delivery_manifest.yaml"
 UNLABELED_CONTAINER_SOURCE_REVISION = "unlabeled-container-image"
 
@@ -646,6 +653,49 @@ def create_case_run(report: ValidationReport, case_id: str, *, moment: datetime 
     raise ExecutionPreflightError("Unable to allocate a unique run directory without overwriting an existing run.")
 
 
+def _log_event(run: CaseRun, message: str) -> None:
+    """Append one timestamped line to this run's own execution log.
+
+    Logging is diagnostic only: it must never fail or alter a run.
+    """
+
+    stamp = datetime.now(TAIPEI).replace(microsecond=0).isoformat()
+    try:
+        path = run.run_dir / EXECUTION_LOG
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            for line in message.rstrip("\n").splitlines() or [""]:
+                handle.write(f"{stamp} {line}\n")
+    except OSError:
+        pass
+
+
+def _record_run_process(run: CaseRun, command: list[str]) -> None:
+    """Record which rnaseq process owns this run so status can detect a dead run."""
+
+    from rnaseq.run_status import current_process_identity
+
+    identity = current_process_identity()
+    try:
+        _write_text(run.run_dir / PROCESS_RECORD, json.dumps({**identity, "command": command}, indent=2, sort_keys=True) + "\n")
+    except OSError:
+        pass
+    _log_event(
+        run,
+        f"run {run.case_id}/{run.run_id} started by pid {identity['pid']} on {identity['hostname']}; "
+        f"nf-rna {PIPELINE_VERSION}; command: {' '.join(command)}",
+    )
+
+
+def _log_resources(run: CaseRun, resources: EffectiveResourceBudget | None) -> None:
+    if resources is None:
+        return
+    detail = f"; {describe_policy(resources.policy)}" if resources.policy is not None else ""
+    _log_event(run, f"resources: {resources.effective_cpus} CPUs / {resources.effective_memory_gib} GiB effective{detail}")
+    for warning in resources.warnings:
+        _log_event(run, f"resource warning: {warning}")
+
+
 def _write_state(run: CaseRun, status: str, **values: Any) -> None:
     current: dict[str, Any] = {}
     if run.state_path.is_file():
@@ -668,6 +718,9 @@ def _write_state(run: CaseRun, status: str, **values: Any) -> None:
     else:
         current.setdefault("completed_at", None)
     _write_text(run.state_path, json.dumps(current, indent=2, sort_keys=True) + "\n")
+    phase = current.get("phase")
+    error = values.get("error")
+    _log_event(run, f"state {status}" + (f" phase={phase}" if phase else "") + (f"; error: {error}" if error else ""))
 
 
 def _copy_snapshot(source: Path, destination: Path) -> None:
@@ -782,21 +835,28 @@ def freeze_case_inputs(
 
     params: Path | None = None
     runtime: Path | None = None
+    resolved = resources or resolve_project_resources(report.config, _resource_snapshot(report))
     if report.config.input.type is InputType.FASTQ:
         params = frozen / "nfcore.params.json"
         _write_text(params, json.dumps(nfcore_runtime_params(report), sort_keys=True) + "\n")
         # This single path-free config is passed to Salmon, HISAT2/featureCounts,
         # and the first-party downstream workflow for every local FASTQ run.
         runtime = frozen / "nfcore.local.config"
-        resolved = resources or effective_resource_budget(
-            _resource_snapshot(report), project_execution_budget(report.config)
-        )
         config_text = render_local_resource_config(ResourceContract(
             "EFFECTIVE_LOCAL", resolved.effective_cpus, resolved.effective_memory_gib, LOCAL_RESOURCE_CEILING.time_hours
         ))
         _write_text(runtime, config_text)
         if backend == BACKEND_CONDA:
             _write_text(frozen / "nfcore.conda.config", render_upstream_conda_config(upstream_conda_cache()))
+        method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
+        if method == "salmon":
+            # Scheduling-only: size SALMON_QUANT's memory request from the
+            # prebuilt index so several samples can quantify concurrently.
+            tuning, notes = salmon_quant_tuning(reference_paths.get("salmon_index"))
+            if tuning:
+                _write_text(frozen / NFCORE_TUNING_CONFIG, render_process_tuning_config(tuning))
+            if resolved.policy is not None:
+                resolved = replace(resolved, policy=resolved.policy.with_process_tuning(tuning, notes))
 
     # Conda runs bind their verified prefix after confirmation; Docker runs bind
     # the requested first-party image and its observed OCI source revision now.
@@ -846,6 +906,8 @@ def freeze_case_inputs(
             {"path": runtime.relative_to(run.run_dir).as_posix(), "sha256": _sha256(runtime)}
             if runtime is not None else None
         ),
+        # Scheduling only: how this run's local ceilings were selected.
+        "resource_policy": resolved.as_dict(),
     }
     _write_yaml(frozen / "execution_manifest.yaml", execution)
     contract = {
@@ -899,7 +961,7 @@ def _provenance(
         pass
     nextflow = check_nextflow()
     runtime = _resource_snapshot(report) if report.config is not None else _native_runtime_snapshot()
-    resolved_resources = resources or effective_resource_budget(runtime, project_execution_budget(report.config))
+    resolved_resources = resources or resolve_project_resources(report.config, runtime)
     method = report.config.upstream.quantification.method if report.config and report.config.upstream.quantification else None
     backend = execution_backend()
     conda = backend == BACKEND_CONDA
@@ -915,6 +977,17 @@ def _provenance(
     }
     local_config = run.run_dir / "frozen" / "nfcore.local.config"
     upstream_conda_config = run.run_dir / "frozen" / "nfcore.conda.config"
+    tuning_config = run.run_dir / "frozen" / NFCORE_TUNING_CONFIG
+    # The frozen policy (including per-process tuning) describes the frozen
+    # configs this run actually uses; a retry inherits it with those configs.
+    frozen_manifest = run.run_dir / "frozen" / "execution_manifest.yaml"
+    frozen_resources = (
+        _read_yaml_mapping(frozen_manifest, "frozen execution manifest").get("resource_policy")
+        if frozen_manifest.is_file() else None
+    )
+    resource_record = resolved_resources.as_dict()
+    if isinstance(frozen_resources, dict) and isinstance(frozen_resources.get("policy"), dict):
+        resource_record["policy"] = frozen_resources["policy"]
     # Docker-backend identity keeps the pre-Conda field names; Conda runs write them as null.
     execution_image = inspect_container_image(frozen_execution["image"]) if not conda and frozen_execution.get("image") else None
     return {
@@ -965,7 +1038,7 @@ def _provenance(
         "upstream_container_runtime": "docker" if fastq and not conda else None,
         "production_intended": bool(report.config and report.config.reference.acceptance == "production"),
         "runtime_resources": {
-            **resolved_resources.as_dict(),
+            **resource_record,
             "host_os": runtime.host_os,
             "host_architecture": runtime.host_architecture,
             "logical_cpus": runtime.logical_cpus,
@@ -979,6 +1052,10 @@ def _provenance(
         "frozen_local_nextflow_config": (
             {"path": local_config.relative_to(run.run_dir).as_posix(), "sha256": _sha256(local_config)}
             if local_config.is_file() else None
+        ),
+        "frozen_nfcore_tuning_config": (
+            {"path": tuning_config.relative_to(run.run_dir).as_posix(), "sha256": _sha256(tuning_config)}
+            if tuning_config.is_file() else None
         ),
         "frozen_upstream_conda_config": (
             {"path": upstream_conda_config.relative_to(run.run_dir).as_posix(), "sha256": _sha256(upstream_conda_config)}
@@ -1049,6 +1126,17 @@ def write_downstream_observer_config(run: CaseRun) -> Path:
         ])
     path = run.run_dir / "frozen" / "downstream.observers.config"
     _write_text(path, "\n".join(lines))
+    return path
+
+
+def write_upstream_observer_config(run: CaseRun) -> Path:
+    """Trace-only observer for the first-party HISAT2 workflow (nf-core writes its own)."""
+
+    target = run.run_dir / "provenance" / "upstream.trace.txt"
+    path = run.run_dir / "frozen" / "upstream.observers.config"
+    _write_text(path, "\n".join([
+        "trace {", "  enabled = true", f"  file = {json.dumps(str(target.resolve()))}", "  overwrite = true", "}", "",
+    ]))
     return path
 
 
@@ -1162,8 +1250,31 @@ class _Termination(Exception):
     """rnaseq itself was asked to stop while Nextflow was running."""
 
 
+RunTermination = _Termination
+
+
 def _raise_termination(signum: int, _frame: object) -> None:
     raise _Termination(signal.Signals(signum).name)
+
+
+@contextmanager
+def _terminate_on_signals() -> Iterator[None]:
+    """Turn SIGTERM/SIGHUP into :class:`_Termination` while nf-rna owns a run.
+
+    Only default dispositions are replaced: an ignored SIGHUP (``nohup``) stays
+    ignored, and an outer scope's handler is kept.
+    """
+
+    forwarded: dict[int, object] = {}
+    if threading.current_thread() is threading.main_thread():
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            if signal.getsignal(signum) is signal.SIG_DFL:
+                forwarded[signum] = signal.signal(signum, _raise_termination)
+    try:
+        yield
+    finally:
+        for signum, handler in forwarded.items():
+            signal.signal(signum, handler)
 
 
 def _run_command(command: list[str], *, cwd: Path, stdout_path: Path, stderr_path: Path) -> int:
@@ -1183,12 +1294,7 @@ def _run_command(command: list[str], *, cwd: Path, stdout_path: Path, stderr_pat
     """
 
     environment = {**os.environ, "NXF_ANSI_LOG": "false"}
-    forwarded: dict[int, object] = {}
-    if threading.current_thread() is threading.main_thread():
-        for signum in (signal.SIGTERM, signal.SIGHUP):
-            if signal.getsignal(signum) is signal.SIG_DFL:
-                forwarded[signum] = signal.signal(signum, _raise_termination)
-    try:
+    with _terminate_on_signals():
         with stdout_path.open("w", encoding="utf-8", newline="\n") as stdout, stderr_path.open("w", encoding="utf-8", newline="\n") as stderr:
             process = subprocess.Popen(
                 command, cwd=cwd, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, env=environment,
@@ -1205,9 +1311,6 @@ def _run_command(command: list[str], *, cwd: Path, stdout_path: Path, stderr_pat
                         process.kill()
                         process.wait()
                 raise
-    finally:
-        for signum, handler in forwarded.items():
-            signal.signal(signum, handler)
 
 
 def _validate_delivery_count_matrix(
@@ -1652,7 +1755,7 @@ def prepare_service_run(report: ValidationReport, *, profile: str) -> EffectiveR
     validate_local_execution_budget(
         report.config.execution.max_cpus, report.config.execution.max_memory_gb, detect_local_resource_capacity()
     )
-    resources = effective_resource_budget(_resource_snapshot(report), project_execution_budget(report.config))
+    resources = resolve_project_resources(report.config, _resource_snapshot(report))
     validate_effective_resource_budget(resources)
     require_fresh_plan(report)
     if report.config.input.type is InputType.FASTQ:
@@ -1957,7 +2060,7 @@ def _prepare_retry_runtime(report: ValidationReport, profile: str) -> EffectiveR
     if profile != LOCAL_PROFILE or report.config is None:
         raise ExecutionPreflightError("Retry supports only the frozen local execution profile.")
     validate_local_execution_budget(report.config.execution.max_cpus, report.config.execution.max_memory_gb, detect_local_resource_capacity())
-    resources = effective_resource_budget(_resource_snapshot(report), project_execution_budget(report.config))
+    resources = resolve_project_resources(report.config, _resource_snapshot(report))
     validate_effective_resource_budget(resources)
     if report.config.input.type is InputType.FASTQ and not report.execution_ready:
         raise ExecutionPreflightError("Retry frozen execution contract is not runtime-ready.")
@@ -2003,6 +2106,53 @@ def reuse_upstream_if_compatible(run: CaseRun, frozen: FrozenInputs, reference: 
     return f"{source_case}/{source_run}"
 
 
+def _optional_frozen(run: CaseRun, name: str) -> Path | None:
+    path = run.run_dir / "frozen" / name
+    return path if path.is_file() else None
+
+
+def _launch_logged(run: CaseRun, stage: str, command: list[str], *, cwd: Path) -> int:
+    """Run one Nextflow stage with its own per-run stdout/stderr logs."""
+
+    stdout_path, stderr_path = run.run_dir / "logs" / f"{stage}.stdout.log", run.run_dir / "logs" / f"{stage}.stderr.log"
+    _log_event(run, f"{stage} Nextflow launched; logs: {stdout_path.name}, {stderr_path.name}; launch dir: {cwd}")
+    result = _run_command(command, cwd=cwd, stdout_path=stdout_path, stderr_path=stderr_path)
+    _log_event(run, f"{stage} Nextflow exited with code {result}")
+    return result
+
+
+@contextmanager
+def _run_outcome(run: CaseRun) -> Iterator[None]:
+    """Record every way a run can end, so no owned run is left RUNNING.
+
+    Expected failures and unexpected exceptions become FAILED (the latter with
+    a traceback in the run's own log); Ctrl-C, SIGTERM and SIGHUP become
+    INTERRUPTED.  The exception is always re-raised unchanged.
+    """
+
+    try:
+        yield
+    except (_Termination, KeyboardInterrupt) as exc:
+        name = str(exc) if isinstance(exc, _Termination) and str(exc) else "SIGINT"
+        _write_state(run, "INTERRUPTED", interrupted_by=name, error=f"Interrupted by {name}; the run did not finish.")
+        raise
+    except (OSError, UpstreamExecutionError, ExecutionPreflightError, ValueError) as exc:
+        _write_state(run, "FAILED", error=str(exc))
+        raise
+    except Exception as exc:
+        import traceback
+
+        _log_event(run, "unexpected error:\n" + "".join(traceback.format_exception(exc)))
+        _write_state(run, "FAILED", error=f"Unexpected {type(exc).__name__}: {exc}")
+        raise
+    else:
+        try:
+            status = json.loads(run.state_path.read_text(encoding="utf-8")).get("status")
+        except (OSError, ValueError):
+            status = "unknown"
+        _log_event(run, f"run finished: {status}")
+
+
 def execute_service_run(
     report: ValidationReport, *, case_id: str, profile: str = LOCAL_PROFILE, reuse_upstream: str | None = None,
 ) -> CaseRun:
@@ -2013,74 +2163,84 @@ def execute_service_run(
     command = ["rnaseq", "run", str(report.project_dir), "--case-id", case_id, "--profile", profile]
     if reuse_upstream:
         command.extend(["--reuse-upstream", reuse_upstream])
-    try:
-        workspace = resolve_execution_workspace(run.case_id, run.run_id)
-        frozen = freeze_case_inputs(report, run, profile=profile, command=command, resources=resources)
-        assert report.config is not None
-        runtime = None if report.config.project.preset is Preset.QC or execution_backend() != BACKEND_CONDA else ensure_downstream_runtime()
-        if runtime is not None:
-            freeze_downstream_runtime_identity(frozen, runtime)
-        _write_yaml(
-            run.run_dir / "provenance" / "run_provenance.yaml",
-            _provenance(report, run, profile=profile, command=command, workspace=workspace, resources=resources),
-        )
-        prepare_execution_workspace(workspace)
-        _write_state(run, "RUNNING", phase="freeze", command=command)
-        if report.config.input.type is InputType.FASTQ:
-            assert frozen.samplesheet and frozen.upstream_params and frozen.upstream_config
-            reused_from = reuse_upstream_if_compatible(run, frozen, reuse_upstream) if reuse_upstream else None
-            if reused_from is None:
-                method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
-                upstream = (build_nextflow_command(
-                    report, samplesheet=frozen.samplesheet, output_dir=run.run_dir / "upstream" / "nfcore_rnaseq",
-                    profile=profile, params_file=frozen.upstream_params, config_file=frozen.upstream_config,
-                    conda_config_file=run.run_dir / "frozen" / "nfcore.conda.config",
-                    reference_paths=frozen.reference_paths, work_dir=workspace.work_dir / "upstream",
-                ) if method == "salmon" else build_hisat2_featurecounts_command(
-                    report, samplesheet=frozen.samplesheet, output_dir=run.run_dir / "upstream" / "hisat2_featurecounts",
-                    profile=profile, reference_paths=frozen.reference_paths, work_dir=workspace.work_dir / "upstream",
-                    config_file=frozen.upstream_config, conda_config_file=run.run_dir / "frozen" / "nfcore.conda.config",
-                ))
-                _write_state(run, "RUNNING", phase="upstream", upstream_command=upstream)
-                result = _run_command(upstream, cwd=workspace.launch_dir, stdout_path=run.run_dir / "logs" / "upstream.stdout.log", stderr_path=run.run_dir / "logs" / "upstream.stderr.log")
-                if result != 0:
-                    raise UpstreamExecutionError(
-                        classify_execution_failure(
-                            "nf-core/rnaseq" if method == "salmon" else "HISAT2 + featureCounts", result, run.run_dir / "logs" / "upstream.stderr.log",
-                            resource=RESOURCE_CONTRACTS["MEDIUM"],
-                        )
+    _record_run_process(run, command)
+    with _terminate_on_signals(), _run_outcome(run):
+        return _execute_service_run(report, run, command, profile=profile, reuse_upstream=reuse_upstream, resources=resources)
+
+
+def _execute_service_run(
+    report: ValidationReport, run: CaseRun, command: list[str], *, profile: str, reuse_upstream: str | None,
+    resources: EffectiveResourceBudget,
+) -> CaseRun:
+    workspace = resolve_execution_workspace(run.case_id, run.run_id)
+    _log_resources(run, resources)
+    frozen = freeze_case_inputs(report, run, profile=profile, command=command, resources=resources)
+    assert report.config is not None
+    runtime = None if report.config.project.preset is Preset.QC or execution_backend() != BACKEND_CONDA else ensure_downstream_runtime()
+    if runtime is not None:
+        freeze_downstream_runtime_identity(frozen, runtime)
+    _write_yaml(
+        run.run_dir / "provenance" / "run_provenance.yaml",
+        _provenance(report, run, profile=profile, command=command, workspace=workspace, resources=resources),
+    )
+    prepare_execution_workspace(workspace)
+    _write_state(run, "RUNNING", phase="freeze", command=command)
+    if report.config.input.type is InputType.FASTQ:
+        assert frozen.samplesheet and frozen.upstream_params and frozen.upstream_config
+        reused_from = reuse_upstream_if_compatible(run, frozen, reuse_upstream) if reuse_upstream else None
+        if reused_from is None:
+            method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
+            upstream = (build_nextflow_command(
+                report, samplesheet=frozen.samplesheet, output_dir=run.run_dir / "upstream" / "nfcore_rnaseq",
+                profile=profile, params_file=frozen.upstream_params, config_file=frozen.upstream_config,
+                conda_config_file=run.run_dir / "frozen" / "nfcore.conda.config",
+                reference_paths=frozen.reference_paths, work_dir=workspace.work_dir / "upstream",
+                tuning_config_file=_optional_frozen(run, NFCORE_TUNING_CONFIG),
+            ) if method == "salmon" else build_hisat2_featurecounts_command(
+                report, samplesheet=frozen.samplesheet, output_dir=run.run_dir / "upstream" / "hisat2_featurecounts",
+                profile=profile, reference_paths=frozen.reference_paths, work_dir=workspace.work_dir / "upstream",
+                config_file=frozen.upstream_config, conda_config_file=run.run_dir / "frozen" / "nfcore.conda.config",
+                observer_config_file=write_upstream_observer_config(run),
+            ))
+            _write_state(run, "RUNNING", phase="upstream", upstream_command=upstream)
+            result = _launch_logged(run, "upstream", upstream, cwd=workspace.launch_dir)
+            if result != 0:
+                raise UpstreamExecutionError(
+                    classify_execution_failure(
+                        "nf-core/rnaseq" if method == "salmon" else "HISAT2 + featureCounts", result, run.run_dir / "logs" / "upstream.stderr.log",
+                        resource=RESOURCE_CONTRACTS["MEDIUM"],
                     )
-            finalize_fastq_handoff(report, run, frozen.contract, reused_from=reused_from)
-        if report.config.project.preset is Preset.QC:
-            # QC projects intentionally stop at the immutable FASTQ backend.
-            # MultiQC and frozen provenance are still assembled into the normal
-            # client delivery package, but no metadata-dependent downstream
-            # statistical workflow is launched.
-            delivery = assemble_delivery(run)
-            _write_state(run, "SUCCESS", phase="delivery", delivery=str(delivery), downstream_skipped="technical_qc_only")
-            return run
-        execution_inputs = resolve_downstream_inputs(run)
-        observer_config = write_downstream_observer_config(run)
-        runtime_config = _downstream_runtime_config(run, runtime)
-        downstream = build_downstream_nextflow_command(
-            run, profile=profile, work_dir=workspace.work_dir / "downstream", observer_config=observer_config,
-            execution_inputs=execution_inputs, runtime_config=runtime_config,
-            local_resource_config=frozen.upstream_config,
-        )
-        _write_state(run, "RUNNING", phase="downstream", downstream_command=downstream)
-        result = _run_command(downstream, cwd=workspace.launch_dir, stdout_path=run.run_dir / "logs" / "downstream.stdout.log", stderr_path=run.run_dir / "logs" / "downstream.stderr.log")
-        if result != 0:
-            raise UpstreamExecutionError(
-                classify_execution_failure(
-                    "downstream Nextflow", result, run.run_dir / "logs" / "downstream.stderr.log",
-                    resource=RESOURCE_CONTRACTS["LARGE"],
                 )
-            )
+        finalize_fastq_handoff(report, run, frozen.contract, reused_from=reused_from)
+    if report.config.project.preset is Preset.QC:
+        # QC projects intentionally stop at the immutable FASTQ backend.
+        # MultiQC and frozen provenance are still assembled into the normal
+        # client delivery package, but no metadata-dependent downstream
+        # statistical workflow is launched.
+        _write_state(run, "RUNNING", phase="delivery")
         delivery = assemble_delivery(run)
-        _write_state(run, "SUCCESS", phase="delivery", delivery=str(delivery))
-    except (OSError, UpstreamExecutionError, ExecutionPreflightError, ValueError) as exc:
-        _write_state(run, "FAILED", error=str(exc))
-        raise
+        _write_state(run, "SUCCESS", phase="delivery", delivery=str(delivery), downstream_skipped="technical_qc_only")
+        return run
+    execution_inputs = resolve_downstream_inputs(run)
+    observer_config = write_downstream_observer_config(run)
+    runtime_config = _downstream_runtime_config(run, runtime)
+    downstream = build_downstream_nextflow_command(
+        run, profile=profile, work_dir=workspace.work_dir / "downstream", observer_config=observer_config,
+        execution_inputs=execution_inputs, runtime_config=runtime_config,
+        local_resource_config=frozen.upstream_config,
+    )
+    _write_state(run, "RUNNING", phase="downstream", downstream_command=downstream)
+    result = _launch_logged(run, "downstream", downstream, cwd=workspace.launch_dir)
+    if result != 0:
+        raise UpstreamExecutionError(
+            classify_execution_failure(
+                "downstream Nextflow", result, run.run_dir / "logs" / "downstream.stderr.log",
+                resource=RESOURCE_CONTRACTS["LARGE"],
+            )
+        )
+    _write_state(run, "RUNNING", phase="delivery")
+    delivery = assemble_delivery(run)
+    _write_state(run, "SUCCESS", phase="delivery", delivery=str(delivery))
     return run
 
 
@@ -2105,107 +2265,116 @@ def execute_retry_service_run(
     if nextflow_resume:
         command.append("--nextflow-resume")
     run = _create_retry_case_run(project_dir.resolve(), source)
-    try:
-        _clone_retry_contract(source, run, command)
-        report, reference_paths = _retry_report(run)
-        workspace = resolve_execution_workspace(run.case_id, run.run_id)
-        frozen_paths = run.run_dir / "frozen"
-        if _frozen_backend(run) != execution_backend():
-            raise ExecutionPreflightError(
-                f"Retry source was produced by the {_frozen_backend(run)} backend; this host uses the "
-                f"{execution_backend()} backend. Retry it on a host with the original backend."
-            )
-        runtime = None if (report.config and report.config.project.preset is Preset.QC) or execution_backend() != BACKEND_CONDA else ensure_downstream_runtime()
-        if runtime is not None:
-            freeze_downstream_runtime_identity(
-                FrozenInputs(
-                    (frozen_paths / "samplesheet.csv") if (frozen_paths / "samplesheet.csv").is_file() else None,
-                    frozen_paths / "downstream_contract.json", frozen_paths / "input_manifest.yaml",
-                    (frozen_paths / "nfcore.params.json") if (frozen_paths / "nfcore.params.json").is_file() else None,
-                    (frozen_paths / "nfcore.local.config") if (frozen_paths / "nfcore.local.config").is_file() else None,
-                    reference_paths,
-                ), runtime,
-            )
-        provenance = _provenance(
-            report, run, profile=source.execution["profile"], command=command, workspace=workspace, resources=resources,
+    _record_run_process(run, command)
+    with _terminate_on_signals(), _run_outcome(run):
+        return _execute_retry_service_run(run, source, command, nextflow_resume=nextflow_resume, resources=resources)
+
+
+def _execute_retry_service_run(
+    run: CaseRun, source: RetrySource, command: list[str], *, nextflow_resume: bool, resources: EffectiveResourceBudget,
+) -> CaseRun:
+    _log_event(run, f"retry of {source.run.case_id}/{source.run.run_id}; frozen resource configuration is inherited from the source run")
+    _clone_retry_contract(source, run, command)
+    report, reference_paths = _retry_report(run)
+    workspace = resolve_execution_workspace(run.case_id, run.run_id)
+    frozen_paths = run.run_dir / "frozen"
+    if _frozen_backend(run) != execution_backend():
+        raise ExecutionPreflightError(
+            f"Retry source was produced by the {_frozen_backend(run)} backend; this host uses the "
+            f"{execution_backend()} backend. Retry it on a host with the original backend."
         )
-        # Pairing and other scientific fields are already frozen in the source
-        # provenance.  Preserve them rather than re-deriving them from runtime
-        # paths while recording a new observed execution identity.
-        if "design" in source.provenance:
-            provenance["design"] = source.provenance["design"]
-        provenance["retry"] = {
-            "retry_of": {"case_id": source.run.case_id, "run_id": source.run.run_id},
-            "source_status": source.state["status"],
-            "retried_at": run.started_at,
-            "nextflow_resume_requested": nextflow_resume,
-            "upstream_reused_from_source": source.reuse_upstream,
-        }
-        _write_yaml(run.run_dir / "provenance" / "run_provenance.yaml", provenance)
-        prepare_execution_workspace(workspace)
-        _write_state(run, "RUNNING", phase="retry_freeze", command=command)
-        assert report.config is not None
-        profile = source.execution["profile"]
-        frozen = run.run_dir / "frozen"
-        if report.config.input.type is InputType.FASTQ:
-            assert (frozen / "samplesheet.csv").is_file() and (frozen / "nfcore.local.config").is_file()
-            if source.reuse_upstream:
-                shutil.copytree(source.run.run_dir / "upstream", run.run_dir / "upstream", dirs_exist_ok=True, ignore=shutil.ignore_patterns("._*"))
-                _update_contract(
-                    frozen / "downstream_contract.json",
-                    {"source": {
-                        **_read_json_mapping(frozen / "downstream_contract.json", "retry downstream contract")["source"],
-                        "reused_from": f"{source.run.case_id}/{source.run.run_id}",
-                    }},
-                )
-            else:
-                method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
-                upstream = (build_nextflow_command(
-                    report, samplesheet=frozen / "samplesheet.csv", output_dir=run.run_dir / "upstream" / "nfcore_rnaseq",
-                    profile=profile, params_file=frozen / "nfcore.params.json", config_file=frozen / "nfcore.local.config",
-                    conda_config_file=frozen / "nfcore.conda.config",
-                    reference_paths=reference_paths, work_dir=workspace.work_dir / "upstream",
-                ) if method == "salmon" else build_hisat2_featurecounts_command(
-                    report, samplesheet=frozen / "samplesheet.csv", output_dir=run.run_dir / "upstream" / "hisat2_featurecounts",
-                    profile=profile, reference_paths=reference_paths, work_dir=workspace.work_dir / "upstream",
-                    config_file=frozen / "nfcore.local.config", conda_config_file=frozen / "nfcore.conda.config",
-                ))
-                upstream = _retry_command(upstream, nextflow_resume)
-                _write_state(run, "RUNNING", phase="upstream", upstream_command=upstream)
-                result = _run_command(upstream, cwd=workspace.launch_dir, stdout_path=run.run_dir / "logs" / "upstream.stdout.log", stderr_path=run.run_dir / "logs" / "upstream.stderr.log")
-                if result != 0:
-                    raise UpstreamExecutionError(
-                        classify_execution_failure(
-                            "nf-core/rnaseq" if method == "salmon" else "HISAT2 + featureCounts", result,
-                            run.run_dir / "logs" / "upstream.stderr.log", resource=RESOURCE_CONTRACTS["MEDIUM"],
-                        )
+    runtime = None if (report.config and report.config.project.preset is Preset.QC) or execution_backend() != BACKEND_CONDA else ensure_downstream_runtime()
+    if runtime is not None:
+        freeze_downstream_runtime_identity(
+            FrozenInputs(
+                (frozen_paths / "samplesheet.csv") if (frozen_paths / "samplesheet.csv").is_file() else None,
+                frozen_paths / "downstream_contract.json", frozen_paths / "input_manifest.yaml",
+                (frozen_paths / "nfcore.params.json") if (frozen_paths / "nfcore.params.json").is_file() else None,
+                (frozen_paths / "nfcore.local.config") if (frozen_paths / "nfcore.local.config").is_file() else None,
+                reference_paths,
+            ), runtime,
+        )
+    provenance = _provenance(
+        report, run, profile=source.execution["profile"], command=command, workspace=workspace, resources=resources,
+    )
+    # Pairing and other scientific fields are already frozen in the source
+    # provenance.  Preserve them rather than re-deriving them from runtime
+    # paths while recording a new observed execution identity.
+    if "design" in source.provenance:
+        provenance["design"] = source.provenance["design"]
+    provenance["retry"] = {
+        "retry_of": {"case_id": source.run.case_id, "run_id": source.run.run_id},
+        "source_status": source.state["status"],
+        "retried_at": run.started_at,
+        "nextflow_resume_requested": nextflow_resume,
+        "upstream_reused_from_source": source.reuse_upstream,
+    }
+    _write_yaml(run.run_dir / "provenance" / "run_provenance.yaml", provenance)
+    prepare_execution_workspace(workspace)
+    _write_state(run, "RUNNING", phase="retry_freeze", command=command)
+    assert report.config is not None
+    profile = source.execution["profile"]
+    frozen = run.run_dir / "frozen"
+    if report.config.input.type is InputType.FASTQ:
+        assert (frozen / "samplesheet.csv").is_file() and (frozen / "nfcore.local.config").is_file()
+        if source.reuse_upstream:
+            shutil.copytree(source.run.run_dir / "upstream", run.run_dir / "upstream", dirs_exist_ok=True, ignore=shutil.ignore_patterns("._*"))
+            _update_contract(
+                frozen / "downstream_contract.json",
+                {"source": {
+                    **_read_json_mapping(frozen / "downstream_contract.json", "retry downstream contract")["source"],
+                    "reused_from": f"{source.run.case_id}/{source.run.run_id}",
+                }},
+            )
+        else:
+            method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
+            upstream = (build_nextflow_command(
+                report, samplesheet=frozen / "samplesheet.csv", output_dir=run.run_dir / "upstream" / "nfcore_rnaseq",
+                profile=profile, params_file=frozen / "nfcore.params.json", config_file=frozen / "nfcore.local.config",
+                conda_config_file=frozen / "nfcore.conda.config",
+                reference_paths=reference_paths, work_dir=workspace.work_dir / "upstream",
+                tuning_config_file=_optional_frozen(run, NFCORE_TUNING_CONFIG),
+            ) if method == "salmon" else build_hisat2_featurecounts_command(
+                report, samplesheet=frozen / "samplesheet.csv", output_dir=run.run_dir / "upstream" / "hisat2_featurecounts",
+                profile=profile, reference_paths=reference_paths, work_dir=workspace.work_dir / "upstream",
+                config_file=frozen / "nfcore.local.config", conda_config_file=frozen / "nfcore.conda.config",
+                observer_config_file=write_upstream_observer_config(run),
+            ))
+            upstream = _retry_command(upstream, nextflow_resume)
+            _write_state(run, "RUNNING", phase="upstream", upstream_command=upstream)
+            result = _launch_logged(run, "upstream", upstream, cwd=workspace.launch_dir)
+            if result != 0:
+                raise UpstreamExecutionError(
+                    classify_execution_failure(
+                        "nf-core/rnaseq" if method == "salmon" else "HISAT2 + featureCounts", result,
+                        run.run_dir / "logs" / "upstream.stderr.log", resource=RESOURCE_CONTRACTS["MEDIUM"],
                     )
-                finalize_fastq_handoff(report, run, frozen / "downstream_contract.json")
-        if report.config.project.preset is Preset.QC:
-            delivery = assemble_delivery(run)
-            _write_state(run, "SUCCESS", phase="delivery", delivery=str(delivery), downstream_skipped="technical_qc_only")
-            return run
-        execution_inputs = resolve_downstream_inputs(run)
-        observer_config = write_downstream_observer_config(run)
-        runtime_config = _downstream_runtime_config(run, runtime)
-        downstream = build_downstream_nextflow_command(
-            run, profile=profile, work_dir=workspace.work_dir / "downstream", observer_config=observer_config,
-            execution_inputs=execution_inputs, runtime_config=runtime_config,
-            local_resource_config=(frozen / "nfcore.local.config") if (frozen / "nfcore.local.config").is_file() else None,
-        )
-        downstream = _retry_command(downstream, nextflow_resume)
-        _write_state(run, "RUNNING", phase="downstream", downstream_command=downstream)
-        result = _run_command(downstream, cwd=workspace.launch_dir, stdout_path=run.run_dir / "logs" / "downstream.stdout.log", stderr_path=run.run_dir / "logs" / "downstream.stderr.log")
-        if result != 0:
-            raise UpstreamExecutionError(
-                classify_execution_failure(
-                    "downstream Nextflow", result, run.run_dir / "logs" / "downstream.stderr.log",
-                    resource=RESOURCE_CONTRACTS["LARGE"],
                 )
-            )
+            finalize_fastq_handoff(report, run, frozen / "downstream_contract.json")
+    if report.config.project.preset is Preset.QC:
+        _write_state(run, "RUNNING", phase="delivery")
         delivery = assemble_delivery(run)
-        _write_state(run, "SUCCESS", phase="delivery", delivery=str(delivery))
-    except (OSError, UpstreamExecutionError, ExecutionPreflightError, ValueError) as exc:
-        _write_state(run, "FAILED", error=str(exc))
-        raise
+        _write_state(run, "SUCCESS", phase="delivery", delivery=str(delivery), downstream_skipped="technical_qc_only")
+        return run
+    execution_inputs = resolve_downstream_inputs(run)
+    observer_config = write_downstream_observer_config(run)
+    runtime_config = _downstream_runtime_config(run, runtime)
+    downstream = build_downstream_nextflow_command(
+        run, profile=profile, work_dir=workspace.work_dir / "downstream", observer_config=observer_config,
+        execution_inputs=execution_inputs, runtime_config=runtime_config,
+        local_resource_config=(frozen / "nfcore.local.config") if (frozen / "nfcore.local.config").is_file() else None,
+    )
+    downstream = _retry_command(downstream, nextflow_resume)
+    _write_state(run, "RUNNING", phase="downstream", downstream_command=downstream)
+    result = _launch_logged(run, "downstream", downstream, cwd=workspace.launch_dir)
+    if result != 0:
+        raise UpstreamExecutionError(
+            classify_execution_failure(
+                "downstream Nextflow", result, run.run_dir / "logs" / "downstream.stderr.log",
+                resource=RESOURCE_CONTRACTS["LARGE"],
+            )
+        )
+    _write_state(run, "RUNNING", phase="delivery")
+    delivery = assemble_delivery(run)
+    _write_state(run, "SUCCESS", phase="delivery", delivery=str(delivery))
     return run

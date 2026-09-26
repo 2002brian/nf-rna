@@ -27,6 +27,7 @@ from rnaseq.models import DEFAULT_EXECUTION_IMAGE, FastqPreprocessing, InputType
 from rnaseq.hisat2_featurecounts import COUNTING_POLICY, HISAT2_VERSION, SAMTOOLS_VERSION, SUBREAD_VERSION
 from rnaseq.planner import render_manifest, render_samplesheet
 from rnaseq.references import LocalReferenceError, load_local_reference, sha256_file
+from rnaseq.resource_policy import AUTO, GIB, DetectedResources, ResourcePolicy, describe_policy, detect_process_limits, resolve_policy
 from rnaseq.validators import ValidationReport
 from rnaseq.workflow_assets import workflow_asset_path
 
@@ -42,7 +43,7 @@ WINDOWS_UNSUPPORTED_MESSAGE = (
     "then install and run nf-rna inside WSL2 (Linux x86-64, Nextflow + Conda)."
 )
 NFCORE_RNASEQ_REVISION = "e7ca46272c8f9d5ceee3f71759f4ba551d3217a4"
-RUN_STATES = {"CREATED", "RUNNING", "SUCCESS", "FAILED"}
+RUN_STATES = {"CREATED", "RUNNING", "SUCCESS", "FAILED", "INTERRUPTED"}
 EXECUTION_ROOT_ENV = "RNASEQ_EXECUTION_ROOT"
 FIRST_PARTY_EXECUTION_IMAGE = DEFAULT_EXECUTION_IMAGE
 HISAT2_WORKFLOW = workflow_asset_path("hisat2_featurecounts.nf")
@@ -99,24 +100,35 @@ class LocalResourceCapacity:
 
 
 def detect_local_resource_capacity() -> LocalResourceCapacity:
-    """Read host capacity without Docker; Linux/WSL and macOS are supported."""
+    """Read the capacity this process may use; Linux/WSL and macOS are supported.
+
+    On Linux the CPU count respects CPU affinity and cgroup v1/v2 CPU quotas,
+    and memory respects a cgroup memory limit.  Any failure leaves a value
+    unavailable rather than raising.
+    """
 
     cpus = os.cpu_count()
-    total: int | None = None
-    available: int | None = None
+    total_bytes: int | None = None
+    available_bytes: int | None = None
     system = platform.system().lower()
     try:
         if system == "darwin":
             total_bytes = _darwin_memory_bytes()
-            total = total_bytes // 1024**3 if total_bytes is not None else None
-            available = total
+            available_bytes = total_bytes
         elif system == "linux":
             total_bytes, available_bytes = _linux_memory_bytes()
-            total = total_bytes // 1024**3 if total_bytes is not None else None
-            available = available_bytes // 1024**3 if available_bytes is not None else total
     except (OSError, ValueError, KeyError):
         pass
-    return LocalResourceCapacity(cpus if cpus and cpus > 0 else None, total, available)
+    cpus = cpus if cpus and cpus > 0 else None
+    if system == "linux":
+        limits = detect_process_limits()
+        cpus = limits.apply_cpus(cpus)
+        total_bytes = limits.apply_memory(total_bytes)
+        if available_bytes is not None and total_bytes is not None:
+            available_bytes = min(available_bytes, total_bytes)
+    total = total_bytes // GIB if total_bytes is not None else None
+    available = available_bytes // GIB if available_bytes is not None else total
+    return LocalResourceCapacity(cpus, total, available)
 
 
 def suggested_local_resources(capacity: LocalResourceCapacity) -> tuple[int, int]:
@@ -131,18 +143,70 @@ def suggested_local_resources(capacity: LocalResourceCapacity) -> tuple[int, int
     return cpus, memory
 
 
-def validate_local_execution_budget(cpus: int, memory_gb: int, capacity: LocalResourceCapacity) -> None:
-    if isinstance(cpus, bool) or isinstance(memory_gb, bool) or cpus < 1 or memory_gb < 1:
-        raise ExecutionPreflightError("Execution CPU and memory limits must be positive integers.")
-    if cpus < LOCAL_RESOURCE_CEILING.cpus or memory_gb < LOCAL_RESOURCE_CEILING.memory_gib:
+def validate_local_execution_budget(cpus: int | str, memory_gb: int | str, capacity: LocalResourceCapacity) -> None:
+    """Check explicit project limits; ``auto`` is resolved and checked at runtime."""
+
+    for value in (cpus, memory_gb):
+        if value == AUTO:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ExecutionPreflightError("Execution CPU and memory limits must be positive integers or 'auto'.")
+    if (cpus != AUTO and cpus < LOCAL_RESOURCE_CEILING.cpus) or (memory_gb != AUTO and memory_gb < LOCAL_RESOURCE_CEILING.memory_gib):
         raise ExecutionPreflightError("Execution budget must be at least 8 CPUs and 12 GiB to satisfy enabled local process contracts.")
     # A project budget is a user-selected upper bound, not a claim about this
     # machine.  Runtime preflight computes and records a visible effective
     # budget instead of rejecting portable project configuration here.
 
 
-def project_execution_budget(config: Any) -> ResourceContract:
-    return ResourceContract("PROJECT_LOCAL", config.execution.max_cpus, config.execution.max_memory_gb, LOCAL_RESOURCE_CEILING.time_hours)
+def project_resource_policy(config: Any, snapshot: "RuntimeSnapshot | None" = None) -> ResourcePolicy:
+    """Resolve the project's explicit or ``auto`` limits against this machine.
+
+    The runtime snapshot is the capacity authority (affinity/cgroup aware on
+    Linux, the Docker VM on the macOS backend); raw observations are recorded
+    alongside it for provenance.
+    """
+
+    try:
+        return _project_resource_policy(config, snapshot)
+    except Exception as exc:  # resource tuning must never prevent a run
+        policy = resolve_policy(config.execution.max_cpus, config.execution.max_memory_gb, DetectedResources())
+        return policy.with_process_tuning((), (f"Resource detection failed ({exc}); used the safe fallback.",))
+
+
+def _project_resource_policy(config: Any, snapshot: "RuntimeSnapshot | None") -> ResourcePolicy:
+    snapshot = snapshot or native_runtime_snapshot()
+    capacity = detect_local_resource_capacity()
+    details: dict[str, object] = {"logical_cpus": os.cpu_count(), "host_memory_gib": (
+        round(snapshot.host_memory_bytes / GIB, 1) if snapshot.host_memory_bytes else None
+    )}
+    if platform.system().lower() == "linux":
+        details.update(detect_process_limits().as_dict())
+    warnings = tuple(
+        message for condition, message in (
+            (snapshot.logical_cpus is None, "Usable CPU count is unavailable."),
+            (snapshot.host_memory_bytes is None, "Usable memory is unavailable."),
+        ) if condition
+    )
+    detected = DetectedResources(
+        usable_cpus=snapshot.logical_cpus,
+        usable_memory_bytes=snapshot.host_memory_bytes,
+        available_memory_bytes=capacity.available_memory_gib * GIB if capacity.available_memory_gib is not None else None,
+        details=details,
+        warnings=warnings,
+    )
+    return resolve_policy(config.execution.max_cpus, config.execution.max_memory_gb, detected)
+
+
+def project_execution_budget(config: Any, policy: ResourcePolicy | None = None) -> ResourceContract:
+    policy = policy or project_resource_policy(config)
+    return ResourceContract("PROJECT_LOCAL", policy.requested_cpus, policy.requested_memory_gib, LOCAL_RESOURCE_CEILING.time_hours)
+
+
+def resolve_project_resources(config: Any, snapshot: "RuntimeSnapshot") -> "EffectiveResourceBudget":
+    """Policy plus the effective budget for this machine, resolved once per run."""
+
+    policy = project_resource_policy(config, snapshot)
+    return effective_resource_budget(snapshot, project_execution_budget(config, policy), policy=policy)
 
 
 @dataclass(frozen=True)
@@ -171,9 +235,10 @@ class EffectiveResourceBudget:
     effective_memory_gib: int
     clamped: bool
     warnings: tuple[str, ...] = ()
+    policy: ResourcePolicy | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "requested": {"cpus": self.requested_cpus, "memory_gib": self.requested_memory_gib},
             "host": {"cpus": self.host_cpus, "memory_gib": self.host_memory_gib},
             "container_runtime": {
@@ -185,6 +250,9 @@ class EffectiveResourceBudget:
             "clamped": self.clamped,
             "warnings": list(self.warnings),
         }
+        if self.policy is not None:
+            payload["policy"] = self.policy.as_dict()
+        return payload
 
 
 @dataclass(frozen=True)
@@ -305,9 +373,14 @@ def native_runtime_snapshot() -> RuntimeSnapshot:
     return RuntimeSnapshot(
         host_os=platform.system(), host_architecture=platform.machine().lower(),
         logical_cpus=detect_local_resource_capacity().logical_cpus,
-        host_memory_bytes=_host_memory_bytes(), docker_architecture=None,
+        host_memory_bytes=_native_usable_memory_bytes(), docker_architecture=None,
         docker_memory_bytes=None, docker_version=None, first_party_image_architecture=None,
     )
+
+
+def _native_usable_memory_bytes() -> int | None:
+    total = _host_memory_bytes()
+    return detect_process_limits().apply_memory(total) if platform.system().lower() == "linux" else total
 
 
 def prepare_execution_workspace(workspace: ExecutionWorkspace) -> None:
@@ -493,7 +566,9 @@ def runtime_snapshot(image: str = FIRST_PARTY_EXECUTION_IMAGE) -> RuntimeSnapsho
     )
 
 
-def effective_resource_budget(snapshot: RuntimeSnapshot, budget: ResourceContract) -> EffectiveResourceBudget:
+def effective_resource_budget(
+    snapshot: RuntimeSnapshot, budget: ResourceContract, *, policy: ResourcePolicy | None = None,
+) -> EffectiveResourceBudget:
     """Resolve the portable project ceiling against this execution runtime.
 
     Docker Desktop and WSL expose a VM/container ceiling distinct from the host.
@@ -545,6 +620,7 @@ def effective_resource_budget(snapshot: RuntimeSnapshot, budget: ResourceContrac
         effective_memory_gib=effective_memory,
         clamped=clamped,
         warnings=tuple(warnings),
+        policy=policy,
     )
 
 
@@ -632,13 +708,16 @@ def runtime_resource_checks(snapshot: RuntimeSnapshot, budget: ResourceContract 
     return tuple(checks)
 
 
-def _budget_checks(snapshot: RuntimeSnapshot, budget: ResourceContract) -> tuple[RuntimeCheck, ...]:
-    resources = effective_resource_budget(snapshot, budget)
+def _budget_checks(
+    snapshot: RuntimeSnapshot, budget: ResourceContract, policy: ResourcePolicy | None = None,
+) -> tuple[RuntimeCheck, ...]:
+    resources = effective_resource_budget(snapshot, budget, policy=policy)
     level = "WARN" if resources.warnings or resources.effective_cpus < 8 or resources.effective_memory_gib < 12 else None
     return (
         RuntimeCheck(
             "Project resource budget", "FOUND",
-            f"requested aggregate ceiling={resources.requested_cpus} CPUs/{resources.requested_memory_gib} GiB.",
+            f"requested aggregate ceiling={resources.requested_cpus} CPUs/{resources.requested_memory_gib} GiB"
+            + (f" ({describe_policy(policy)})." if policy is not None else "."),
         ),
         RuntimeCheck(
             "Effective local budget", "NOT FOUND" if level else "FOUND",
@@ -1036,24 +1115,26 @@ def _free_space_check() -> RuntimeCheck:
         return RuntimeCheck("Execution work-directory free space", "NOT FOUND", f"path={workspace}; unable to inspect free space: {exc}", "WARN")
 
 
-def _doctor_budget(project_dir: Path | None) -> tuple[str, ResourceContract]:
+def _doctor_budget(project_dir: Path | None) -> tuple[str, ResourceContract, ResourcePolicy | None]:
     requested_image = FIRST_PARTY_EXECUTION_IMAGE
     budget = LOCAL_RESOURCE_CEILING
+    policy: ResourcePolicy | None = None
     if project_dir is not None:
         try:
             from rnaseq.project import load_project
             config = load_project(project_dir).config
             requested_image = config.runtime.execution_image
-            budget = project_execution_budget(config)
+            policy = project_resource_policy(config)
+            budget = project_execution_budget(config, policy)
         except (OSError, ValueError):
             pass
-    return requested_image, budget
+    return requested_image, budget, policy
 
 
 def native_linux_doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeCheck, ...]:
     """Checks for the qualified linux-64 architecture: Nextflow + Conda, no Docker."""
 
-    _requested_image, budget = _doctor_budget(project_dir)
+    _requested_image, budget, policy = _doctor_budget(project_dir)
     snapshot = native_runtime_snapshot()
     probe = Path.cwd()
     return (
@@ -1071,7 +1152,7 @@ def native_linux_doctor_checks(project_dir: Path | None = None) -> tuple[Runtime
             "Host runtime", "FOUND",
             f"OS={snapshot.host_os}; architecture={snapshot.host_architecture}; logical_cpus={snapshot.logical_cpus or 'unavailable'}; memory={_gib(snapshot.host_memory_bytes)}",
         ),
-        *_budget_checks(snapshot, budget),
+        *_budget_checks(snapshot, budget, policy),
         _reference_runtime_check(project_dir),
         RuntimeCheck("Disk write access", "FOUND" if os.access(probe, os.W_OK) else "NOT FOUND", str(probe)),
         _free_space_check(),
@@ -1095,7 +1176,7 @@ def container_doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeChe
     probe = Path.cwd()
     writable = probe.exists() and probe.is_dir() and probe.stat().st_mode != 0
     from rnaseq.downstream import r_runtime_checks
-    requested_image, budget = _doctor_budget(project_dir)
+    requested_image, budget, _policy = _doctor_budget(project_dir)
     observed_image = inspect_container_image(requested_image)
     snapshot = runtime_snapshot(requested_image)
     disk_check = _free_space_check()
@@ -1226,8 +1307,7 @@ def prepare_run(report: ValidationReport, profile: str) -> PreparedRun:
     validate_local_execution_budget(
         report.config.execution.max_cpus, report.config.execution.max_memory_gb, detect_local_resource_capacity()
     )
-    snapshot = native_runtime_snapshot()
-    resources = effective_resource_budget(snapshot, project_execution_budget(report.config))
+    resources = resolve_project_resources(report.config, native_runtime_snapshot())
     validate_effective_resource_budget(resources)
     _validate_custom_reference_files(report)
     require_fresh_plan(report)
@@ -1353,9 +1433,7 @@ def _freeze_inputs(prepared: PreparedRun, run_dir: Path) -> tuple[Path, Path, Pa
     _write_text(params_path, json.dumps(nfcore_runtime_params(report), sort_keys=True) + "\n")
     # Resource declarations are frozen separately from scientific parameters.
     runtime_config = frozen / "local.nextflow.config"
-    effective = prepared.resource_budget or effective_resource_budget(
-        native_runtime_snapshot(), project_execution_budget(report.config)
-    )
+    effective = prepared.resource_budget or resolve_project_resources(report.config, native_runtime_snapshot())
     _write_text(runtime_config, render_local_resource_config(ResourceContract(
         "EFFECTIVE_LOCAL", effective.effective_cpus, effective.effective_memory_gib, LOCAL_RESOURCE_CEILING.time_hours
     )))
@@ -1368,6 +1446,7 @@ def build_nextflow_command(
     params_file: Path | None = None, config_file: Path | None = None,
     conda_config_file: Path | None = None,
     reference_paths: dict[str, Path] | None = None, work_dir: Path | None = None,
+    tuning_config_file: Path | None = None,
 ) -> list[str]:
     """Build the exact argument vector; it is never run through a shell."""
 
@@ -1382,6 +1461,8 @@ def build_nextflow_command(
         command.extend(["-c", str(config_file.resolve())])
     if backend == BACKEND_CONDA and conda_config_file is not None:
         command.extend(["-c", str(conda_config_file.resolve())])
+    if tuning_config_file is not None:
+        command.extend(["-c", str(tuning_config_file.resolve())])
     command.extend([
         "nf-core/rnaseq", "-r", NFCORE_RNASEQ_VERSION,
         "-profile", NFCORE_CONDA_PROFILE if backend == BACKEND_CONDA else CONTAINER_PROFILE,
@@ -1437,6 +1518,7 @@ def build_hisat2_featurecounts_command(
     report: ValidationReport, *, samplesheet: Path, output_dir: Path, profile: str,
     reference_paths: dict[str, Path] | None = None, work_dir: Path | None = None,
     config_file: Path | None = None, conda_config_file: Path | None = None,
+    observer_config_file: Path | None = None,
 ) -> list[str]:
     """Build the first-party alignment/counting command without a shell."""
 
@@ -1485,6 +1567,8 @@ def build_hisat2_featurecounts_command(
         if not HISAT2_LINUX_CONDA_ENV.is_file():
             raise ExecutionPreflightError(f"Linux HISAT2 Conda environment is missing: {HISAT2_LINUX_CONDA_ENV}")
         command.extend(["-c", str(conda_config_file.resolve())])
+    if observer_config_file is not None:
+        command.extend(["-c", str(observer_config_file.resolve())])
     command.extend([
         str(HISAT2_WORKFLOW), "-profile", NFCORE_CONDA_PROFILE if backend == BACKEND_CONDA else CONTAINER_PROFILE,
         "--input", str(samplesheet.resolve()), "--outdir", str(output_dir.resolve()),
@@ -1662,7 +1746,7 @@ def execute_prepared_run(prepared: PreparedRun) -> RunResult:
         work_dir=workspace.work_dir / "upstream",
     )
     runtime = native_runtime_snapshot()
-    resources = prepared.resource_budget or effective_resource_budget(runtime, project_execution_budget(prepared.report.config))
+    resources = prepared.resource_budget or resolve_project_resources(prepared.report.config, runtime)
     source_root = Path(__file__).resolve().parents[2]
     source_checkout = source_root if (source_root / ".git").exists() else None
     git_commit: str | None = None
