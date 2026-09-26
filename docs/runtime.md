@@ -322,22 +322,81 @@ configuration.
 ## Monitoring a run
 
 ```bash
-rnaseq status PROJECT            # latest run: state, phase, task progress, resources
-rnaseq status PROJECT --watch    # refresh every 10 s (--interval N, minimum 2) until it finishes; Ctrl-C stops watching only
-rnaseq status PROJECT --case CASE-ID [--run RUN-ID]
-rnaseq status PROJECT --all      # one summary block per recorded run
+rnaseq status PROJECT                          # dashboard of the latest run
+rnaseq status PROJECT --watch                  # redraw every 10 s (--interval N, minimum 2) until SUCCESS, FAILED or INTERRUPTED
+rnaseq status PROJECT --case CASE-ID           # latest run of that case
+rnaseq status PROJECT --case CASE-ID --run RUN-ID   # one exact run (--run alone works when the run ID is unique)
+rnaseq status PROJECT --all [--case CASE-ID]   # one line per recorded run, newest first
 ```
 
+A completed HISAT2/featureCounts run looks like this:
+
+```text
+SJ / V130-HISAT2
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SUCCESS   1h 20m 34s
+
+Pipeline (HISAT2 → featureCounts)
+✓ Input / preflight
+✓ FASTQ QC / preprocessing  7 / 7 samples
+✓ HISAT2 alignment          7 / 7 samples
+✓ featureCounts             7 / 7 samples
+✓ MultiQC
+✓ L1 expression QC
+✓ L2 / DESeq2
+✓ Technical report
+✓ Delivery
+
+Tasks
+61 completed / 0 failed
+
+Resources (configured Nextflow ceiling, not live usage)
+CPU         24 max
+Memory      79 GiB max
+Policy      auto; usable 28 CPUs / 94.0 GiB; OS reserve 4 CPUs / 15 GiB
+
+Started     2026-09-26 17:43:38
+Completed   2026-09-26 19:04:12
+Run         20260926-174337+0800
+Run dir     …/runs/V130-HISAT2/20260926-174337+0800
+Delivery    …/runs/V130-HISAT2/20260926-174337+0800/delivery
+Log         …/runs/V130-HISAT2/20260926-174337+0800/logs/rnaseq.log
+```
+
+The stage list follows the run's frozen route and plan: the HISAT2 route shows
+FASTQ QC/preprocessing, HISAT2 alignment, featureCounts and MultiQC; the Salmon
+route shows reference preparation, FASTQ QC/trimming, Salmon quantification,
+tximport/gene summary and MultiQC; raw-count projects have no upstream stages.
+L2/DESeq2 appears unless the preset is L1, an enrichment stage appears only when
+enrichment is configured, and the QC preset shows L1/L2 as skipped. Symbols:
+`✓` completed, `▶` running, `○` waiting, `!` failed, `⏸` interrupted,
+`–` not started or skipped. While a run is active the dashboard also lists
+running tasks with their sample and elapsed time, and task counts as
+completed / running / queued / failed; no total is shown because Nextflow creates
+tasks as the run progresses.
+
 `rnaseq status` is read-only and does not need Nextflow to be running. It reads
-the run's `run_state.json`, its own logs, the nf-core/rnaseq execution trace
-(`upstream/nfcore_rnaseq/pipeline_info/`), the HISAT2 route's
-`provenance/upstream.trace.txt`, the downstream trace, and frozen provenance.
-Running task names come from Nextflow's plain log minus the tasks the trace has
-already finished. A run is SUCCESS only when its durable state says so. A run
-recorded as RUNNING whose `rnaseq` process no longer exists (checked by PID,
-process start time and boot ID) is shown as INTERRUPTED (stale); one launched on
-another host, or before per-run process records existed, is shown as RUNNING
-(unverified).
+the run's `run_state.json`, frozen `input_manifest.yaml` and samplesheet, its own
+logs, the nf-core/rnaseq execution trace (`upstream/nfcore_rnaseq/pipeline_info/`),
+the HISAT2 route's `provenance/upstream.trace.txt`, the downstream trace, and
+frozen provenance. Submitted tasks come from Nextflow's plain log; a task counts
+as running only when Nextflow's `.command.begin` marker exists in its work
+directory and `.exitcode` does not, and its elapsed time is taken from that
+marker; otherwise it is counted as queued, without an elapsed time. A stage is
+complete only when its tasks are (for per-sample stages, every sample) or when the
+durable run state has moved past it, never because an output directory exists.
+Resources are the configured ceiling recorded for the run, not live utilization.
+Status shows execution only; DEG counts, enrichment and PCA results are in the
+report and delivery package.
+
+A run is SUCCESS only when its durable state says so. A run recorded as RUNNING
+whose `rnaseq` process no longer exists (checked by PID, process start time and
+boot ID) is shown as INTERRUPTED (stale); one launched on another host, or before
+per-run process records existed, is shown as RUNNING (unverified). `--watch`
+stays on the run it selected first, redraws in place on a terminal, and stops at
+SUCCESS, FAILED or INTERRUPTED; Ctrl-C stops watching only and never signals the
+run. An unknown `--case`/`--run`, or a `--run` that exists in several cases without
+`--case`, is an error.
 
 Each run owns its execution log, `runs/CASE/RUN/logs/rnaseq.log`: start (PID,
 host, command), selected resources, every state/phase transition, each Nextflow

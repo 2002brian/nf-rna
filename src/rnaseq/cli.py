@@ -14,7 +14,7 @@ import typer
 
 from rnaseq.errors import ExecutionPreflightError, ProjectCreationError, UpstreamExecutionError
 from rnaseq.execution import (
-    detect_local_resource_capacity, doctor_checks, doctor_readiness, load_run_states,
+    detect_local_resource_capacity, doctor_checks, doctor_readiness,
     validate_local_execution_budget,
 )
 from rnaseq.service import RunTermination, execute_retry_service_run, execute_service_run, prepare_service_run, sanitize_completed_delivery, validate_case_id
@@ -863,75 +863,82 @@ def _report_interruption(exc: BaseException) -> None:
 @app.command("status")
 def status_command(
     project_dir: Path,
-    watch: bool = typer.Option(False, "--watch", "-w", help="Refresh until the run finishes or Ctrl-C."),
-    interval: float = typer.Option(10.0, "--interval", min=2.0, help="Seconds between --watch refreshes (minimum 2)."),
-    case_id: str | None = typer.Option(None, "--case", help="Show the latest run of this case ID."),
-    run_id: str | None = typer.Option(None, "--run", help="Show this run ID."),
-    all_runs: bool = typer.Option(False, "--all", help="List every recorded run (summary view)."),
+    watch: bool = typer.Option(False, "--watch", "-w", help="Refresh the dashboard until the run reaches SUCCESS, FAILED or INTERRUPTED. Ctrl-C stops watching only; the run is never signalled."),
+    interval: float = typer.Option(10.0, "--interval", min=2.0, help="Seconds between --watch refreshes (default 10, minimum 2)."),
+    case_id: str | None = typer.Option(None, "--case", help="Show the latest run of this case ID (or, with --run, that exact run)."),
+    run_id: str | None = typer.Option(None, "--run", help="Show this exact run ID; add --case if the run ID exists in more than one case."),
+    all_runs: bool = typer.Option(False, "--all", help="One-line summary of every recorded run (optionally only --case), newest first."),
 ) -> None:
-    """Show the progress of the latest run; read-only, Nextflow need not be running."""
+    """Execution dashboard of the latest run; read-only, Nextflow need not be running.
 
-    if all_runs:
-        _list_run_states(project_dir)
-        return
-    from rnaseq.run_status import _Cache, build_status, render_status, select_run
+    Shows pipeline stages for the run's actual route, running tasks, task counts
+    and the configured resource ceiling. Scientific results are in the report
+    and delivery package, not here.
+    """
+
+    from rnaseq.run_status import _Cache, build_status, load_run, matching_runs, render_history, render_status
 
     project = project_dir.resolve()
     if not project.is_dir():
         typer.echo(f"ERROR: project directory not found: {project}", err=True)
         raise typer.Exit(code=1)
     cache = _Cache()
+    if all_runs:
+        if watch or run_id:
+            typer.echo("ERROR: --all is a history summary; it cannot be combined with --watch or --run.", err=True)
+            raise typer.Exit(code=2)
+        runs = matching_runs(project, case_id)
+        if not runs:
+            typer.echo(f"No recorded runs for case {case_id}." if case_id else "No recorded case runs.")
+            raise typer.Exit(code=1 if case_id else 0)
+        latest = matching_runs(project)[:1] if case_id else runs[:1]
+        typer.echo(render_history(project, runs, cache, latest=latest[0][0] if latest else None))
+        return
+
+    matches = matching_runs(project, case_id, run_id)
+    if run_id and not case_id and len({path.parent for path, _state in matches}) > 1:
+        cases = ", ".join(sorted({str(state.get("case_id") or path.parent.name) for path, state in matches}))
+        typer.echo(f"ERROR: run ID {run_id} exists in more than one case ({cases}); add --case.", err=True)
+        raise typer.Exit(code=2)
+    if not matches:
+        if case_id or run_id:
+            wanted = " / ".join(item for item in (case_id and f"case {case_id}", run_id and f"run {run_id}") if item)
+            typer.echo(f"ERROR: no recorded run matches {wanted}; list runs with: rnaseq status PROJECT --all", err=True)
+            raise typer.Exit(code=1)
+        planned = (project / "planning" / "manifest.preview.yaml").is_file()
+        typer.echo("PLANNED: no case runs recorded yet; start one with: rnaseq run PROJECT --case-id CASE-ID"
+                   if planned else "No recorded case runs.")
+        return
+    pinned = matches[0][0]  # --watch follows this run even if a newer one starts
+    ascii_only = not (getattr(sys.stdout, "encoding", None) or "").lower().replace("-", "").startswith("utf")
 
     def snapshot() -> tuple[str, bool]:
-        selected = select_run(project, case_id, run_id)
+        selected = load_run(pinned, cache)
         if selected is None:
-            if case_id or run_id:
-                return "No recorded run matches the requested case/run.", True
-            planned = (project / "planning" / "manifest.preview.yaml").is_file()
-            return ("State:      PLANNED\nNo case runs recorded yet; start one with: rnaseq run PROJECT --case-id CASE-ID"
-                    if planned else "No recorded case runs."), True
+            return f"ERROR: run state of {pinned} is no longer readable.", True
         status = build_status(*selected, cache=cache)
-        return render_status(status), status.is_final
+        return render_status(status, ascii_only=ascii_only), status.is_final
 
     text, final = snapshot()
     if not watch:
         typer.echo(text)
         return
-    clear = sys.stdout.isatty()
+    refresh = sys.stdout.isatty()
     try:
         while True:
-            if clear:
-                typer.echo("\033[H\033[2J", nl=False)
+            if refresh:
+                typer.echo("\033[H\033[2J", nl=False)  # redraw in place instead of scrolling copies
             typer.echo(text)
             if final:
                 return
-            typer.echo(f"\nRefreshing every {interval:g}s; Ctrl-C to stop watching (the run is not affected).")
+            typer.echo(f"\nRefreshing every {interval:g}s; Ctrl-C stops watching (the run is not affected).")
             time.sleep(interval)
             text, final = snapshot()
+            if not refresh:
+                typer.echo("")
     except KeyboardInterrupt:
         typer.echo("\nStopped watching; the run itself was not affected.")
         raise typer.Exit(code=0)
-
-
-def _list_run_states(project_dir: Path) -> None:
-    states = load_run_states(project_dir.resolve())
-    if not states:
-        typer.echo("No recorded case runs.")
-        return
-    for state in states:
-        typer.echo(f"Run ID: {state.get('run_id', 'unknown')}")
-        attempt = "retry attempt" if state.get("attempt_type") == "RETRY" or state.get("retry_of") else "original run"
-        typer.echo(f"Status: {state.get('status', 'unknown')} ({attempt})")
-        typer.echo(f"Case: {state.get('case_id', 'legacy')}")
-        retry_of = state.get("retry_of")
-        if isinstance(retry_of, dict):
-            typer.echo(f"Retry of: {retry_of.get('case_id', 'unknown')}/{retry_of.get('run_id', 'unknown')} (source status: {retry_of.get('status', 'unknown')})")
-        typer.echo(f"Profile: {state.get('profile', 'local')}")
-        typer.echo(f"Started: {state.get('started_at')}")
-        typer.echo(f"Completed: {state.get('completed_at')}")
-        typer.echo(f"Upstream outputs: {'available' if state.get('handoff_available') else 'unavailable'}")
-        typer.echo(f"Delivery package: {'available' if state.get('delivery_available') else 'unavailable'}")
-        typer.echo(f"Run directory: {state.get('run_dir')}")
 
 
 @app.command("sanitize-delivery")

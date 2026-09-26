@@ -114,8 +114,9 @@ rnaseq validate .
 rnaseq plan .
 rnaseq doctor .
 rnaseq run . --case-id CASE-001 --profile local --yes
-rnaseq status .            # 最新 run 的狀態、phase 與 task 進度
-rnaseq status . --watch    # 持續更新直到 run 結束
+rnaseq status .            # 最新 run 的執行儀表板
+rnaseq status . --watch    # 持續更新直到 run 結束（Ctrl-C 只停止監看）
+rnaseq status . --all      # 每個 run 一行的歷史摘要
 ```
 
 最終結果位於 `runs/<case-id>/<run-id>/delivery/`。新專案預設依硬體自動設定 CPU／記憶體上限（`execution.max_cpus: auto`、`execution.max_memory_gb: auto`）；`project.yaml` 中明確指定的整數上限會被保留。

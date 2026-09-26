@@ -218,9 +218,9 @@ def test_status_labels_retry_attempt(monkeypatch, project_factory):
 
     result = runner.invoke(app, ["status", str(root), "--all"])
     assert result.exit_code == 0, result.output
-    assert "Status: FAILED (original run)" in result.output
-    assert "Status: SUCCESS (retry attempt)" in result.output
-    assert f"Retry of: {source.case_id}/{source.run_id} (source status: FAILED)" in result.output
+    rows = result.output.splitlines()
+    assert any("FAILED" in row and row.rstrip().endswith("original") for row in rows)
+    assert any(row.startswith("*") and "SUCCESS" in row and f"retry of {source.case_id}/{source.run_id} (source FAILED)" in row for row in rows)
 
 
 def test_status_default_view_shows_latest_retry_attempt(monkeypatch, project_factory):
@@ -231,8 +231,8 @@ def test_status_default_view_shows_latest_retry_attempt(monkeypatch, project_fac
 
     result = runner.invoke(app, ["status", str(root)])
     assert result.exit_code == 0, result.output
-    assert f"Run:        {retry.run_id} (retry of {source.case_id}/{source.run_id})" in result.output
-    assert "State:      SUCCESS" in result.output
+    assert f"Run         {retry.run_id} (retry of {source.case_id}/{source.run_id} (source FAILED))" in result.output
+    assert "\nSUCCESS " in result.output
     log = (retry.run_dir / "logs" / "rnaseq.log").read_text(encoding="utf-8")
     assert "frozen resource configuration is inherited from the source run" in log
     assert "run finished: SUCCESS" in log
@@ -290,8 +290,9 @@ def test_retry_cli_accepts_an_interrupted_source(monkeypatch, project_factory):
     assert result.exit_code == 0, result.output
     assert "Case retry: SUCCESS" in result.output
     status = runner.invoke(app, ["status", str(root), "--all"])
-    assert "Status: INTERRUPTED (original run)" in status.output
-    assert f"Retry of: {source.case_id}/{source.run_id} (source status: INTERRUPTED)" in status.output
+    rows = status.output.splitlines()
+    assert any("INTERRUPTED" in row and row.rstrip().endswith("original") for row in rows)
+    assert any(f"retry of {source.case_id}/{source.run_id} (source INTERRUPTED)" in row for row in rows)
 
 
 @pytest.mark.parametrize("recorded", ["RUNNING", "CREATED"])
@@ -321,7 +322,7 @@ def test_stale_running_is_shown_interrupted_by_status_but_is_not_retryable(monke
 
     status = runner.invoke(app, ["status", str(root), "--case", source.case_id, "--run", source.run_id])
     assert status.exit_code == 0, status.output
-    assert "State:      INTERRUPTED" in status.output and "stale: recorded RUNNING" in status.output
+    assert "\nINTERRUPTED" in status.output and "stale: recorded RUNNING" in status.output
     assert source.state_path.read_bytes() == state  # status is read-only
 
     with pytest.raises(ExecutionPreflightError, match="recorded as RUNNING.*stale.*start a new run"):

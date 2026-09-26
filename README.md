@@ -116,8 +116,9 @@ rnaseq validate .
 rnaseq plan .
 rnaseq doctor .
 rnaseq run . --case-id CASE-001 --profile local --yes
-rnaseq status .            # state, phase and task progress of the latest run
-rnaseq status . --watch    # refresh until the run finishes
+rnaseq status .            # execution dashboard of the latest run
+rnaseq status . --watch    # redraw until the run finishes (Ctrl-C stops watching only)
+rnaseq status . --all      # one line per recorded run
 ```
 
 Final results are delivered to `runs/<case-id>/<run-id>/delivery/`. New projects use hardware-aware automatic CPU/memory limits (`execution.max_cpus: auto`, `execution.max_memory_gb: auto`); explicit integer limits in `project.yaml` are preserved.
