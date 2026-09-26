@@ -129,6 +129,8 @@ def test_hisat2_backend_requires_explicit_strandedness(project_factory):
     assert any("explicit upstream.strandedness" in issue.message for issue in report.errors)
 
 
+# Command construction, not capacity: the host's CPU count must not decide this test.
+@pytest.mark.usefixtures("production_capable_execution_capacity")
 def test_hisat2_command_uses_first_party_workflow_and_custom_index(tmp_path: Path, monkeypatch):
     root = tmp_path / "project"
     fastq = root / "input" / "fastq"
