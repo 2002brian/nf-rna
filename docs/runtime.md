@@ -77,14 +77,17 @@ only.
 Official release images are qualified for `linux/amd64`. `linux/arm64` is not
 yet independently qualified.
 
-Normal GHCR publication starts automatically when a GitHub Release is
-published. Official publishing accepts stable `vX.Y.Z` release tags only,
-checks that the checked-out release commit and package version match that tag,
-then builds and pushes both the explicit version tag and `latest`. It runs
+Automatic GHCR publication ended with v1.2.1: the publication workflow was
+removed for v1.3.0, so v1.3.0 and later releases publish no Docker image and
+leave the existing tags, including `latest`, unchanged. Through v1.2.1, normal
+GHCR publication started automatically when a GitHub Release was
+published. Official publishing accepted stable `vX.Y.Z` release tags only,
+checked that the checked-out release commit and package version matched that tag,
+then built and pushed both the explicit version tag and `latest`. It ran
 `rnaseq --version` against the published version-tagged image afterward.
-Per-release-tag workflow concurrency prevents ordinary duplicate runs.
+Per-release-tag workflow concurrency prevented ordinary duplicate runs.
 
-The workflow does not create, edit, move, or republish a Git tag or GitHub
+The workflow did not create, edit, move, or republish a Git tag or GitHub
 Release. The immutable historical `v1.0.0` GitHub Release predates this
 workflow and has no official GHCR image. Official GHCR distribution begins with
 the `v1.1.2` release. The `v1.1.2` hotfix changes no scientific analysis, R,

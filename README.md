@@ -116,7 +116,11 @@ rnaseq validate .
 rnaseq plan .
 rnaseq doctor .
 rnaseq run . --case-id CASE-001 --profile local --yes
+rnaseq status .            # state, phase and task progress of the latest run
+rnaseq status . --watch    # refresh until the run finishes
 ```
+
+Final results are delivered to `runs/<case-id>/<run-id>/delivery/`. New projects use hardware-aware automatic CPU/memory limits (`execution.max_cpus: auto`, `execution.max_memory_gb: auto`); explicit integer limits in `project.yaml` are preserved.
 
 The wizard creates a project scaffold; it does not infer scientific inputs. FASTQ projects also need an execution-ready reference. Register an existing checksum-bound managed reference with `rnaseq reference register /absolute/reference-root`, or configure a supported reference route. See the [detailed Quick Start](docs/quickstart.md).
 

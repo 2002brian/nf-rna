@@ -114,7 +114,11 @@ rnaseq validate .
 rnaseq plan .
 rnaseq doctor .
 rnaseq run . --case-id CASE-001 --profile local --yes
+rnaseq status .            # 最新 run 的狀態、phase 與 task 進度
+rnaseq status . --watch    # 持續更新直到 run 結束
 ```
+
+最終結果位於 `runs/<case-id>/<run-id>/delivery/`。新專案預設依硬體自動設定 CPU／記憶體上限（`execution.max_cpus: auto`、`execution.max_memory_gb: auto`）；`project.yaml` 中明確指定的整數上限會被保留。
 
 wizard 只建立 project scaffold，不會推測科學輸入。FASTQ 專案還需要 execution-ready reference；可用 `rnaseq reference register /absolute/reference-root` 註冊既有的 checksum-bound managed reference，或設定支援的 reference route。詳細內容請見 [Quick Start](docs/quickstart.md)。
 
