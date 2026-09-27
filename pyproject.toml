@@ -37,7 +37,7 @@ path = "src/rnaseq/__init__.py"
 "workflow" = "rnaseq/workflows"
 
 [tool.hatch.build.targets.sdist]
-include = ["src/rnaseq", "workflow", "tests", "examples", "docs", "README.md", "CHANGELOG.md", "CITATION.cff", "LICENSE", "environment.yml", "environment.docker.yml", "environment.reference-builder.yml", "environment.reference-builder-hisat2-2.2.3.yml", "pyproject.toml", "Dockerfile", ".dockerignore"]
+include = ["src/rnaseq", "workflow", "tests", "examples", "docs", "README.md", "CHANGELOG.md", "CITATION.cff", "LICENSE", "environment.yml", "environment.reference-builder.yml", "environment.reference-builder-hisat2-2.2.3.yml", "pyproject.toml"]
 exclude = [
   "examples/**/runs/**",
   "examples/**/work/**",

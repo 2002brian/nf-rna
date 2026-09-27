@@ -411,14 +411,8 @@ def generate_plan(report: ValidationReport) -> tuple[Path, ...]:
     assert report.config is not None
     # Keep machine-specific observations out of the deterministic manifest.
     # The dedicated resource plan is intentionally refreshed by every plan run.
-    from rnaseq.errors import ExecutionPreflightError
-    from rnaseq.execution import backend_resource_snapshot, native_runtime_snapshot, resolve_project_resources
-    try:
-        # Only the Docker backend (macOS) observes Docker capacity; Linux/WSL2 never queries Docker.
-        snapshot = backend_resource_snapshot(report.config.runtime.execution_image)
-    except ExecutionPreflightError:
-        snapshot = native_runtime_snapshot()
-    resources = resolve_project_resources(report.config, snapshot)
+    from rnaseq.execution import native_runtime_snapshot, resolve_project_resources
+    resources = resolve_project_resources(report.config, native_runtime_snapshot())
     resource_plan = {
         "schema_version": "1.0",
         "observation": "current local runtime; refreshed by rnaseq plan",

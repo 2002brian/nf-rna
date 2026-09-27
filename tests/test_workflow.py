@@ -66,7 +66,7 @@ def test_downstream_workflow_stages_a_narrow_execution_input_bundle_without_volu
         assert "stageInMode 'copy'" in body
 
 
-@pytest.mark.parametrize("profile", ("local", "docker", "server"))
+@pytest.mark.parametrize("profile", ("local", "conda", "server"))
 def test_downstream_nextflow_profiles_parse(profile: str):
     if shutil.which("nextflow") is None:
         pytest.skip("Nextflow unavailable")
@@ -80,25 +80,26 @@ def test_downstream_nextflow_profiles_parse(profile: str):
     assert result.returncode == 0, result.stderr
 
 
-def test_all_downstream_processes_declare_both_frozen_backend_runtimes():
-    """linux-64/WSL2 activates the frozen Conda prefix; macOS runs the frozen Docker image."""
+def test_all_downstream_processes_declare_the_frozen_conda_runtime():
+    """Every downstream process activates the frozen linux-64 Conda prefix; no Docker image remains."""
     main = (WORKFLOW / "main.nf").read_text(encoding="utf-8")
     config = (WORKFLOW / "nextflow.config").read_text(encoding="utf-8")
     assert "params.downstream_runtime_prefix = null" in main
-    assert "params.first_party_image = null" in main
-    assert "Specify exactly one of --downstream_runtime_prefix or --first_party_image through rnaseq" in main
+    assert "first_party_image" not in main
+    assert "Specify --downstream_runtime_prefix through rnaseq" in main
     assert "ghcr.io/2002brian/nf-rna:" not in main
+    assert "docker {" not in config and "docker.enabled = true" not in config
     for name in ("L1_ANALYSIS", "L2_ANALYSIS", "ENRICHMENT_ANALYSIS", "TECHNICAL_REPORT", "TECHNICAL_REPORT_NO_ENRICHMENT", "TECHNICAL_REPORT_L1"):
         body = re.search(rf"process {name} \{{(?P<body>.*?)^\}}", main, flags=re.DOTALL | re.MULTILINE)
         assert body is not None
         assert "conda params.downstream_runtime_prefix" in body.group("body")
-        assert "container params.first_party_image" in body.group("body")
+        assert "container " not in body.group("body")
         assert "/opt/nf-rna/r" not in body.group("body")
     assert "process.container" not in config
 
 
-@pytest.mark.parametrize("frozen", [[], ["--downstream_runtime_prefix", "/p", "--first_party_image", "img:1"]])
-def test_direct_downstream_execution_requires_exactly_one_frozen_runtime(tmp_path, frozen):
+@pytest.mark.parametrize("frozen", [[], ["--first_party_image", "img:1"]])
+def test_direct_downstream_execution_requires_the_frozen_conda_runtime(tmp_path, frozen):
     if shutil.which("nextflow") is None:
         pytest.skip("Nextflow unavailable")
     result = subprocess.run(
@@ -110,7 +111,7 @@ def test_direct_downstream_execution_requires_exactly_one_frozen_runtime(tmp_pat
         cwd=tmp_path, capture_output=True, text=True, check=False,
     )
     assert result.returncode != 0
-    assert "Specify exactly one of --downstream_runtime_prefix or --first_party_image through rnaseq" in result.stdout + result.stderr
+    assert "Specify --downstream_runtime_prefix through rnaseq" in result.stdout + result.stderr
 
 
 def test_downstream_resource_contracts_are_explicit_without_artificial_serialization():

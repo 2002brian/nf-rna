@@ -59,9 +59,9 @@ The downstream prefix is created from the reviewed linux-64 Conda lock and
 holds the non-editable nf-rna wheel, so `rnaseq.workflow_support` and the R
 scripts in every task come from the same recorded source commit. Upstream,
 nf-core/rnaseq runs with `-profile conda` and the HISAT2/featureCounts graph
-uses its exactly pinned Conda environment. The same processes also declare
-`container params.first_party_image`, used only by the historical Docker
-runtime of v1.2.1 and earlier.
+uses its exactly pinned Conda environment. The historical Docker runtime of
+v1.2.1 and earlier ran these processes in a first-party execution image; that
+runtime and its `params.first_party_image` were removed after v1.3.0 (v1.2.1 was the last Docker release).
 
 `paired_two_group` is a specialization of the existing additive-design path, not a separate analysis pipeline. Its explicit `pair_id` column, formula, contrast-specific pair membership, complete-pair counts, and analyzed-sample counts are validated before execution and frozen into the input manifest and downstream contract. L1, the single DESeq2 L2 fit, explicit contrast extraction, and optional preranked GSEA then follow the same graph as unpaired projects.
 

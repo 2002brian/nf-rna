@@ -2,8 +2,7 @@
 
 `nf-rna-downstream.yml` is the reviewed, human-readable dependency source for
 first-party downstream analysis only. It intentionally excludes nf-core
-alignment/QC tools, HISAT2/featureCounts tools, development dependencies, and
-Docker-only `procps-ng`.
+alignment/QC tools, HISAT2/featureCounts tools, and development dependencies.
 
 It is not a production runtime by itself. Each supported platform must have a
 reviewed exact Conda lock in `locks/`, with its SHA-256 recorded in the run's

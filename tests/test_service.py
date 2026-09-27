@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from conftest import base_config
+from rnaseq import execution as execution_module
 from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
 from rnaseq.downstream_runtime import DownstreamRuntime
 from rnaseq.execution import RuntimeCheck, load_run_states
@@ -583,7 +584,6 @@ def test_delivery_sidecar_after_sanitization_prevents_success_state(monkeypatch,
     generate_plan(report)
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(tmp_path / "local-nextflow-cache"))
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "available"))
-    monkeypatch.setattr("rnaseq.service.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "available"))
 
     def fake_nextflow(command, *, cwd, stdout_path, stderr_path):
         outdir = Path(command[command.index("--outdir") + 1])
@@ -702,7 +702,6 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     local_root = tmp_path / "local-nextflow-cache"
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(local_root))
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "25.10.4"))
-    monkeypatch.setattr("rnaseq.service.check_docker", lambda: (_ for _ in ()).throw(AssertionError("Salmon must not query Docker")))
     monkeypatch.setattr("rnaseq.service.check_upstream_conda", lambda: RuntimeCheck("Conda", "FOUND", "conda 25.3.1"))
     observed: list[tuple[list[str], Path]] = []
 
@@ -825,7 +824,6 @@ def test_failed_service_run_keeps_frozen_logs_and_provenance(monkeypatch, projec
     local_root = tmp_path / "local-nextflow-cache"
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(local_root))
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "25.10.4"))
-    monkeypatch.setattr("rnaseq.service.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "Docker daemon is available."))
 
     def fail_nextflow(_command, *, cwd, stdout_path, stderr_path):
         (cwd / ".nextflow" / "cache").mkdir(parents=True, exist_ok=True)
@@ -850,7 +848,10 @@ def test_raw_count_preflight_requires_no_docker(monkeypatch, project_factory):
     report = validate_project(root)
     generate_plan(report)
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "available"))
-    monkeypatch.setattr("rnaseq.service.check_docker", lambda: (_ for _ in ()).throw(AssertionError("raw counts must not query Docker")))
+    real_capture = execution_module._run_capture
+    monkeypatch.setattr("rnaseq.execution._run_capture", lambda arguments: (
+        pytest.fail(f"raw counts invoked Docker: {arguments}") if Path(arguments[0]).name == "docker" else real_capture(arguments)
+    ))
     prepare_service_run(report, profile="local")
 
 

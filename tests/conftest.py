@@ -137,16 +137,9 @@ def production_capable_execution_capacity(monkeypatch):
         host_architecture="amd64",
         logical_cpus=16,
         host_memory_bytes=64 * 1024**3,
-        docker_architecture="amd64",
-        docker_memory_bytes=64 * 1024**3,
-        docker_version="test",
-        first_party_image_architecture="amd64",
-        docker_cpus=16,
     )
     monkeypatch.setattr("rnaseq.execution.detect_local_resource_capacity", lambda: capacity)
     monkeypatch.setattr("rnaseq.service.detect_local_resource_capacity", lambda: capacity)
-    monkeypatch.setattr("rnaseq.execution.runtime_snapshot", lambda *_args: snapshot)
-    monkeypatch.setattr("rnaseq.service.runtime_snapshot", lambda *_args: snapshot)
     return snapshot
 
 

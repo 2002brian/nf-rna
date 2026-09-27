@@ -61,14 +61,12 @@ def _native_host(
         raise AssertionError(f"unexpected doctor subprocess: {arguments}")
 
     def no_docker(*_args, **_kwargs):
-        raise AssertionError("Linux doctor used a Docker-oriented check")
+        raise AssertionError("Linux doctor probed host R packages")
 
     monkeypatch.setattr(platform, "system", lambda: "Linux")
     monkeypatch.setattr(platform, "machine", lambda: "x86_64")
     monkeypatch.setattr("rnaseq.execution._run_capture", run)
     monkeypatch.setattr(shutil, "which", lambda name: None if name == "docker" else f"/opt/native/bin/{name}")
-    for guarded in ("check_docker", "check_container_runtime", "inspect_container_image", "runtime_snapshot", "downstream_docker_user_mapping_check"):
-        monkeypatch.setattr(f"rnaseq.execution.{guarded}", no_docker)
     monkeypatch.setattr("rnaseq.downstream.r_runtime_checks", no_docker)
     monkeypatch.setattr("importlib.util.find_spec", lambda name, *args: object() if name == "build" else None)
     for variable in ("NXF_JAVA_HOME", "JAVA_HOME"):
@@ -91,7 +89,8 @@ def test_linux_doctor_never_calls_docker_and_passes_without_it(monkeypatch, tmp_
                      "Upstream Conda cache", "HISAT2/featureCounts Conda environment", "Downstream Conda lock",
                      "Downstream runtime location", "Downstream nf-rna wheel"):
         assert by_name[required].verdict == "PASS" or (required == "nf-core/rnaseq pin" and by_name[required].verdict == "WARN")
-    assert "container-runtime ceiling applies=False" in by_name["Effective local budget"].detail
+    assert "effective aggregate ceiling=" in by_name["Effective local budget"].detail
+    assert "container" not in by_name["Effective local budget"].detail
     # Doctor is non-mutating: no execution, cache, runtime, or Nextflow directories were created.
     assert list(tmp_path.iterdir()) == []
 
@@ -111,15 +110,15 @@ def test_linux_doctor_names_the_platform_and_conda_backend(monkeypatch, tmp_path
     assert by_name["Execution backend"].detail == "Nextflow + Conda"
 
 
-def test_macos_doctor_selects_docker_checks(monkeypatch):
+def test_macos_doctor_reports_an_unsupported_platform(monkeypatch):
+    # The macOS Apple Silicon Docker backend (unqualified in v1.3.0) is retired.
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
     monkeypatch.setattr(platform, "machine", lambda: "arm64")
-    monkeypatch.setattr("rnaseq.execution.container_doctor_checks", lambda _project=None: ("docker-checks",))
     monkeypatch.setattr("rnaseq.execution.native_linux_doctor_checks", lambda *_a: pytest.fail("macOS ran native Conda doctor"))
-    platform_check, backend, *rest = doctor_checks()
-    assert (platform_check.name, platform_check.detail) == ("Runtime platform", "darwin-arm64")
-    assert (backend.name, backend.detail) == ("Execution backend", "Docker")
-    assert rest == ["docker-checks"]
+    (check,) = doctor_checks()
+    assert (check.name, check.verdict) == ("Runtime platform", "FAIL")
+    assert check.detail.startswith("darwin-arm64")
+    assert "Linux x86-64 including WSL2 (Nextflow + Conda)" in check.detail and "Docker" not in check.detail
 
 
 def test_native_windows_doctor_directs_to_wsl2(monkeypatch):

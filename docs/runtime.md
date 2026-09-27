@@ -93,11 +93,11 @@ workflow and has no official GHCR image. Official GHCR distribution begins with
 the `v1.1.2` release. The `v1.1.2` hotfix changes no scientific analysis, R,
 or Nextflow behavior.
 
-Building an image from source is a developer/offline workflow; see
-[Development installation](development.md). It is not part of normal user
-installation.
+Building a historical image from source was a developer/offline workflow; the
+image build files are no longer in the current tree (see
+[Development installation](development.md)).
 
-The image runtime is intentionally verified with a non-login shell, matching
+The historical image runtime was verified with a non-login shell, matching
 the environment Nextflow task containers inherit:
 
 ```bash
@@ -244,11 +244,13 @@ Run `rnaseq doctor <PROJECT>` before an authorized FASTQ run. On Linux/WSL2 it c
 
 Only the local execution profile is implemented. Workstation/HPC and SLURM execution remain deferred to the resource-profile milestone.
 
-Historical Docker runtime (v1.2.1 and earlier): new projects used a version-matched `runtime.execution_image`; a local `nf-rna:latest` image remains allowed only for non-production development. Production acceptance requires a versioned tag or digest plus a Docker-observed image ID/digest. `rnaseq doctor <PROJECT>` reports requested and observed identities. Each run freezes those identities and the OCI build revision label as the canonical execution `source_revision`; it is propagated unchanged into every downstream module configuration, scientific provenance document, technical report, and delivery copy. Official release builds supply the exact release commit SHA, while dirty development builds supply an explicit dirty identity. An unlabeled container is explicitly recorded as `unlabeled-container-image`; nf-rna never substitutes the control-plane checkout, a tag, or `unknown`. `runtime.control_plane_image` remains a read-only compatibility alias for existing projects; newly created and serialized configuration uses `runtime.execution_image`. See [v1.0.0 compatibility](quickstart.md#historical-v100-compatibility) for the historical project-default limitation.
+Project `runtime` section: after v1.3.0, `rnaseq new` writes no `runtime` section (v1.3.0 itself still wrote an unused `runtime.execution_image`). An existing `runtime.execution_image` (or its pre-1.0 alias `runtime.control_plane_image`) is still read, so older project files stay valid, but it is ignored and no longer gates production acceptance; production identity is the checksum-bound reference plus the locked Conda runtime and clean source revision.
 
-In that historical Docker runtime, `rnaseq` validated, froze, and launched Nextflow; Nextflow owned Docker container launch through explicit process-level `container params.first_party_image` directives. The one first-party execution image contains the installed `rnaseq.workflow_support` package and `/opt/nf-rna/r` scripts used by L1, L2, GSEA, and technical-report tasks. Docker is the current local process runtime; an Apptainer/Singularity profile can be added later without moving scientific execution into Python.
+Historical Docker runtime (v1.2.1 and earlier): new projects used a version-matched `runtime.execution_image`; a local `nf-rna:latest` image was allowed only for non-production development. Production acceptance required a versioned tag or digest plus a Docker-observed image ID/digest, and `rnaseq doctor <PROJECT>` reported requested and observed identities. Each run freezes those identities and the OCI build revision label as the canonical execution `source_revision`; it is propagated unchanged into every downstream module configuration, scientific provenance document, technical report, and delivery copy. Official release builds supply the exact release commit SHA, while dirty development builds supply an explicit dirty identity. An unlabeled container is explicitly recorded as `unlabeled-container-image`; nf-rna never substitutes the control-plane checkout, a tag, or `unknown`. `runtime.control_plane_image` was a read-only compatibility alias for `runtime.execution_image`. See [v1.0.0 compatibility](quickstart.md#historical-v100-compatibility) for the historical project-default limitation.
 
-In that historical Docker runtime on Linux and WSL, downstream Nextflow task containers ran with the invoking host user's numeric UID:GID. nf-rna freezes a per-run Nextflow override equivalent to Docker `--user $(id -u):$(id -g)`, so host-created task directories remain writable without `sudo`, `chmod 777`, or changing the fixed image user. macOS keeps its existing Docker Desktop behavior and does not receive this override. `rnaseq doctor` reports the selected policy and Linux/WSL mapping before execution.
+In that historical Docker runtime, `rnaseq` validated, froze, and launched Nextflow; Nextflow owned Docker container launch through explicit process-level `container params.first_party_image` directives. The one first-party execution image contains the installed `rnaseq.workflow_support` package and `/opt/nf-rna/r` scripts used by L1, L2, GSEA, and technical-report tasks. Docker was that release line's local process runtime.
+
+In that historical Docker runtime on Linux and WSL, downstream Nextflow task containers ran with the invoking host user's numeric UID:GID. nf-rna freezes a per-run Nextflow override equivalent to Docker `--user $(id -u):$(id -g)`, so host-created task directories remain writable without `sudo`, `chmod 777`, or changing the fixed image user. macOS kept its Docker Desktop behavior and did not receive this override.
 
 ## Versioned execution
 
@@ -256,7 +258,7 @@ The Salmon FASTQ route is pinned to nf-core/rnaseq 3.26.0 (revision `e7ca462`) w
 
 ## Milestone A validation status (historical Docker runtime)
 
-On 2026-09-05, the pinned production semantics fixture passed under Docker Desktop 29.7.2 on an arm64 host (the pinned amd64 process images ran under Docker emulation): SAMtools 1.21 `sha256:783c6646029a306ec5e4162009dc1a20d8f6c528f7c380e5b4affbf12d9112e5` and Subread/featureCounts 2.0.6 `sha256:114390a783c77f7739d86e474bedfa5a4e65309a2f71d4db430803fb04601f5d`. It verified single-end counting, paired fragments counted once, forward/reverse strands, ambiguous-overlap exclusion, both-mates and chimeric-fragment policy, and technical-lane merging. A primary `NH:i:2` alignment remained excluded after the production `samtools view -bh -F 0x900` transformation removed its secondary record; primary-only filtering therefore did not make a multimapper appear unique.
+On 2026-09-05, the pinned production semantics fixture passed under Docker Desktop 29.7.2 on an arm64 host (the pinned amd64 process images ran under Docker emulation): SAMtools 1.21 `sha256:783c6646029a306ec5e4162009dc1a20d8f6c528f7c380e5b4affbf12d9112e5` and Subread/featureCounts 2.0.6 `sha256:114390a783c77f7739d86e474bedfa5a4e65309a2f71d4db430803fb04601f5d`. It verified single-end counting, paired fragments counted once, forward/reverse strands, ambiguous-overlap exclusion, both-mates and chimeric-fragment policy, and technical-lane merging. A primary `NH:i:2` alignment remained excluded after the production `samtools view -bh -F 0x900` transformation removed its secondary record; primary-only filtering therefore did not make a multimapper appear unique. The same fixture now runs, without Docker, against the exact SAMtools 1.21 and Subread 2.0.6 builds of the pinned linux-64 Conda environment (`tests/test_featurecounts_pinned_conda_semantics.py`).
 
 The successful raw L2 smoke run was `MILESTONE-A-RAW-L2-FINAL/20260905-115310+0800`; its first-party workflow identity was `nf-rna/hisat2_featurecounts` with source SHA-256 `e5408f74c1afd4c41bcd51e7b06868d7b7df9da4b77aff2ddb5483492810d05c`. It completed raw fastp/FastQC, HISAT2, original and published count-only BAM lineage, featureCounts, MultiQC, canonical matrix/sample map, `featurecounts_raw_counts` → `DESeqDataSetFromMatrix`, L1, L2, report, and delivery. The independent pretrimmed L1 branch also completed as `MILESTONE-A-PRETRIMMED-L1/20260905-115200+0800`. These immutable validation records are intentionally outside the source distribution.
 
@@ -293,11 +295,10 @@ statistical settings. Each accepts a positive integer or `auto`:
 
 `rnaseq new` writes `auto` unless `--cpus`/`--memory-gb` are given; the
 interactive wizard shows what `auto` selects on the current machine.
-`rnaseq doctor PROJECT` reports host capacity, container-runtime capacity, the
-requested project budget and how it was chosen, and the effective budget on the
-machine actually running the project. Docker Desktop and WSL allocations constrain the effective
-budget; native Linux uses the host ceiling rather than double-counting Docker's
-repeated host values. Each run freezes that effective local Nextflow
+`rnaseq doctor PROJECT` reports host capacity, the requested project budget and
+how it was chosen, and the effective budget on the machine actually running the
+project. The usable host capacity (affinity- and cgroup-aware on Linux, and the
+WSL2 VM allocation on Windows) is the only ceiling. Each run freezes that effective local Nextflow
 configuration for upstream and downstream workflows.
 
 The ceiling is total executor capacity, not a per-task request. HISAT2,
@@ -430,7 +431,7 @@ The default project ceiling is 8 CPUs, 12 GiB, and 12 hours. The frozen config s
 
 Persistent immutable artifacts live beneath the project `runs/` directory. Operational Nextflow state lives in a local execution root outside that tree. On macOS the default is under the user's cache directory; on Linux it follows the standard cache location. Set `RNASEQ_EXECUTION_ROOT` to an absolute operator-owned scratch location if required.
 
-Do not commit project run directories, workflow work directories, logs, delivery packages, references, indices, or production inputs. The repository's `.gitignore` and narrow `.dockerignore` enforce this default for new Git users.
+Do not commit project run directories, workflow work directories, logs, delivery packages, references, indices, or production inputs. The repository's `.gitignore` enforces this default for new Git users.
 
 ## Determinism and external dependencies
 

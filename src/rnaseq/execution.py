@@ -23,7 +23,7 @@ import yaml
 
 from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
 from rnaseq.downstream_runtime import native_platform
-from rnaseq.models import DEFAULT_EXECUTION_IMAGE, FastqPreprocessing, InputType, NFCORE_RNASEQ_VERSION, PIPELINE_VERSION, ReferenceConfig
+from rnaseq.models import FastqPreprocessing, InputType, NFCORE_RNASEQ_VERSION, PIPELINE_VERSION, ReferenceConfig
 from rnaseq.hisat2_featurecounts import COUNTING_POLICY, HISAT2_VERSION, SAMTOOLS_VERSION, SUBREAD_VERSION
 from rnaseq.planner import render_manifest, render_samplesheet
 from rnaseq.references import LocalReferenceError, load_local_reference, sha256_file
@@ -32,12 +32,12 @@ from rnaseq.validators import ValidationReport
 from rnaseq.workflow_assets import workflow_asset_path
 
 LOCAL_PROFILE = "local"
-CONTAINER_PROFILE = "docker"
 NFCORE_CONDA_PROFILE = "conda"
-# Production runtime policy: one backend per supported host platform.
+# Production runtime policy (v1.3.0+): Linux x86-64 including WSL2 with
+# Nextflow + Conda is the only backend.  v1.2.1 was the last Docker release;
+# the unqualified macOS Docker dispatch still present in v1.3.0 was removed.
 BACKEND_CONDA = "conda"
-BACKEND_DOCKER = "docker"
-BACKEND_LABELS = {BACKEND_CONDA: "Nextflow + Conda", BACKEND_DOCKER: "Docker"}
+BACKEND_LABELS = {BACKEND_CONDA: "Nextflow + Conda"}
 WINDOWS_UNSUPPORTED_MESSAGE = (
     "Native Windows is not a supported nf-rna runtime. Install WSL2 with an Ubuntu distribution, "
     "then install and run nf-rna inside WSL2 (Linux x86-64, Nextflow + Conda)."
@@ -45,7 +45,6 @@ WINDOWS_UNSUPPORTED_MESSAGE = (
 NFCORE_RNASEQ_REVISION = "e7ca46272c8f9d5ceee3f71759f4ba551d3217a4"
 RUN_STATES = {"CREATED", "RUNNING", "SUCCESS", "FAILED", "INTERRUPTED"}
 EXECUTION_ROOT_ENV = "RNASEQ_EXECUTION_ROOT"
-FIRST_PARTY_EXECUTION_IMAGE = DEFAULT_EXECUTION_IMAGE
 HISAT2_WORKFLOW = workflow_asset_path("hisat2_featurecounts.nf")
 HISAT2_LINUX_CONDA_ENV = HISAT2_WORKFLOW.parent / "envs" / "hisat2-featurecounts-linux-64.yml"
 # Reviewed identity of the qualified linux-64 HISAT2/featureCounts environment.
@@ -53,10 +52,6 @@ HISAT2_LINUX_CONDA_ENV_SHA256 = "2c407fb2b37529db8d1b70b7c757140124868e3085b2c83
 # nf-core/rnaseq 3.26.0 manifest: nextflowVersion = '!>=25.04.3'; Nextflow 25+ needs Java 17+.
 NEXTFLOW_MINIMUM_VERSION = "25.04.3"
 JAVA_MINIMUM_MAJOR = 17
-CONTAINER_R_PACKAGES = (
-    "DESeq2", "tximport", "ggplot2", "pheatmap", "yaml", "jsonlite",
-    "clusterProfiler", "AnnotationDbi", "org.Hs.eg.db", "org.Mm.eg.db",
-)
 
 
 @dataclass(frozen=True)
@@ -162,8 +157,7 @@ def project_resource_policy(config: Any, snapshot: "RuntimeSnapshot | None" = No
     """Resolve the project's explicit or ``auto`` limits against this machine.
 
     The runtime snapshot is the capacity authority (affinity/cgroup aware on
-    Linux, the Docker VM on the macOS backend); raw observations are recorded
-    alongside it for provenance.
+    Linux); raw observations are recorded alongside it for provenance.
     """
 
     try:
@@ -215,11 +209,6 @@ class RuntimeSnapshot:
     host_architecture: str
     logical_cpus: int | None
     host_memory_bytes: int | None
-    docker_architecture: str | None
-    docker_memory_bytes: int | None
-    docker_version: str | None
-    first_party_image_architecture: str | None
-    docker_cpus: int | None = None
 
 
 @dataclass(frozen=True)
@@ -228,9 +217,6 @@ class EffectiveResourceBudget:
     requested_memory_gib: int
     host_cpus: int | None
     host_memory_gib: int | None
-    runtime_cpus: int | None
-    runtime_memory_gib: int | None
-    runtime_ceiling_applies: bool
     effective_cpus: int
     effective_memory_gib: int
     clamped: bool
@@ -241,11 +227,9 @@ class EffectiveResourceBudget:
         payload: dict[str, object] = {
             "requested": {"cpus": self.requested_cpus, "memory_gib": self.requested_memory_gib},
             "host": {"cpus": self.host_cpus, "memory_gib": self.host_memory_gib},
-            "container_runtime": {
-                "cpus": self.runtime_cpus,
-                "memory_gib": self.runtime_memory_gib,
-                "ceiling_applies": self.runtime_ceiling_applies,
-            },
+            # Record-schema compatibility: the retired Docker backend's VM
+            # ceiling; the native Conda runtime has none.
+            "container_runtime": {"cpus": None, "memory_gib": None, "ceiling_applies": False},
             "effective": {"cpus": self.effective_cpus, "memory_gib": self.effective_memory_gib},
             "clamped": self.clamped,
             "warnings": list(self.warnings),
@@ -302,19 +286,17 @@ def resolve_execution_workspace(case_id: str, run_id: str) -> ExecutionWorkspace
 
 
 def execution_backend() -> str:
-    """Select the production backend from the host: linux-64/WSL2 -> Conda, macOS arm64 -> Docker."""
+    """Select the production backend: only linux-64 (including WSL2) with Nextflow + Conda is supported."""
 
     system = platform.system().lower()
     machine = platform.machine().lower()
     if system == "linux" and machine in {"x86_64", "amd64"}:
         return BACKEND_CONDA
-    if system == "darwin" and machine in {"arm64", "aarch64"}:
-        return BACKEND_DOCKER
     if system == "windows" or system.startswith(("cygwin", "msys", "mingw")):
         raise ExecutionPreflightError(WINDOWS_UNSUPPORTED_MESSAGE)
     raise ExecutionPreflightError(
         f"Unsupported nf-rna runtime platform {system}-{machine}. Supported: Linux x86-64 including "
-        "WSL2 (Nextflow + Conda) and macOS Apple Silicon (Docker)."
+        "WSL2 (Nextflow + Conda)."
     )
 
 
@@ -325,12 +307,6 @@ def runtime_platform_label() -> str:
     if system == "darwin":
         return f"darwin-{'arm64' if machine in {'arm64', 'aarch64'} else machine}"
     return f"{system}-{machine}"
-
-
-def backend_resource_snapshot(image: str) -> RuntimeSnapshot:
-    """Host capacity for Conda; Docker capacity (and image architecture) for the Docker backend."""
-
-    return runtime_snapshot(image) if execution_backend() == BACKEND_DOCKER else native_runtime_snapshot()
 
 
 def upstream_conda_cache() -> Path:
@@ -362,8 +338,8 @@ def prepare_upstream_conda_cache() -> Path:
 
 def render_upstream_conda_config(cache: Path) -> str:
     # JSON string quoting is valid Groovy syntax and handles paths with spaces.
-    # Only the linux-64 Conda backend uses this config.  The former experimental
-    # osx-arm64 per-process Conda overrides were withdrawn: macOS uses Docker.
+    # The former experimental osx-arm64 per-process Conda overrides were
+    # withdrawn; macOS is not a supported runtime.
     return f"conda.enabled = true\ndocker.enabled = false\nconda.cacheDir = {json.dumps(str(cache))}\n"
 
 
@@ -373,8 +349,7 @@ def native_runtime_snapshot() -> RuntimeSnapshot:
     return RuntimeSnapshot(
         host_os=platform.system(), host_architecture=platform.machine().lower(),
         logical_cpus=detect_local_resource_capacity().logical_cpus,
-        host_memory_bytes=_native_usable_memory_bytes(), docker_architecture=None,
-        docker_memory_bytes=None, docker_version=None, first_party_image_architecture=None,
+        host_memory_bytes=_native_usable_memory_bytes(),
     )
 
 
@@ -427,58 +402,6 @@ def _run_capture(arguments: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(arguments, capture_output=True, text=True, check=False)
 
 
-def inspect_container_image(image: str) -> dict[str, object]:
-    """Return Docker's observed immutable identity for an already-resolved image.
-
-    A build tag is mutable and a locally built image has no registry digest, so
-    provenance must preserve Docker's content ID as well as any observed
-    RepoDigests.  This helper never pulls an image and is deliberately best
-    effort: a failed inspection is recorded as unavailable rather than guessed.
-    """
-
-    observed: dict[str, object] = {
-        "reference": image,
-        "image_id": None,
-        "repo_digests": [],
-        "architecture": None,
-        "labels": {},
-    }
-    try:
-        result = _run_capture(["docker", "image", "inspect", image, "--format", "{{json .}}"])
-        if result.returncode != 0:
-            return observed
-        payload = json.loads(result.stdout)
-    except (FileNotFoundError, json.JSONDecodeError, TypeError, ValueError, AttributeError):
-        return observed
-    if not isinstance(payload, dict):
-        return observed
-    identifier = payload.get("Id")
-    if isinstance(identifier, str) and identifier:
-        observed["image_id"] = identifier
-    digests = payload.get("RepoDigests")
-    if isinstance(digests, list):
-        observed["repo_digests"] = sorted(item for item in digests if isinstance(item, str) and item)
-    architecture = _normalise_architecture(str(payload.get("Architecture") or ""))
-    if architecture:
-        observed["architecture"] = architecture
-    labels = payload.get("Config", {}).get("Labels") if isinstance(payload.get("Config"), dict) else None
-    if isinstance(labels, dict):
-        observed["labels"] = {
-            key: labels[key]
-            for key in ("org.opencontainers.image.title", "org.opencontainers.image.revision")
-            if isinstance(labels.get(key), str) and labels[key]
-        }
-    return observed
-
-
-def _normalise_architecture(value: str | None) -> str | None:
-    if not value:
-        return None
-    normalized = value.strip().lower()
-    aliases = {"aarch64": "arm64", "arm64/v8": "arm64", "x86_64": "amd64"}
-    return aliases.get(normalized, normalized)
-
-
 def _linux_memory_bytes() -> tuple[int | None, int | None]:
     """Read Linux/WSL host memory from procfs without an external utility."""
 
@@ -522,64 +445,12 @@ def _is_wsl() -> bool:
     return "microsoft" in release_identity or "wsl" in release_identity
 
 
-def runtime_snapshot(image: str = FIRST_PARTY_EXECUTION_IMAGE) -> RuntimeSnapshot:
-    """Collect cheap host/Docker facts without launching workflow containers."""
-
-    host_architecture = _normalise_architecture(platform.machine()) or "unknown"
-    docker_architecture: str | None = None
-    docker_cpus: int | None = None
-    docker_memory_bytes: int | None = None
-    docker_version: str | None = None
-    image_architecture: str | None = None
-    try:
-        info = _run_capture(["docker", "info", "--format", "{{json .}}"])
-        if info.returncode == 0:
-            payload = json.loads(info.stdout)
-            if isinstance(payload, dict):
-                docker_architecture = _normalise_architecture(str(payload.get("Architecture") or ""))
-                memory = payload.get("MemTotal")
-                docker_memory_bytes = memory if isinstance(memory, int) and memory > 0 else None
-                cpus = payload.get("NCPU")
-                docker_cpus = cpus if isinstance(cpus, int) and cpus > 0 else None
-                version = payload.get("ServerVersion")
-                docker_version = str(version) if version else None
-            image_result = _run_capture(["docker", "image", "inspect", image, "--format", "{{json .}}"])
-            if image_result.returncode == 0:
-                image_payload = json.loads(image_result.stdout)
-                if isinstance(image_payload, dict):
-                    image_architecture = _normalise_architecture(str(image_payload.get("Architecture") or ""))
-    except (FileNotFoundError, json.JSONDecodeError, TypeError):
-        pass
-    host_os = platform.system() or "unknown"
-    if host_os.lower() == "linux" and _is_wsl():
-        host_os = "Linux/WSL"
-    return RuntimeSnapshot(
-        host_os=host_os,
-        host_architecture=host_architecture,
-        logical_cpus=os.cpu_count(),
-        host_memory_bytes=_host_memory_bytes(),
-        docker_architecture=docker_architecture,
-        docker_memory_bytes=docker_memory_bytes,
-        docker_version=docker_version,
-        first_party_image_architecture=image_architecture,
-        docker_cpus=docker_cpus,
-    )
-
-
 def effective_resource_budget(
     snapshot: RuntimeSnapshot, budget: ResourceContract, *, policy: ResourcePolicy | None = None,
 ) -> EffectiveResourceBudget:
-    """Resolve the portable project ceiling against this execution runtime.
-
-    Docker Desktop and WSL expose a VM/container ceiling distinct from the host.
-    Native Linux Docker shares the host scheduler, so Docker's repeated host
-    values are recorded but are not treated as another independent limit.
-    """
+    """Resolve the portable project ceiling against this host's usable capacity."""
 
     host_memory = snapshot.host_memory_bytes // 1024**3 if snapshot.host_memory_bytes else None
-    runtime_memory = snapshot.docker_memory_bytes // 1024**3 if snapshot.docker_memory_bytes else None
-    host_os = snapshot.host_os.lower()
-    runtime_applies = "darwin" in host_os or "windows" in host_os or "wsl" in host_os
     cpu_limits = [budget.cpus]
     memory_limits = [budget.memory_gib]
     warnings: list[str] = []
@@ -591,15 +462,6 @@ def effective_resource_budget(
         memory_limits.append(host_memory)
     else:
         warnings.append("Host memory capacity is unavailable; it could not constrain the project budget.")
-    if runtime_applies:
-        if snapshot.docker_cpus is not None:
-            cpu_limits.append(snapshot.docker_cpus)
-        else:
-            warnings.append("Container-runtime CPU capacity is unavailable; it could not constrain the project budget.")
-        if runtime_memory is not None:
-            memory_limits.append(runtime_memory)
-        else:
-            warnings.append("Container-runtime memory capacity is unavailable; it could not constrain the project budget.")
     effective_cpus = min(cpu_limits)
     effective_memory = min(memory_limits)
     clamped = effective_cpus < budget.cpus or effective_memory < budget.memory_gib
@@ -613,9 +475,6 @@ def effective_resource_budget(
         requested_memory_gib=budget.memory_gib,
         host_cpus=snapshot.logical_cpus,
         host_memory_gib=host_memory,
-        runtime_cpus=getattr(snapshot, "docker_cpus", None),
-        runtime_memory_gib=runtime_memory,
-        runtime_ceiling_applies=runtime_applies,
         effective_cpus=effective_cpus,
         effective_memory_gib=effective_memory,
         clamped=clamped,
@@ -631,81 +490,12 @@ def validate_effective_resource_budget(resources: EffectiveResourceBudget) -> No
         raise ExecutionPreflightError(
             "Effective local capacity is "
             f"{resources.effective_cpus} CPUs/{resources.effective_memory_gib} GiB, but enabled local "
-            "process contracts require at least 8 CPUs/12 GiB. Increase host/Docker capacity or use another runtime."
+            "process contracts require at least 8 CPUs/12 GiB. Increase host capacity."
         )
-
-
-def downstream_docker_user_mapping(
-    *, host_os: str | None = None, uid: int | None = None, gid: int | None = None,
-) -> str | None:
-    """Return the invoking Linux user's Docker identity for downstream tasks.
-
-    Nextflow creates each task work directory on the host before Docker starts.
-    On Linux (including WSL), Docker bind mounts preserve numeric ownership, so
-    the image's fixed mamba user cannot necessarily create ``.command.*`` task
-    files.  Docker Desktop on macOS already virtualizes shared-file ownership;
-    preserving its default container user avoids changing the validated macOS
-    path.  Values are resolved locally and constrained to non-negative integer
-    IDs before they are rendered into a Nextflow config.
-    """
-
-    if (host_os or platform.system()).strip().lower() != "linux":
-        return None
-    try:
-        resolved_uid = os.getuid() if uid is None else uid
-        resolved_gid = os.getgid() if gid is None else gid
-    except AttributeError:
-        return None
-    if type(resolved_uid) is not int or type(resolved_gid) is not int:
-        return None
-    if resolved_uid < 0 or resolved_gid < 0:
-        return None
-    return f"{resolved_uid}:{resolved_gid}"
-
-
-def downstream_docker_user_mapping_check() -> RuntimeCheck:
-    """Explain the downstream task-user policy in ``rnaseq doctor`` output."""
-
-    mapping = downstream_docker_user_mapping()
-    if mapping is not None:
-        return RuntimeCheck(
-            "Downstream Docker user mapping", "FOUND",
-            f"Linux/WSL downstream tasks will use --user {mapping} for host-mounted Nextflow work directories.",
-        )
-    return RuntimeCheck(
-        "Downstream Docker user mapping", "FOUND",
-        "Not applied outside Linux/WSL; Docker Desktop macOS shared-file behavior keeps the image default user.",
-    )
 
 
 def _gib(value: int | None) -> str:
     return "unavailable" if value is None else f"{value / (1024 ** 3):.1f} GiB"
-
-
-def runtime_resource_checks(snapshot: RuntimeSnapshot, budget: ResourceContract = LOCAL_RESOURCE_CEILING) -> tuple[RuntimeCheck, ...]:
-    """Turn portable runtime facts into doctor PASS/WARN/FAIL checks."""
-
-    host = RuntimeCheck(
-        "Host runtime", "FOUND",
-        f"OS={snapshot.host_os}; architecture={snapshot.host_architecture}; logical_cpus={snapshot.logical_cpus or 'unavailable'}; memory={_gib(snapshot.host_memory_bytes)}",
-    )
-    if snapshot.docker_architecture is None:
-        docker = RuntimeCheck("Docker runtime", "NOT FOUND", "Docker runtime details are unavailable.", "FAIL")
-    else:
-        docker = RuntimeCheck(
-            "Docker runtime", "FOUND",
-            f"architecture={snapshot.docker_architecture}; logical_cpus={snapshot.docker_cpus or 'unavailable'}; memory={_gib(snapshot.docker_memory_bytes)}; version={snapshot.docker_version or 'unavailable'}",
-        )
-    checks: list[RuntimeCheck] = [host, docker]
-    if snapshot.first_party_image_architecture is None:
-        checks.append(RuntimeCheck("First-party execution image architecture", "NOT FOUND", f"Image architecture is unavailable; pull or inspect {FIRST_PARTY_EXECUTION_IMAGE}.", "WARN"))
-    elif snapshot.host_architecture == "arm64" and snapshot.first_party_image_architecture == "amd64":
-        checks.append(RuntimeCheck("First-party execution image architecture", "FOUND", "amd64 image on arm64 host; Docker/Rosetta emulation may reduce throughput.", "WARN"))
-    else:
-        checks.append(RuntimeCheck("First-party execution image architecture", "FOUND", f"image={snapshot.first_party_image_architecture}; host={snapshot.host_architecture}"))
-    checks.extend(_budget_checks(snapshot, budget))
-    checks.append(RuntimeCheck("nf-core upstream image architecture", "FOUND", "nf-core/rnaseq resolves process images dynamically; inspect the frozen Nextflow trace for per-process image architecture.", "WARN"))
-    return tuple(checks)
 
 
 def _budget_checks(
@@ -722,7 +512,6 @@ def _budget_checks(
         RuntimeCheck(
             "Effective local budget", "NOT FOUND" if level else "FOUND",
             f"effective aggregate ceiling={resources.effective_cpus} CPUs/{resources.effective_memory_gib} GiB; "
-            f"container-runtime ceiling applies={resources.runtime_ceiling_applies}; "
             + (" ".join(resources.warnings) if resources.warnings else "independent ready tasks may run concurrently within this ceiling."),
             level,
         ),
@@ -753,10 +542,10 @@ def classify_execution_failure(stage: str, returncode: int, stderr_path: Path, *
     if returncode in {137, -9} or "killed" in stderr.lower():
         return (
             f"LIKELY_OOM: process={stage}; exit_code={returncode}; requested_resources={requested}; "
-            "suggestion=check Docker memory allocation and the frozen local resource contract; do not change scientific parameters automatically."
+            "suggestion=check host memory and the frozen local resource contract; do not change scientific parameters automatically."
         )
     if "no space left on device" in stderr.lower():
-        return f"LIKELY_DISK_EXHAUSTION: process={stage}; exit_code={returncode}; suggestion=free space in the local execution workspace or Docker runtime."
+        return f"LIKELY_DISK_EXHAUSTION: process={stage}; exit_code={returncode}; suggestion=free space in the local execution workspace."
     if "no such file" in stderr.lower() and ("staged" in stderr.lower() or "downstream_inputs" in stderr.lower()):
         return f"MISSING_STAGED_INPUT: process={stage}; exit_code={returncode}; suggestion=inspect frozen handoff and downstream_inputs staging."
     return f"{stage} failed with return code {returncode}. Logs: {stderr_path.parent}"
@@ -775,72 +564,6 @@ def check_nextflow() -> RuntimeCheck:
     output = (result.stdout + "\n" + result.stderr).strip()
     match = re.search(r"version\s+([0-9][^\s]*)", output, flags=re.IGNORECASE)
     return RuntimeCheck("Nextflow", "FOUND", match.group(1) if match else output)
-
-
-def check_docker() -> RuntimeCheck:
-    """Confirm that Docker's daemon is usable, not just that its CLI exists."""
-
-    try:
-        result = _run_capture(["docker", "info"])
-    except FileNotFoundError:
-        return RuntimeCheck("Docker", "NOT FOUND", "Docker executable was not found on PATH.")
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip() or "docker info failed."
-        return RuntimeCheck("Docker", "NOT FOUND", detail)
-    return RuntimeCheck("Docker", "FOUND", "Docker daemon is available.")
-
-
-def check_container_runtime(image: str = FIRST_PARTY_EXECUTION_IMAGE) -> RuntimeCheck:
-    """Verify the first-party image has downstream Nextflow task prerequisites.
-
-    This intentionally runs only a short shell/R package probe; it does not run a
-    workflow, access project inputs, or pull an image implicitly.
-    """
-
-    docker = check_docker()
-    if docker.state != "FOUND":
-        return RuntimeCheck("First-party execution image", "NOT FOUND", "Docker daemon is unavailable.")
-    try:
-        present = _run_capture(["docker", "image", "inspect", image])
-    except FileNotFoundError:
-        return RuntimeCheck("First-party execution image", "NOT FOUND", "Docker executable was not found on PATH.")
-    if present.returncode != 0:
-        return RuntimeCheck(
-            "First-party execution image", "NOT FOUND",
-            f"Required image {image} is not available locally; run 'docker pull {image}' before execution.",
-        )
-    packages = ", ".join(repr(package) for package in CONTAINER_R_PACKAGES)
-    probe = (
-        "for executable in ps python Rscript; do "
-        "command -v \"$executable\" >/dev/null || { echo \"missing executable: $executable\" >&2; exit 1; }; "
-        "done; "
-        "ps --version >/dev/null || { echo 'GNU/procps ps is unavailable' >&2; exit 1; }; "
-        f"Rscript -e \"packages <- c({packages}); missing <- packages[!vapply(packages, requireNamespace, logical(1), quietly=TRUE)]; if (length(missing)) {{ cat('missing R package(s): ', paste(missing, collapse=', '), '\\n', file=stderr()); quit(status=1) }}\"; "
-        "python -m rnaseq.workflow_support report --help | grep -F -- '--enrichment' >/dev/null "
-        "|| { echo 'missing report CLI option: --enrichment' >&2; exit 1; }"
-    )
-    result = _run_capture([
-        # Keep the image entrypoint and use a non-login shell so the probe sees
-        # the same activated micromamba PATH as a Nextflow task container.
-        "docker", "run", "--rm", image, "sh", "-c", probe,
-    ])
-    if result.returncode != 0:
-        diagnostic_parts = [
-            f"stdout: {result.stdout.strip()}" for result.stdout in (result.stdout,) if result.stdout.strip()
-        ] + [
-            f"stderr: {result.stderr.strip()}" for result.stderr in (result.stderr,) if result.stderr.strip()
-        ]
-        output = "; ".join(diagnostic_parts)
-        detail = (
-            f"container prerequisite probe exited {result.returncode}: {output}"
-            if output
-            else f"container prerequisite probe exited {result.returncode} without diagnostic output."
-        )
-        return RuntimeCheck("First-party execution image", "NOT FOUND", detail)
-    return RuntimeCheck(
-        "First-party execution image", "FOUND",
-        f"requested={image}; ps, python, Rscript, required R packages, and the final-report CLI contract are available.",
-    )
 
 
 def _reference_runtime_check(project_dir: Path | None) -> RuntimeCheck:
@@ -1115,26 +838,24 @@ def _free_space_check() -> RuntimeCheck:
         return RuntimeCheck("Execution work-directory free space", "NOT FOUND", f"path={workspace}; unable to inspect free space: {exc}", "WARN")
 
 
-def _doctor_budget(project_dir: Path | None) -> tuple[str, ResourceContract, ResourcePolicy | None]:
-    requested_image = FIRST_PARTY_EXECUTION_IMAGE
+def _doctor_budget(project_dir: Path | None) -> tuple[ResourceContract, ResourcePolicy | None]:
     budget = LOCAL_RESOURCE_CEILING
     policy: ResourcePolicy | None = None
     if project_dir is not None:
         try:
             from rnaseq.project import load_project
             config = load_project(project_dir).config
-            requested_image = config.runtime.execution_image
             policy = project_resource_policy(config)
             budget = project_execution_budget(config, policy)
         except (OSError, ValueError):
             pass
-    return requested_image, budget, policy
+    return budget, policy
 
 
 def native_linux_doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeCheck, ...]:
     """Checks for the qualified linux-64 architecture: Nextflow + Conda, no Docker."""
 
-    _requested_image, budget, policy = _doctor_budget(project_dir)
+    budget, policy = _doctor_budget(project_dir)
     snapshot = native_runtime_snapshot()
     probe = Path.cwd()
     return (
@@ -1165,42 +886,7 @@ def doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeCheck, ...]:
     policy = runtime_policy_checks()
     if len(policy) == 1:
         return policy
-    if execution_backend() == BACKEND_CONDA:
-        return (*policy, *native_linux_doctor_checks(project_dir))
-    return (*policy, *container_doctor_checks(project_dir))
-
-
-def container_doctor_checks(project_dir: Path | None = None) -> tuple[RuntimeCheck, ...]:
-    """Docker-backend checks for the macOS Apple Silicon production runtime."""
-
-    probe = Path.cwd()
-    writable = probe.exists() and probe.is_dir() and probe.stat().st_mode != 0
-    from rnaseq.downstream import r_runtime_checks
-    requested_image, budget, _policy = _doctor_budget(project_dir)
-    observed_image = inspect_container_image(requested_image)
-    snapshot = runtime_snapshot(requested_image)
-    disk_check = _free_space_check()
-
-    return (
-        RuntimeCheck("Python", "FOUND", "Python runtime is active."),
-        check_nextflow(),
-        check_docker(),
-        check_container_runtime(requested_image),
-        RuntimeCheck(
-            "First-party execution image identity",
-            "FOUND" if observed_image.get("image_id") else "NOT FOUND",
-            f"requested={requested_image}; observed_image_id={observed_image.get('image_id') or 'unavailable'}; "
-            f"observed_repo_digests={observed_image.get('repo_digests') or []}; "
-            f"execution_labels={observed_image.get('labels') or {} }",
-            None if observed_image.get("image_id") else "WARN",
-        ),
-        downstream_docker_user_mapping_check(),
-        *runtime_resource_checks(snapshot, budget),
-        _reference_runtime_check(project_dir),
-        RuntimeCheck("Disk write access", "FOUND" if writable else "NOT FOUND", str(probe)),
-        disk_check,
-        *r_runtime_checks(),
-    )
+    return (*policy, *native_linux_doctor_checks(project_dir))
 
 
 def _require_fastq_execution_report(report: ValidationReport) -> None:
@@ -1455,17 +1141,17 @@ def build_nextflow_command(
         raise ExecutionPreflightError("Only the local profile is executable in Milestone 2.")
     assert report.config is not None
     reference: ReferenceConfig = report.config.reference
-    backend = execution_backend()
+    execution_backend()  # refuses unsupported platforms before any command exists
     command = ["nextflow", "run"]
     if config_file is not None:
         command.extend(["-c", str(config_file.resolve())])
-    if backend == BACKEND_CONDA and conda_config_file is not None:
+    if conda_config_file is not None:
         command.extend(["-c", str(conda_config_file.resolve())])
     if tuning_config_file is not None:
         command.extend(["-c", str(tuning_config_file.resolve())])
     command.extend([
         "nf-core/rnaseq", "-r", NFCORE_RNASEQ_VERSION,
-        "-profile", NFCORE_CONDA_PROFILE if backend == BACKEND_CONDA else CONTAINER_PROFILE,
+        "-profile", NFCORE_CONDA_PROFILE,
     ])
     if work_dir is not None:
         command.extend(["-work-dir", str(work_dir.resolve())])
@@ -1557,20 +1243,19 @@ def build_hisat2_featurecounts_command(
         use_runtime_splices = False
     if any(reference_arguments[key] is None for key in ("fasta", "gtf", "hisat2_index")):
         raise ExecutionPreflightError("HISAT2 reference is not prepared.")
-    backend = execution_backend()
+    execution_backend()  # refuses unsupported platforms before any command exists
     command = ["nextflow", "run"]
     if config_file is not None:
         command.extend(["-c", str(config_file.resolve())])
-    if backend == BACKEND_CONDA:
-        if conda_config_file is None:
-            raise ExecutionPreflightError("Linux HISAT2 execution requires a frozen Conda runtime config.")
-        if not HISAT2_LINUX_CONDA_ENV.is_file():
-            raise ExecutionPreflightError(f"Linux HISAT2 Conda environment is missing: {HISAT2_LINUX_CONDA_ENV}")
-        command.extend(["-c", str(conda_config_file.resolve())])
+    if conda_config_file is None:
+        raise ExecutionPreflightError("Linux HISAT2 execution requires a frozen Conda runtime config.")
+    if not HISAT2_LINUX_CONDA_ENV.is_file():
+        raise ExecutionPreflightError(f"Linux HISAT2 Conda environment is missing: {HISAT2_LINUX_CONDA_ENV}")
+    command.extend(["-c", str(conda_config_file.resolve())])
     if observer_config_file is not None:
         command.extend(["-c", str(observer_config_file.resolve())])
     command.extend([
-        str(HISAT2_WORKFLOW), "-profile", NFCORE_CONDA_PROFILE if backend == BACKEND_CONDA else CONTAINER_PROFILE,
+        str(HISAT2_WORKFLOW), "-profile", NFCORE_CONDA_PROFILE,
         "--input", str(samplesheet.resolve()), "--outdir", str(output_dir.resolve()),
         "--fasta", str(reference_arguments["fasta"]), "--gtf", str(reference_arguments["gtf"]),
         "--hisat2_index", str(reference_arguments["hisat2_index"]),
@@ -1782,9 +1467,10 @@ def execute_prepared_run(prepared: PreparedRun) -> RunResult:
         "runtime_resources": {
             **resources.as_dict(),
             "host_architecture": runtime.host_architecture,
-            "docker_architecture": runtime.docker_architecture,
-            "docker_memory_bytes": runtime.docker_memory_bytes,
-            "first_party_image_architecture": runtime.first_party_image_architecture,
+            # Record-schema compatibility with the retired Docker backend.
+            "docker_architecture": None,
+            "docker_memory_bytes": None,
+            "first_party_image_architecture": None,
             "resource_profile": "M5_LOCAL_SMALL_MEDIUM_LARGE",
         },
         "frozen_local_nextflow_config": {

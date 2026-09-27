@@ -29,8 +29,6 @@ import yaml
 from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
 from rnaseq.execution import (
     BACKEND_CONDA,
-    BACKEND_DOCKER,
-    CONTAINER_PROFILE,
     HISAT2_WORKFLOW,
     HISAT2_LINUX_CONDA_ENV,
     LOCAL_PROFILE,
@@ -41,15 +39,12 @@ from rnaseq.execution import (
     build_nextflow_command,
     build_hisat2_featurecounts_command,
     classify_execution_failure,
-    check_container_runtime,
     check_conda_channels,
-    check_docker,
     check_upstream_conda,
     execution_backend,
     check_nextflow,
     generate_handoff_manifest,
     generate_hisat2_featurecounts_handoff,
-    inspect_container_image,
     effective_resource_budget,
     resolved_upstream_implementation,
     nfcore_runtime_params,
@@ -64,7 +59,6 @@ from rnaseq.execution import (
     render_local_resource_config,
     require_fresh_plan,
     resolve_execution_workspace,
-    runtime_snapshot,
     RuntimeSnapshot,
     validate_effective_resource_budget,
     validate_local_execution_budget,
@@ -77,7 +71,7 @@ from rnaseq.downstream_runtime import (
 )
 from rnaseq.models import FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, ProjectConfig, production_enrichment_backends
 from rnaseq.project import LoadedProject
-from rnaseq.hisat2_featurecounts import FASTP_IMAGE, FASTP_VERSION, FASTQC_IMAGE, FASTQC_VERSION, HISAT2_IMAGE, HISAT2_VERSION, MULTIQC_IMAGE, MULTIQC_VERSION, SAMTOOLS_IMAGE, SAMTOOLS_VERSION, SUBREAD_IMAGE, SUBREAD_VERSION
+from rnaseq.hisat2_featurecounts import FASTP_VERSION, FASTQC_VERSION, HISAT2_VERSION, MULTIQC_VERSION, SAMTOOLS_VERSION, SUBREAD_VERSION
 from rnaseq.planner import pairing_contract, render_manifest
 from rnaseq.validators import FastqRecord, FastqSummary, ValidationReport
 from rnaseq.resource_policy import describe_policy, render_process_tuning_config, salmon_quant_tuning
@@ -98,7 +92,6 @@ EXECUTION_LOG = Path("logs") / "rnaseq.log"
 NFCORE_TUNING_CONFIG = "nfcore.tuning.config"
 PROCESS_RECORD = Path("logs") / "rnaseq.process.json"
 DELIVERY_MANIFEST_FILENAME = "delivery_manifest.yaml"
-UNLABELED_CONTAINER_SOURCE_REVISION = "unlabeled-container-image"
 
 
 @dataclass(frozen=True)
@@ -271,7 +264,7 @@ def _attach_fastq_checksums(report: ValidationReport, manifest: dict[str, Any]) 
 
 
 def _native_runtime_snapshot() -> RuntimeSnapshot:
-    """Describe host capacity without querying Docker for raw-count execution."""
+    """Describe host capacity for the native Conda runtime."""
 
     capacity = detect_local_resource_capacity()
     return RuntimeSnapshot(
@@ -279,35 +272,7 @@ def _native_runtime_snapshot() -> RuntimeSnapshot:
         host_architecture=platform.machine().lower() or "unknown",
         logical_cpus=capacity.logical_cpus,
         host_memory_bytes=(capacity.total_memory_gib * 1024**3 if capacity.total_memory_gib else None),
-        docker_architecture=None,
-        docker_memory_bytes=None,
-        docker_version=None,
-        first_party_image_architecture=None,
-        docker_cpus=None,
     )
-
-
-def _resource_snapshot(report: ValidationReport) -> RuntimeSnapshot:
-    """Host capacity for the Conda backend; Docker capacity for the macOS Docker backend."""
-
-    assert report.config is not None
-    return runtime_snapshot(report.config.runtime.execution_image) if execution_backend() == BACKEND_DOCKER else _native_runtime_snapshot()
-
-
-def _execution_source_revision(image: str) -> str:
-    """Return the OCI revision observed for the exact Docker execution image.
-
-    The frozen execution contract is the sole source passed to every R module.
-    A container without an OCI revision label is recorded explicitly rather
-    than guessed from the host checkout or a mutable tag.
-    """
-
-    observed = inspect_container_image(image)
-    labels = observed.get("labels")
-    revision = labels.get("org.opencontainers.image.revision") if isinstance(labels, dict) else None
-    if isinstance(revision, str) and revision.strip() and revision.strip().lower() != "unknown":
-        return revision.strip()
-    return UNLABELED_CONTAINER_SOURCE_REVISION
 
 
 def _salmon_mapping_contract(run_dir: Path, value: object) -> tuple[Path, dict[str, str]]:
@@ -840,7 +805,7 @@ def freeze_case_inputs(
 
     params: Path | None = None
     runtime: Path | None = None
-    resolved = resources or resolve_project_resources(report.config, _resource_snapshot(report))
+    resolved = resources or resolve_project_resources(report.config, _native_runtime_snapshot())
     if report.config.input.type is InputType.FASTQ:
         params = frozen / "nfcore.params.json"
         _write_text(params, json.dumps(nfcore_runtime_params(report), sort_keys=True) + "\n")
@@ -851,8 +816,7 @@ def freeze_case_inputs(
             "EFFECTIVE_LOCAL", resolved.effective_cpus, resolved.effective_memory_gib, LOCAL_RESOURCE_CEILING.time_hours
         ))
         _write_text(runtime, config_text)
-        if backend == BACKEND_CONDA:
-            _write_text(frozen / "nfcore.conda.config", render_upstream_conda_config(upstream_conda_cache()))
+        _write_text(frozen / "nfcore.conda.config", render_upstream_conda_config(upstream_conda_cache()))
         method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
         if method == "salmon":
             # Scheduling-only: size SALMON_QUANT's memory request from the
@@ -863,12 +827,8 @@ def freeze_case_inputs(
             if resolved.policy is not None:
                 resolved = replace(resolved, policy=resolved.policy.with_process_tuning(tuning, notes))
 
-    # Conda runs bind their verified prefix after confirmation; Docker runs bind
-    # the requested first-party image and its observed OCI source revision now.
+    # Conda runs bind their verified downstream prefix after confirmation.
     backend_execution: dict[str, Any] = {"backend": backend, "downstream_runtime": None}
-    if backend == BACKEND_DOCKER:
-        image = report.config.runtime.execution_image
-        backend_execution.update({"image": image, "source_revision": _execution_source_revision(image)})
     execution = {
         "case_id": run.case_id,
         "run_id": run.run_id,
@@ -876,8 +836,6 @@ def freeze_case_inputs(
         "profile": profile,
         "execution_backend": backend,
         "downstream_runtime": None,
-        **({"execution_image": backend_execution["image"], "source_revision": backend_execution["source_revision"]}
-           if backend == BACKEND_DOCKER else {}),
         "execution_budget": report.config.execution.model_dump(),
         "command": command,
         "pipeline": {"name": report.config.project.pipeline, "version": PIPELINE_VERSION},
@@ -965,14 +923,12 @@ def _provenance(
     except OSError:
         pass
     nextflow = check_nextflow()
-    runtime = _resource_snapshot(report) if report.config is not None else _native_runtime_snapshot()
+    runtime = _native_runtime_snapshot()
     resolved_resources = resources or resolve_project_resources(report.config, runtime)
     method = report.config.upstream.quantification.method if report.config and report.config.upstream.quantification else None
     backend = execution_backend()
-    conda = backend == BACKEND_CONDA
-    fastq = bool(report.config and report.config.input.type is InputType.FASTQ)
-    def tool_identity(version: str, image: str) -> dict[str, object]:
-        return {"version": version, "environment": "workflow/envs/hisat2-featurecounts-linux-64.yml"} if conda else {"version": version, **inspect_container_image(image)}
+    def tool_identity(version: str) -> dict[str, object]:
+        return {"version": version, "environment": "workflow/envs/hisat2-featurecounts-linux-64.yml"}
 
     frozen_contract = _read_json_mapping(run.run_dir / "frozen" / "downstream_contract.json", "frozen downstream contract")
     frozen_execution = frozen_contract.get("execution") if isinstance(frozen_contract.get("execution"), dict) else {}
@@ -993,8 +949,6 @@ def _provenance(
     resource_record = resolved_resources.as_dict()
     if isinstance(frozen_resources, dict) and isinstance(frozen_resources.get("policy"), dict):
         resource_record["policy"] = frozen_resources["policy"]
-    # Docker-backend identity keeps the pre-Conda field names; Conda runs write them as null.
-    execution_image = inspect_container_image(frozen_execution["image"]) if not conda and frozen_execution.get("image") else None
     return {
         "case_id": run.case_id,
         "run_id": run.run_id,
@@ -1011,36 +965,36 @@ def _provenance(
         "fastq_backend": method,
         "hisat2_featurecounts_tools": (
             {
-                "hisat2": tool_identity(HISAT2_VERSION, HISAT2_IMAGE),
-                "samtools": tool_identity(SAMTOOLS_VERSION, SAMTOOLS_IMAGE),
-                "subread": tool_identity(SUBREAD_VERSION, SUBREAD_IMAGE),
-                "fastqc": tool_identity(FASTQC_VERSION, FASTQC_IMAGE),
-                "fastp": tool_identity(FASTP_VERSION, FASTP_IMAGE),
-                "multiqc": tool_identity(MULTIQC_VERSION, MULTIQC_IMAGE),
+                "hisat2": tool_identity(HISAT2_VERSION),
+                "samtools": tool_identity(SAMTOOLS_VERSION),
+                "subread": tool_identity(SUBREAD_VERSION),
+                "fastqc": tool_identity(FASTQC_VERSION),
+                "fastp": tool_identity(FASTP_VERSION),
+                "multiqc": tool_identity(MULTIQC_VERSION),
             } if method == "hisat2_featurecounts" else None
         ),
         "execution_backend": backend,
         "downstream_runtime": frozen_execution.get("downstream_runtime"),
-        "container_runtime": None if conda else "docker",
-        "execution_image": execution_image,
+        # Record-schema compatibility: the retired Docker backend's fields stay null.
+        "container_runtime": None,
+        "execution_image": None,
         # The one nf-rna commit that produced this run; preflight refuses unidentified or dirty sources.
         "source_revision": (
             (frozen_execution.get("downstream_runtime") or {}).get("source_revision") or runtime_source_revision()
-            if conda else frozen_execution.get("source_revision")
         ),
-        "container_image": execution_image,
+        "container_image": None,
         "upstream_runtime": (
             {"kind": "conda", "workflow": "nf-core/rnaseq", "version": report.config.upstream.pipeline_version,
              "revision": NFCORE_RNASEQ_REVISION, "profile": NFCORE_CONDA_PROFILE,
              "platform": native_platform(), "cache_dir": str(upstream_conda_cache())}
-            if conda and method == "salmon" else (
+            if method == "salmon" else (
                 {"kind": "conda", "workflow": "nf-rna/hisat2_featurecounts", "profile": NFCORE_CONDA_PROFILE,
                  "platform": "linux-64", "cache_dir": str(upstream_conda_cache()),
                  "environment": {"path": "workflow/envs/hisat2-featurecounts-linux-64.yml",
-                                 "sha256": _sha256(HISAT2_LINUX_CONDA_ENV)}} if conda and method == "hisat2_featurecounts" else None
+                                 "sha256": _sha256(HISAT2_LINUX_CONDA_ENV)}} if method == "hisat2_featurecounts" else None
             )
         ),
-        "upstream_container_runtime": "docker" if fastq and not conda else None,
+        "upstream_container_runtime": None,
         "production_intended": bool(report.config and report.config.reference.acceptance == "production"),
         "runtime_resources": {
             **resource_record,
@@ -1048,10 +1002,10 @@ def _provenance(
             "host_architecture": runtime.host_architecture,
             "logical_cpus": runtime.logical_cpus,
             "host_memory_bytes": runtime.host_memory_bytes,
-            "docker_architecture": None if conda else runtime.docker_architecture,
-            "docker_memory_bytes": None if conda else runtime.docker_memory_bytes,
-            "docker_version": None if conda else runtime.docker_version,
-            "first_party_image_architecture": None if conda else runtime.first_party_image_architecture,
+            "docker_architecture": None,
+            "docker_memory_bytes": None,
+            "docker_version": None,
+            "first_party_image_architecture": None,
             "resource_profile": "M5_LOCAL_SMALL_MEDIUM_LARGE",
         },
         "frozen_local_nextflow_config": (
@@ -1064,7 +1018,7 @@ def _provenance(
         ),
         "frozen_upstream_conda_config": (
             {"path": upstream_conda_config.relative_to(run.run_dir).as_posix(), "sha256": _sha256(upstream_conda_config)}
-            if conda and upstream_conda_config.is_file() else None
+            if upstream_conda_config.is_file() else None
         ),
         "profile": profile,
         "command": command,
@@ -1159,30 +1113,22 @@ def freeze_downstream_runtime_identity(frozen: FrozenInputs, runtime: Downstream
     _write_yaml(manifest, execution_manifest)
 
 
-def write_downstream_runtime_config(run: CaseRun, runtime: DownstreamRuntime | None, *, image: str | None = None) -> Path:
-    """Freeze the downstream task runtime: the verified Conda prefix, or the Docker execution image."""
+def write_downstream_runtime_config(run: CaseRun, runtime: DownstreamRuntime | None) -> Path:
+    """Freeze the downstream task runtime: the verified Conda prefix."""
 
+    if runtime is None:
+        raise ValueError("A downstream runtime needs a verified Conda prefix.")
     path = run.run_dir / "frozen" / "downstream.runtime.config"
-    if runtime is not None:
-        content = "conda.enabled = true\n" f"params.downstream_runtime_prefix = {json.dumps(str(runtime.prefix))}\n"
-    elif image:
-        content = f"params.first_party_image = {json.dumps(image)}\n"
-    else:
-        raise ValueError("A downstream runtime needs either a Conda prefix or a Docker execution image.")
-    _write_text(path, content)
+    _write_text(path, "conda.enabled = true\n" f"params.downstream_runtime_prefix = {json.dumps(str(runtime.prefix))}\n")
     return path
 
 
 def _frozen_backend(run: CaseRun) -> str:
+    """Return the backend a run was frozen for; image-only contracts are v1.2.x Docker runs."""
+
     contract = _read_json_mapping(run.run_dir / "frozen" / "downstream_contract.json", "frozen downstream contract")
     execution = contract.get("execution") if isinstance(contract.get("execution"), dict) else {}
-    return execution.get("backend") or (BACKEND_DOCKER if execution.get("image") else BACKEND_CONDA)
-
-
-def _downstream_runtime_config(run: CaseRun, runtime: DownstreamRuntime | None) -> Path:
-    contract = _read_json_mapping(run.run_dir / "frozen" / "downstream_contract.json", "frozen downstream contract")
-    execution = contract.get("execution") if isinstance(contract.get("execution"), dict) else {}
-    return write_downstream_runtime_config(run, runtime, image=None if runtime is not None else execution.get("image"))
+    return execution.get("backend") or ("docker" if execution.get("image") else BACKEND_CONDA)
 
 
 def finalize_fastq_handoff(report: ValidationReport, run: CaseRun, contract: Path, *, reused_from: str | None = None) -> Path:
@@ -1229,7 +1175,7 @@ def build_downstream_nextflow_command(
     resolved_work_dir = work_dir or (resolve_execution_workspace(run.case_id, run.run_id).work_dir / "downstream")
     command = [
         "nextflow", "run", str(workflow_asset_path("main.nf")), "-c", str(workflow_asset_path("nextflow.config")),
-        "-profile", CONTAINER_PROFILE if _frozen_backend(run) == BACKEND_DOCKER and profile == LOCAL_PROFILE else profile,
+        "-profile", profile,
     ]
     if observer_config is not None:
         command.extend(["-c", str(observer_config.resolve())])
@@ -1722,34 +1668,21 @@ def sanitize_completed_delivery(run_dir: Path) -> Path:
 
 
 def _backend_preflight(report: ValidationReport) -> None:
-    """Check the prerequisites of the automatically selected backend, and only those."""
+    """Check the prerequisites of the Nextflow + Conda backend, and only those."""
 
     assert report.config is not None
-    if execution_backend() == BACKEND_CONDA:
-        if report.config.input.type is InputType.FASTQ:
-            conda = check_upstream_conda()
-            if conda.state != "FOUND":
-                raise ExecutionPreflightError("Conda is required for upstream FASTQ execution: " + conda.detail)
-            method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
-            if method == "salmon":
-                channels = check_conda_channels()
-                if channels.state != "FOUND":
-                    raise ExecutionPreflightError("nf-core/rnaseq -profile conda needs a compatible Conda channel configuration: " + channels.detail)
-            prepare_upstream_conda_cache()
-        downstream_runtime_preflight()
-        return
-    docker = check_docker()
-    if docker.state != "FOUND":
-        raise ExecutionPreflightError("Docker is required for the macOS Docker runtime: " + docker.detail)
-    image = report.config.runtime.execution_image
-    container = check_container_runtime(image)
-    if container.state != "FOUND":
-        raise ExecutionPreflightError("First-party execution image is required: " + container.detail)
-    if report.config.reference.acceptance == "production" and not inspect_container_image(image).get("image_id"):
-        raise ExecutionPreflightError(
-            "Production-intended execution requires an observed immutable execution image ID/digest; "
-            f"Docker could not establish one for {image}."
-        )
+    execution_backend()  # refuses unsupported platforms
+    if report.config.input.type is InputType.FASTQ:
+        conda = check_upstream_conda()
+        if conda.state != "FOUND":
+            raise ExecutionPreflightError("Conda is required for upstream FASTQ execution: " + conda.detail)
+        method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
+        if method == "salmon":
+            channels = check_conda_channels()
+            if channels.state != "FOUND":
+                raise ExecutionPreflightError("nf-core/rnaseq -profile conda needs a compatible Conda channel configuration: " + channels.detail)
+        prepare_upstream_conda_cache()
+    downstream_runtime_preflight()
 
 
 def prepare_service_run(report: ValidationReport, *, profile: str) -> EffectiveResourceBudget:
@@ -1760,7 +1693,7 @@ def prepare_service_run(report: ValidationReport, *, profile: str) -> EffectiveR
     validate_local_execution_budget(
         report.config.execution.max_cpus, report.config.execution.max_memory_gb, detect_local_resource_capacity()
     )
-    resources = resolve_project_resources(report.config, _resource_snapshot(report))
+    resources = resolve_project_resources(report.config, _native_runtime_snapshot())
     validate_effective_resource_budget(resources)
     require_fresh_plan(report)
     if report.config.input.type is InputType.FASTQ:
@@ -1912,6 +1845,11 @@ def _load_retry_source(project_dir: Path, retry_of: str) -> RetrySource:
             raise ExecutionPreflightError(f"Retry source frozen contract contains a symlink: {path}")
     _validate_frozen_manifest(run)
     contract = _read_json_mapping(frozen / "downstream_contract.json", "retry source downstream contract")
+    if _frozen_backend(run) != BACKEND_CONDA:
+        raise ExecutionPreflightError(
+            f"Retry source was produced by the retired {_frozen_backend(run)} backend; nf-rna {PIPELINE_VERSION} "
+            f"runs only the {BACKEND_CONDA} backend. Start a new run instead of a retry."
+        )
     execution = _read_yaml_mapping(frozen / "execution_manifest.yaml", "retry source execution manifest")
     provenance_path = source_dir / "provenance" / "run_provenance.yaml"
     _require_immutable_file(provenance_path, "retry source provenance")
@@ -2072,7 +2010,7 @@ def _prepare_retry_runtime(report: ValidationReport, profile: str) -> EffectiveR
     if profile != LOCAL_PROFILE or report.config is None:
         raise ExecutionPreflightError("Retry supports only the frozen local execution profile.")
     validate_local_execution_budget(report.config.execution.max_cpus, report.config.execution.max_memory_gb, detect_local_resource_capacity())
-    resources = resolve_project_resources(report.config, _resource_snapshot(report))
+    resources = resolve_project_resources(report.config, _native_runtime_snapshot())
     validate_effective_resource_budget(resources)
     if report.config.input.type is InputType.FASTQ and not report.execution_ready:
         raise ExecutionPreflightError("Retry frozen execution contract is not runtime-ready.")
@@ -2188,7 +2126,7 @@ def _execute_service_run(
     _log_resources(run, resources)
     frozen = freeze_case_inputs(report, run, profile=profile, command=command, resources=resources)
     assert report.config is not None
-    runtime = None if report.config.project.preset is Preset.QC or execution_backend() != BACKEND_CONDA else ensure_downstream_runtime()
+    runtime = None if report.config.project.preset is Preset.QC else ensure_downstream_runtime()
     if runtime is not None:
         freeze_downstream_runtime_identity(frozen, runtime)
     _write_yaml(
@@ -2235,7 +2173,7 @@ def _execute_service_run(
         return run
     execution_inputs = resolve_downstream_inputs(run)
     observer_config = write_downstream_observer_config(run)
-    runtime_config = _downstream_runtime_config(run, runtime)
+    runtime_config = write_downstream_runtime_config(run, runtime)
     downstream = build_downstream_nextflow_command(
         run, profile=profile, work_dir=workspace.work_dir / "downstream", observer_config=observer_config,
         execution_inputs=execution_inputs, runtime_config=runtime_config,
@@ -2290,12 +2228,7 @@ def _execute_retry_service_run(
     report, reference_paths = _retry_report(run)
     workspace = resolve_execution_workspace(run.case_id, run.run_id)
     frozen_paths = run.run_dir / "frozen"
-    if _frozen_backend(run) != execution_backend():
-        raise ExecutionPreflightError(
-            f"Retry source was produced by the {_frozen_backend(run)} backend; this host uses the "
-            f"{execution_backend()} backend. Retry it on a host with the original backend."
-        )
-    runtime = None if (report.config and report.config.project.preset is Preset.QC) or execution_backend() != BACKEND_CONDA else ensure_downstream_runtime()
+    runtime = None if report.config and report.config.project.preset is Preset.QC else ensure_downstream_runtime()
     if runtime is not None:
         freeze_downstream_runtime_identity(
             FrozenInputs(
@@ -2370,7 +2303,7 @@ def _execute_retry_service_run(
         return run
     execution_inputs = resolve_downstream_inputs(run)
     observer_config = write_downstream_observer_config(run)
-    runtime_config = _downstream_runtime_config(run, runtime)
+    runtime_config = write_downstream_runtime_config(run, runtime)
     downstream = build_downstream_nextflow_command(
         run, profile=profile, work_dir=workspace.work_dir / "downstream", observer_config=observer_config,
         execution_inputs=execution_inputs, runtime_config=runtime_config,

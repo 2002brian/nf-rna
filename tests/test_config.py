@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
+
 from conftest import base_config
-from rnaseq.models import DEFAULT_EXECUTION_IMAGE, execution_image_for_version
 from rnaseq.project import load_project
 from rnaseq.validators import validate_project
 
@@ -53,7 +54,9 @@ def test_unknown_nested_key_fails(project_factory):
     assert "input.mystery" in issue_messages(report)
 
 
-def test_runtime_execution_image_is_canonical_and_legacy_control_plane_image_is_read_compatible(project_factory):
+def test_legacy_runtime_execution_image_remains_readable(project_factory):
+    # Projects created up to v1.3.0 name the retired Docker execution image;
+    # they must stay loadable although the value is no longer used.
     canonical = base_config()
     canonical["runtime"] = {"execution_image": "nf-rna:1.0.0"}
     loaded = load_project(project_factory(config=canonical)).config
@@ -67,14 +70,24 @@ def test_runtime_execution_image_is_canonical_and_legacy_control_plane_image_is_
     assert loaded_legacy.runtime.model_dump() == {"execution_image": "rnaseq-control-plane:0.9.0"}
 
 
-def test_runtime_default_is_the_version_matched_official_image(project_factory):
-    loaded = load_project(project_factory()).config
-    assert loaded.runtime.execution_image == DEFAULT_EXECUTION_IMAGE
+def test_project_without_runtime_section_has_no_execution_image(project_factory):
+    config = base_config()
+    config.pop("runtime", None)
+    loaded = load_project(project_factory(config=config)).config
+    assert loaded.runtime.execution_image is None
 
 
-def test_execution_image_mapping_preserves_stable_and_prerelease_versions():
-    assert execution_image_for_version("1.0.1") == "ghcr.io/2002brian/nf-rna:1.0.1"
-    assert execution_image_for_version("1.0.1rc1") == "ghcr.io/2002brian/nf-rna:1.0.1rc1"
+@pytest.mark.parametrize("image", ["ghcr.io/2002brian/nf-rna:1.3.0", "nf-rna:latest"])
+def test_legacy_execution_image_no_longer_gates_production_acceptance(image):
+    # The immutable-image rule protected the retired Docker runtime.  Production
+    # identity is now the checksum-bound reference plus the locked Conda runtime.
+    from rnaseq.models import ProjectConfig
+    config = base_config()
+    config["runtime"] = {"execution_image": image}
+    config["input"] = {"type": "fastq", "path": "input/fastq", "layout": "paired_end"}
+    config["upstream"] = {"engine": "nfcore_rnaseq", "pipeline_version": "3.26.0", "aligner": None, "strandedness": "auto", "quantification": {"method": "salmon"}}
+    config["reference"] = {"source": "local", "root": "reference", "manifest": "reference/manifest.yaml", "acceptance": "production"}
+    assert ProjectConfig.model_validate(config).runtime.execution_image == image
 
 
 def test_invalid_preset_fails(project_factory):

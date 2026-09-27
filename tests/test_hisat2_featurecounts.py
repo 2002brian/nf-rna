@@ -8,7 +8,7 @@ import yaml
 
 from conftest import base_config
 from rnaseq.execution import HISAT2_LINUX_CONDA_ENV, RuntimeCheck, build_hisat2_featurecounts_command, render_upstream_conda_config, resolve_execution_workspace, resolved_upstream_implementation
-from rnaseq.hisat2_featurecounts import HISAT2_IMAGE, HISAT2_VERSION, assemble_count_matrix, featurecounts_arguments, hisat2_strand_option
+from rnaseq.hisat2_featurecounts import HISAT2_VERSION, assemble_count_matrix, featurecounts_arguments, hisat2_strand_option
 from rnaseq.planner import generate_plan
 from rnaseq.service import CaseRun, _provenance, freeze_case_inputs, prepare_service_run
 from rnaseq.validators import validate_project
@@ -36,7 +36,6 @@ def test_featurecounts_policy_translates_layout_and_strand():
 def test_hisat2_is_pinned_to_2_2_3_for_builder_and_runtime():
     root = Path(__file__).parents[1]
     assert HISAT2_VERSION == "2.2.3"
-    assert HISAT2_IMAGE == "quay.io/biocontainers/hisat2:2.2.3--h8471819_0"
     assert "hisat2=2.2.3" in (root / "environment.reference-builder.yml").read_text(encoding="utf-8")
     assert "bioconda::hisat2=2.2.3=h8471819_0" in HISAT2_LINUX_CONDA_ENV.read_text(encoding="utf-8")
 
@@ -189,9 +188,6 @@ def test_hisat2_command_uses_first_party_workflow_and_custom_index(tmp_path: Pat
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "test"))
     monkeypatch.setattr("rnaseq.service.check_upstream_conda", lambda: RuntimeCheck("Conda", "FOUND", "test"))
     monkeypatch.setattr("rnaseq.service.downstream_runtime_preflight", lambda: None)
-    monkeypatch.setattr("rnaseq.service.check_docker", lambda: (_ for _ in ()).throw(AssertionError("Linux HISAT2 queried Docker")))
-    monkeypatch.setattr("rnaseq.service.runtime_snapshot", lambda *_: (_ for _ in ()).throw(AssertionError("Linux HISAT2 queried Docker capacity")))
-    monkeypatch.setattr("rnaseq.service.inspect_container_image", lambda *_: (_ for _ in ()).throw(AssertionError("Linux HISAT2 inspected Docker image")))
     generate_plan(report)
     prepare_service_run(report, profile="local")
     provenance = _provenance(

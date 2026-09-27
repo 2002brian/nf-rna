@@ -25,7 +25,7 @@ from rnaseq.planner import generate_plan
 from rnaseq.service import execute_retry_service_run, execute_service_run
 from rnaseq.validators import validate_project
 from test_runtime_dispatch import (  # noqa: F401  (fixture re-export)
-    BACKEND_CONDA, LINUX, _fake_nextflow, _guard_backend, _host, _salmon_report, mocked_downstream_runtime,
+    LINUX, _fake_nextflow, _guard_conda, _host, _salmon_report, mocked_downstream_runtime,
 )
 
 
@@ -60,7 +60,7 @@ def fastq_reads(monkeypatch):
 def linux_host(monkeypatch, tmp_path, mocked_downstream_runtime):
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(tmp_path / "execution"))
     _host(monkeypatch, *LINUX)
-    _guard_backend(monkeypatch, BACKEND_CONDA)
+    _guard_conda(monkeypatch)
 
 
 def _start_run(monkeypatch, root: Path, case_id: str):

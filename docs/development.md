@@ -25,12 +25,10 @@ downstream wheel for a source checkout is built with `python -m build` from the
 ## Historical Docker image build (v1.2.1 and earlier)
 
 Releases up to v1.2.1 ran downstream tasks in a first-party Docker image. The
-`Dockerfile` remains for that historical path only; v1.3.0 does not use it:
-
-```bash
-docker build --build-arg NF_RNA_SOURCE_REVISION="$(git rev-parse HEAD)" -t nf-rna:dev .
-docker run --rm nf-rna:dev rnaseq --version
-```
+`Dockerfile`, `environment.docker.yml`, and `.dockerignore` were removed from the
+current tree after v1.3.0; nf-rna no longer builds, publishes, or runs a Docker
+image. To reproduce the historical image, build it from the immutable `v1.2.1`
+tag as documented in that release.
 
 ## Validation
 

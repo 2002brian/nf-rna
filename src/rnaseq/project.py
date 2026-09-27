@@ -17,7 +17,6 @@ from pydantic import ValidationError
 from rnaseq.errors import ProjectConfigError, ProjectCreationError
 from rnaseq.models import (
     DesignType,
-    DEFAULT_EXECUTION_IMAGE,
     FastqPreprocessing,
     InputType,
     NFCORE_RNASEQ_VERSION,
@@ -192,7 +191,6 @@ def _project_yaml(
             }
         ),
         "reference": reference or {"source": "igenomes", "genome": None},
-        "runtime": {"execution_image": DEFAULT_EXECUTION_IMAGE},
         "execution": execution or {"profile": "local", "max_cpus": "auto", "max_memory_gb": "auto"},
         "thresholds": {"padj": 0.05, "abs_log2fc": 1.0},
         "analysis": {"enrichment": []},

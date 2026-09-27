@@ -89,7 +89,7 @@ def test_mixed_explicit_cpus_and_auto_memory():
 def test_explicit_limits_survive_resolution_against_a_larger_host(monkeypatch):
     config = ExecutionConfig(max_cpus=22, max_memory_gb=20)
     holder = type("Config", (), {"execution": config})()
-    snapshot = RuntimeSnapshot("Linux", "x86_64", 28, 94 * GIB, None, None, None, None)
+    snapshot = RuntimeSnapshot("Linux", "x86_64", 28, 94 * GIB)
     resources = resolve_project_resources(holder, snapshot)
     assert (resources.effective_cpus, resources.effective_memory_gib) == (22, 20)
     assert resources.clamped is False
@@ -98,7 +98,7 @@ def test_explicit_limits_survive_resolution_against_a_larger_host(monkeypatch):
 
 def test_explicit_limits_larger_than_the_machine_are_clamped_visibly_not_rewritten():
     config = type("Config", (), {"execution": ExecutionConfig(max_cpus=64, max_memory_gb=256)})()
-    snapshot = RuntimeSnapshot("Linux", "x86_64", 16, 64 * GIB, None, None, None, None)
+    snapshot = RuntimeSnapshot("Linux", "x86_64", 16, 64 * GIB)
     resources = resolve_project_resources(config, snapshot)
     assert (resources.requested_cpus, resources.requested_memory_gib) == (64, 256)
     assert (resources.effective_cpus, resources.effective_memory_gib) == (16, 64)
@@ -129,7 +129,7 @@ def test_small_host_auto_keeps_the_contract_floor_instead_of_a_reserve():
 def test_tiny_host_auto_never_exceeds_the_machine_and_existing_preflight_explains():
     policy = resolve_policy(AUTO, AUTO, _detected(4, 8))
     assert (policy.requested_cpus, policy.requested_memory_gib) == (4, 8)
-    snapshot = RuntimeSnapshot("Linux", "x86_64", 4, 8 * GIB, None, None, None, None)
+    snapshot = RuntimeSnapshot("Linux", "x86_64", 4, 8 * GIB)
     config = type("Config", (), {"execution": ExecutionConfig()})()
     resources = resolve_project_resources(config, snapshot)
     assert (resources.effective_cpus, resources.effective_memory_gib) == (4, 8)
@@ -149,7 +149,7 @@ def test_undetectable_capacity_falls_back_to_the_historical_default():
     assert (policy.requested_cpus, policy.requested_memory_gib) == (8, 12)
     assert policy.fallback is True
     assert "auto fallback" in describe_policy(policy)
-    snapshot = RuntimeSnapshot("Linux", "x86_64", None, None, None, None, None, None)
+    snapshot = RuntimeSnapshot("Linux", "x86_64", None, None)
     config = type("Config", (), {"execution": ExecutionConfig()})()
     resources = resolve_project_resources(config, snapshot)
     assert (resources.effective_cpus, resources.effective_memory_gib) == (8, 12)
@@ -162,7 +162,7 @@ def test_policy_resolution_errors_fall_back_instead_of_blocking(monkeypatch):
 
     monkeypatch.setattr("rnaseq.execution.detect_local_resource_capacity", broken)
     config = type("Config", (), {"execution": ExecutionConfig()})()
-    snapshot = RuntimeSnapshot("Linux", "x86_64", 28, 94 * GIB, None, None, None, None)
+    snapshot = RuntimeSnapshot("Linux", "x86_64", 28, 94 * GIB)
     resources = resolve_project_resources(config, snapshot)
     assert (resources.requested_cpus, resources.requested_memory_gib) == (8, 12)
     assert resources.policy.fallback is True

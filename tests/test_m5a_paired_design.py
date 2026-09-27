@@ -168,15 +168,10 @@ def test_run_provenance_preserves_paired_design(monkeypatch, project_factory, tm
     run = create_case_run(report, "M5A-PROVENANCE", moment=datetime(2026, 9, 10, 11, 0, 0))
     freeze_case_inputs(report, run, profile="local", command=["rnaseq", "run"])
     monkeypatch.setattr(service, "check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "test"))
-    monkeypatch.setattr(service, "inspect_container_image", lambda _image: {"reference": "test"})
     monkeypatch.setattr(
         service,
-        "runtime_snapshot",
-        lambda _image: SimpleNamespace(
-            host_os="test", host_architecture="test", logical_cpus=1,
-            host_memory_bytes=1, docker_architecture="test", docker_memory_bytes=1,
-            docker_version="test", first_party_image_architecture="test",
-        ),
+        "_native_runtime_snapshot",
+        lambda: SimpleNamespace(host_os="test", host_architecture="test", logical_cpus=1, host_memory_bytes=1),
     )
     workspace = SimpleNamespace(root=tmp_path / "runtime", launch_dir=tmp_path / "launch", work_dir=tmp_path / "work")
     provenance = service._provenance(

@@ -46,7 +46,6 @@ def _failed_frozen_run(project_factory):
 def _mock_runtime(monkeypatch, root: Path):
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(root.parent / "retry-nextflow-cache"))
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "test"))
-    monkeypatch.setattr("rnaseq.service.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "test"))
     runtime = DownstreamRuntime(
         prefix=root.parent / "retry-native-runtime", platform="osx-arm64",
         lock_filename="nf-rna-downstream-osx-arm64.lock.yml", lock_sha256="a" * 64,
@@ -120,6 +119,27 @@ def test_retry_rejects_success_and_malformed_source_before_creating_attempt(monk
     with pytest.raises((ExecutionPreflightError, UpstreamExecutionError), match="frozen"):
         execute_retry_service_run(root, retry_of=f"{source.case_id}/{source.run_id}")
     assert sorted((root / "runs" / source.case_id).iterdir()) == before
+
+
+def test_retry_refuses_a_source_frozen_for_the_retired_docker_backend(monkeypatch, project_factory):
+    root, source = _failed_frozen_run(project_factory)
+    _mock_runtime(monkeypatch, root)
+    monkeypatch.setattr("rnaseq.service._run_command", lambda *_a, **_k: pytest.fail("legacy Docker retry launched Nextflow"))
+    monkeypatch.setattr("rnaseq.service.ensure_downstream_runtime", lambda: pytest.fail("legacy Docker retry provisioned Conda"))
+    contract_path = source.run_dir / "frozen" / "downstream_contract.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    before = sorted((root / "runs" / source.case_id).iterdir())
+    # v1.3.0's unqualified macOS Docker dispatch named its backend; v1.2.x contracts carried only an image.
+    for execution in (
+        {"backend": "docker", "downstream_runtime": None, "image": "ghcr.io/2002brian/nf-rna:1.3.0", "source_revision": "0123abc"},
+        {"image": "ghcr.io/2002brian/nf-rna:1.2.1", "source_revision": "0123abc"},
+    ):
+        contract["execution"] = execution
+        contract_path.write_text(json.dumps(contract), encoding="utf-8")
+        with pytest.raises(ExecutionPreflightError, match="retired docker backend.*Start a new run"):
+            execute_retry_service_run(root, retry_of=f"{source.case_id}/{source.run_id}")
+        # Refused before a new retry attempt is allocated.
+        assert sorted((root / "runs" / source.case_id).iterdir()) == before
 
 
 def test_retry_failure_preserves_both_attempts_and_resume_is_opt_in(monkeypatch, project_factory):

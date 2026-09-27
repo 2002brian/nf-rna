@@ -18,7 +18,6 @@ def main() -> None:
     import rnaseq
     from importlib.metadata import version
     from rnaseq.execution import resolve_execution_workspace
-    from rnaseq.models import RuntimeConfig, execution_image_for_version
     from rnaseq.project import load_project
     from rnaseq.service import _provenance, create_case_run, freeze_case_inputs
     from rnaseq.validators import validate_project
@@ -42,9 +41,6 @@ def main() -> None:
             raise SystemExit(version_result.stderr or version_result.stdout)
         if rnaseq.__version__ != expected_version or version("nf-rna") != expected_version:
             raise SystemExit("Installed package and distribution metadata disagree on the release version.")
-        expected_image = execution_image_for_version(expected_version)
-        if RuntimeConfig().execution_image != expected_image:
-            raise SystemExit("Installed package did not retain its version-matched default execution image.")
 
         assets = required_workflow_assets()
         if not all(path.is_file() for path in assets.values()):
@@ -70,9 +66,9 @@ def main() -> None:
             "contrast_id,factor,numerator,denominator\nTreatment_vs_Control,condition,Treatment,Control\n",
             encoding="utf-8",
         )
-        loaded = load_project(project)
-        if loaded.config.runtime.execution_image != expected_image:
-            raise SystemExit("Installed CLI created a project with the wrong default execution image.")
+        if "execution_image" in (project / "project.yaml").read_text(encoding="utf-8"):
+            raise SystemExit("Installed CLI created a project with a retired Docker execution image.")
+        load_project(project)
         report = validate_project(project)
         run = create_case_run(report, "SMOKE-INSTALLED")
         freeze_case_inputs(report, run, profile="local", command=["rnaseq", "run"])

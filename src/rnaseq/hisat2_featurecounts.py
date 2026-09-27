@@ -21,16 +21,6 @@ FASTQC_VERSION = "0.12.1"
 FASTP_VERSION = "0.24.0"
 MULTIQC_VERSION = "1.33"
 
-# Image *references* are pinned to immutable Bioconda build tags.  The service
-# records a digest only after Docker has actually resolved it; a source tree
-# must not claim a digest it has not observed.
-HISAT2_IMAGE = "quay.io/biocontainers/hisat2:2.2.3--h8471819_0"
-SAMTOOLS_IMAGE = "quay.io/biocontainers/samtools:1.21--h50ea8bc_0"
-SUBREAD_IMAGE = "quay.io/biocontainers/subread:2.0.6--he4a0461_2"
-FASTQC_IMAGE = "quay.io/biocontainers/fastqc:0.12.1--hdfd78af_0"
-FASTP_IMAGE = "quay.io/biocontainers/fastp:0.24.0--h125f33a_0"
-MULTIQC_IMAGE = "community.wave.seqera.io/library/multiqc:1.33--ee7739d47738383b"
-
 COUNTING_POLICY = {
     "feature_type": "exon",
     "grouping_attribute": "gene_id",

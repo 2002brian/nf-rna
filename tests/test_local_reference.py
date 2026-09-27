@@ -412,20 +412,19 @@ def test_legacy_manifest_is_not_silently_promoted_to_production(tmp_path):
     assert "legacy_reference_not_production" in {issue.code for issue in report.errors}
 
 
-def test_production_fastq_preflight_does_not_require_a_first_party_image(monkeypatch, tmp_path, production_capable_execution_capacity):
+def test_production_fastq_preflight_needs_only_the_conda_runtime(monkeypatch, tmp_path, production_capable_execution_capacity):
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(tmp_path / "execution"))
     root, reference = _local_fastq_project(tmp_path)
     _promote_reference_for_production(root, reference)
     report = validate_project(root)
     generate_plan(report)
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "test"))
-    monkeypatch.setattr("rnaseq.service.check_docker", lambda: (_ for _ in ()).throw(AssertionError("Salmon must not query Docker")))
     monkeypatch.setattr("rnaseq.service.check_upstream_conda", lambda: RuntimeCheck("Conda", "FOUND", "test"))
     monkeypatch.setattr("rnaseq.service.downstream_runtime_preflight", lambda: None)
     prepare_service_run(report, profile="local")
 
 
-def test_production_acceptance_rejects_custom_reference_and_latest_runtime(project_factory):
+def test_production_acceptance_rejects_custom_reference(project_factory):
     config = deepcopy(base_config())
     config["input"] = {"type": "fastq", "path": "input/fastq", "layout": "paired_end"}
     config["upstream"] = {

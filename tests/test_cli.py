@@ -12,7 +12,6 @@ from typer.testing import CliRunner
 
 from rnaseq import __version__
 from rnaseq.cli import _prompt_toolkit_choice_prompt, _wizard_completion_candidates, _wizard_tab_completion, app
-from rnaseq.models import DEFAULT_EXECUTION_IMAGE
 
 runner = CliRunner()
 
@@ -124,7 +123,8 @@ def test_new_creates_versioned_project_without_placeholder_counts(tmp_path):
     root = tmp_path / "created_project"
     config = yaml.safe_load((root / "project.yaml").read_text(encoding="utf-8"))
     assert config["schema_version"] == "1.3"
-    assert config["runtime"]["execution_image"] == DEFAULT_EXECUTION_IMAGE
+    # v1.3.0+ projects carry no Docker/GHCR execution image configuration.
+    assert "runtime" not in config
     assert isinstance(config["schema_version"], str)
     assert (root / "input").is_dir()
     assert (root / "planning").is_dir()

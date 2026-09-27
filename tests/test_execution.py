@@ -22,10 +22,6 @@ from rnaseq.execution import (
     LocalResourceCapacity,
     build_nextflow_command,
     classify_execution_failure,
-    check_container_runtime,
-    downstream_docker_user_mapping,
-    downstream_docker_user_mapping_check,
-    doctor_checks,
     detect_local_resource_capacity,
     _host_memory_bytes,
     _reference_runtime_check,
@@ -37,11 +33,9 @@ from rnaseq.execution import (
     suggested_local_resources,
     validate_local_execution_budget,
     resolve_execution_workspace,
-    runtime_resource_checks,
     effective_resource_budget,
     validate_effective_resource_budget,
 )
-from rnaseq.models import DEFAULT_EXECUTION_IMAGE
 from rnaseq.planner import generate_plan
 from rnaseq.validators import validate_project
 
@@ -49,7 +43,7 @@ runner = CliRunner()
 
 
 def test_experimental_osx_arm64_nfcore_conda_overrides_are_withdrawn(monkeypatch, tmp_path):
-    """macOS uses Docker; the experimental per-process Conda overrides must not return."""
+    """macOS is unsupported; the experimental per-process Conda overrides must not return."""
     monkeypatch.setattr("rnaseq.execution.native_platform", lambda: "osx-arm64")
     config = render_upstream_conda_config(tmp_path / "cache")
     assert "EAUTILS_GTF2BED" not in config and "TXIMETA_TXIMPORT" not in config
@@ -97,7 +91,6 @@ def _ready_fastq_project(tmp_path: Path) -> Path:
 def _prepared(monkeypatch, root: Path, production_capable_execution_capacity) -> PreparedRun:
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(root.parent / "local-execution-root"))
     monkeypatch.setattr("rnaseq.execution.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "25.10.4"))
-    monkeypatch.setattr("rnaseq.execution.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "Docker daemon is available."))
     return prepare_run(validate_project(root), "local")
 
 
@@ -111,7 +104,7 @@ def test_mocked_execution_capacity_fixture_supplies_a_production_capable_runtime
 ):
     snapshot = production_capable_execution_capacity
     resources = effective_resource_budget(snapshot, ResourceContract("PROJECT_LOCAL", 8, 12, 12))
-    assert (snapshot.logical_cpus, snapshot.docker_cpus) == (16, 16)
+    assert snapshot.logical_cpus == 16
     assert (resources.effective_cpus, resources.effective_memory_gib) == (8, 12)
     validate_effective_resource_budget(resources)
 
@@ -190,10 +183,6 @@ def test_successful_mocked_execution_freezes_state_and_handoff(monkeypatch, tmp_
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr("rnaseq.execution.subprocess.run", successful)
-    monkeypatch.setattr(
-        "rnaseq.execution.runtime_snapshot",
-        lambda *_args: RuntimeSnapshot("Darwin", "arm64", 12, 24 * 1024**3, "arm64", 15 * 1024**3, "test", "arm64"),
-    )
     result = execute_prepared_run(prepared)
     state = json.loads(result.state_path.read_text())
     handoff = yaml.safe_load(result.handoff_path.read_text())
@@ -237,10 +226,6 @@ def test_handoff_accepts_modern_multiqc_report_data(monkeypatch, tmp_path, produ
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr("rnaseq.execution.subprocess.run", successful)
-    monkeypatch.setattr(
-        "rnaseq.execution.runtime_snapshot",
-        lambda *_args: RuntimeSnapshot("Darwin", "arm64", 12, 24 * 1024**3, "arm64", 15 * 1024**3, "test", "arm64"),
-    )
     result = execute_prepared_run(prepared)
     handoff = yaml.safe_load(result.handoff_path.read_text())
     assert handoff["multiqc"]["data_directory"].endswith("multiqc_report_data")
@@ -276,132 +261,6 @@ def test_execution_root_override_is_local_and_portable(monkeypatch, tmp_path):
     assert workspace.root == root / "CASE-001" / "20260828-120000+0800"
     assert workspace.launch_dir == workspace.root / "launch"
     assert workspace.work_dir == workspace.root / "work"
-
-
-def test_container_runtime_probe_requires_procps_python_r_and_r_packages(monkeypatch):
-    calls: list[list[str]] = []
-
-    def successful(arguments):
-        calls.append(arguments)
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr("rnaseq.execution.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "available"))
-    monkeypatch.setattr("rnaseq.execution._run_capture", successful)
-    result = check_container_runtime()
-    assert result.state == "FOUND"
-    assert calls[0][:3] == ["docker", "image", "inspect"]
-    probe = calls[1]
-    assert probe[:6] == ["docker", "run", "--rm", DEFAULT_EXECUTION_IMAGE, "sh", "-c"]
-    assert "--entrypoint" not in probe
-    # Docker image ENV is the task runtime contract; a login shell can replace
-    # PATH via profile startup files and is deliberately not representative.
-    assert "-lc" not in probe
-    assert "for executable in ps python Rscript" in probe[-1]
-    assert "command -v \"$executable\"" in probe[-1]
-    assert "ps --version" in probe[-1]
-    assert "DESeq2" in probe[-1] and "org.Mm.eg.db" in probe[-1]
-    assert "python -m rnaseq.workflow_support report --help" in probe[-1]
-    assert "--enrichment" in probe[-1]
-
-
-def test_downstream_docker_user_mapping_is_dynamic_on_linux_wsl_and_absent_on_macos():
-    assert downstream_docker_user_mapping(host_os="Linux", uid=24701, gid=24703) == "24701:24703"
-    assert downstream_docker_user_mapping(host_os="Darwin", uid=24701, gid=24703) is None
-    assert downstream_docker_user_mapping(host_os="Linux", uid=-1, gid=24703) is None
-    source = Path("src/rnaseq/execution.py").read_text(encoding="utf-8")
-    assert "1000:1000" not in source
-
-
-def test_doctor_explains_linux_wsl_downstream_user_mapping(monkeypatch):
-    monkeypatch.setattr("rnaseq.execution.downstream_docker_user_mapping", lambda: "24701:24703")
-    check = downstream_docker_user_mapping_check()
-    assert check.verdict == "PASS"
-    assert "--user 24701:24703" in check.detail
-
-
-def test_container_runtime_probe_reports_the_failed_prerequisite(monkeypatch):
-    results = iter((
-        SimpleNamespace(returncode=0, stdout="", stderr=""),
-        SimpleNamespace(returncode=1, stdout="", stderr="missing executable: ps\n"),
-    ))
-    monkeypatch.setattr("rnaseq.execution.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "available"))
-    monkeypatch.setattr("rnaseq.execution._run_capture", lambda _arguments: next(results))
-    result = check_container_runtime()
-    assert result.state == "NOT FOUND"
-    assert result.detail == "container prerequisite probe exited 1: stderr: missing executable: ps"
-
-
-def test_doctor_reports_a_successful_container_probe(monkeypatch):
-    monkeypatch.setattr("platform.system", lambda: "Darwin")
-    monkeypatch.setattr("platform.machine", lambda: "arm64")
-    monkeypatch.setattr("rnaseq.execution.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "available"))
-    monkeypatch.setattr("rnaseq.execution.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "available"))
-    monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda *_args: RuntimeCheck("First-party execution image", "FOUND", "available"))
-    monkeypatch.setattr("rnaseq.downstream.r_runtime_checks", lambda: ())
-    checks = doctor_checks()
-    assert RuntimeCheck("First-party execution image", "FOUND", "available") in checks
-
-
-def test_doctor_reports_requested_and_observed_image_identity(monkeypatch, project_factory):
-    monkeypatch.setattr("platform.system", lambda: "Darwin")
-    monkeypatch.setattr("platform.machine", lambda: "arm64")
-    root = project_factory()
-    config_path = root / "project.yaml"
-    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    config["runtime"] = {"execution_image": "nf-rna:0.5.1"}
-    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
-    monkeypatch.setattr("rnaseq.execution.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "available"))
-    monkeypatch.setattr("rnaseq.execution.check_docker", lambda: RuntimeCheck("Docker", "FOUND", "available"))
-    monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda *_args: RuntimeCheck("First-party execution image", "FOUND", "available"))
-    monkeypatch.setattr(
-        "rnaseq.execution.inspect_container_image",
-        lambda image: {"reference": image, "image_id": "sha256:" + "a" * 64, "repo_digests": ["repo@sha256:" + "b" * 64], "labels": {"org.opencontainers.image.revision": "test-revision"}},
-    )
-    monkeypatch.setattr(
-        "rnaseq.execution.runtime_snapshot",
-        lambda *_args: RuntimeSnapshot("Darwin", "arm64", 12, 24 * 1024**3, "arm64", 15 * 1024**3, "test", "arm64"),
-    )
-    monkeypatch.setattr("rnaseq.downstream.r_runtime_checks", lambda: ())
-    identity = {check.name: check for check in doctor_checks(root)}["First-party execution image identity"]
-    assert identity.verdict == "PASS"
-    assert "requested=nf-rna:0.5.1" in identity.detail
-    assert "observed_image_id=sha256:" in identity.detail
-    assert "test-revision" in identity.detail
-
-
-def test_doctor_distinguishes_missing_nextflow_and_docker_from_architecture_warnings(monkeypatch):
-    monkeypatch.setattr("platform.system", lambda: "Darwin")
-    monkeypatch.setattr("platform.machine", lambda: "arm64")
-    monkeypatch.setattr("rnaseq.execution.check_nextflow", lambda: RuntimeCheck("Nextflow", "NOT FOUND", "not installed"))
-    monkeypatch.setattr("rnaseq.execution.check_docker", lambda: RuntimeCheck("Docker", "NOT FOUND", "daemon unavailable"))
-    monkeypatch.setattr("rnaseq.execution.check_container_runtime", lambda *_args: RuntimeCheck("First-party execution image", "NOT FOUND", "daemon unavailable"))
-    monkeypatch.setattr(
-        "rnaseq.execution.runtime_snapshot",
-        lambda *_args: RuntimeSnapshot("Darwin", "arm64", 12, 24 * 1024**3, None, None, None, "amd64"),
-    )
-    monkeypatch.setattr("rnaseq.downstream.r_runtime_checks", lambda: ())
-
-    by_name = {check.name: check for check in doctor_checks()}
-    assert by_name["Nextflow"].verdict == "FAIL"
-    assert by_name["Docker"].verdict == "FAIL"
-    assert by_name["Docker runtime"].verdict == "FAIL"
-    assert by_name["First-party execution image architecture"].verdict == "WARN"
-    assert by_name["Effective local budget"].verdict == "WARN"
-    assert "unavailable" in by_name["Effective local budget"].detail
-    assert "architecture=arm64" in by_name["Host runtime"].detail
-
-
-def test_runtime_doctor_warns_for_amd64_image_on_arm64_and_low_docker_memory():
-    checks = runtime_resource_checks(RuntimeSnapshot(
-        host_os="Darwin", host_architecture="arm64", logical_cpus=12, host_memory_bytes=24 * 1024**3,
-        docker_architecture="arm64", docker_memory_bytes=8 * 1024**3, docker_version="28.0.1",
-        first_party_image_architecture="amd64", docker_cpus=12,
-    ))
-    by_name = {item.name: item for item in checks}
-    assert by_name["First-party execution image architecture"].verdict == "WARN"
-    assert "Rosetta" in by_name["First-party execution image architecture"].detail
-    assert by_name["Effective local budget"].verdict == "WARN"
-    assert "8 CPUs/8 GiB" in by_name["Effective local budget"].detail
 
 
 def test_project_doctor_surfaces_a_missing_adopted_reference_error(monkeypatch, tmp_path):
@@ -444,26 +303,18 @@ def test_local_resource_suggestion_and_validation_are_conservative():
     assert suggested_local_resources(LocalResourceCapacity(None, None, None)) == (8, 12)
 
 
-def test_effective_budget_clamps_desktop_runtime_but_not_native_linux_docker():
+def test_effective_budget_clamps_the_project_budget_to_host_capacity():
     requested = ResourceContract("PROJECT_LOCAL", 24, 48, 12)
-    desktop = effective_resource_budget(RuntimeSnapshot(
-        "Darwin", "arm64", 20, 64 * 1024**3, "arm64", 16 * 1024**3, "test", "arm64", 10
-    ), requested)
-    assert (desktop.effective_cpus, desktop.effective_memory_gib) == (10, 16)
-    assert desktop.runtime_ceiling_applies is True and desktop.clamped is True
-
-    linux = effective_resource_budget(RuntimeSnapshot(
-        "Linux", "amd64", 20, 64 * 1024**3, "amd64", 8 * 1024**3, "test", "amd64", 4
-    ), requested)
+    linux = effective_resource_budget(RuntimeSnapshot("Linux", "amd64", 20, 64 * 1024**3), requested)
     assert (linux.effective_cpus, linux.effective_memory_gib) == (20, 48)
-    assert linux.runtime_ceiling_applies is False
+    assert linux.clamped is True
+    # The retired Docker VM ceiling stays in the record schema, always inert.
+    assert linux.as_dict()["container_runtime"] == {"cpus": None, "memory_gib": None, "ceiling_applies": False}
 
 
-def test_effective_budget_keeps_smaller_project_budget_and_handles_missing_runtime_detection():
+def test_effective_budget_keeps_smaller_project_budget_and_handles_missing_host_detection():
     project = ResourceContract("PROJECT_LOCAL", 8, 12, 12)
-    resources = effective_resource_budget(RuntimeSnapshot(
-        "Darwin", "arm64", 24, 96 * 1024**3, "arm64", None, "test", "arm64", None
-    ), project)
+    resources = effective_resource_budget(RuntimeSnapshot("Linux", "amd64", None, None), project)
     assert (resources.effective_cpus, resources.effective_memory_gib) == (8, 12)
     assert resources.clamped is False
     assert len(resources.warnings) == 2
@@ -471,9 +322,9 @@ def test_effective_budget_keeps_smaller_project_budget_and_handles_missing_runti
 
 
 def test_effective_budget_fails_when_largest_process_cannot_fit():
-    resources = effective_resource_budget(RuntimeSnapshot(
-        "Darwin", "arm64", 12, 24 * 1024**3, "arm64", 10 * 1024**3, "test", "arm64", 12
-    ), ResourceContract("PROJECT_LOCAL", 16, 32, 12))
+    resources = effective_resource_budget(
+        RuntimeSnapshot("Linux", "amd64", 12, 10 * 1024**3), ResourceContract("PROJECT_LOCAL", 16, 32, 12)
+    )
     with pytest.raises(ExecutionPreflightError, match="at least 8 CPUs/12 GiB"):
         validate_effective_resource_budget(resources)
 
