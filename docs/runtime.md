@@ -431,6 +431,12 @@ The default project ceiling is 8 CPUs, 12 GiB, and 12 hours. The frozen config s
 
 Persistent immutable artifacts live beneath the project `runs/` directory. Operational Nextflow state lives in a local execution root outside that tree. On macOS the default is under the user's cache directory; on Linux it follows the standard cache location. Set `RNASEQ_EXECUTION_ROOT` to an absolute operator-owned scratch location if required.
 
+`RNASEQ_EXECUTION_ROOT` controls more than task scratch space: it holds each run's Nextflow launch directory (`<root>/<case>/<run>/launch`, including Nextflow's `.nextflow` cache database) and the shared runtime caches (`<root>/cache/upstream-conda` for the nf-core and HISAT2/featureCounts Conda environments, and `<root>/cache/fastq-sha256`). Keep it on a local Linux filesystem.
+
+`RNASEQ_WORK_ROOT` relocates only the Nextflow task work directory, which holds the large transient files (prepared FASTQs, uncompressed HISAT2 SAM files, intermediate BAMs). When set to an absolute path, work goes to `<RNASEQ_WORK_ROOT>/<case>/<run>/work/{upstream,downstream}`; the launch directory, Conda caches, FASTQ checksum cache, downstream runtime (`RNASEQ_RUNTIME_ROOT`), and `~/.nextflow` stay where they are. Unset, work stays at `<execution root>/<case>/<run>/work`. Each run records the effective path as `execution_work_dir` in `provenance/run_provenance.yaml`, and `rnaseq doctor` reports it as *Execution work root* and measures free space on that filesystem. A 10-sample paired-end HISAT2 run can need roughly 200 GB of work space, and nf-rna never deletes old work directories.
+
+On WSL2, where the Linux virtual disk is often smaller than the Windows data drives, point it at a large volume, for example `conda env config vars set -n nf-rna RNASEQ_WORK_ROOT=/mnt/d/nf-rna-work`. Writes to `/mnt/<drive>` are slower than to the Linux disk, and Windows real-time antivirus scanning of that folder slows large SAM/BAM writes further; excluding it is advisable.
+
 Do not commit project run directories, workflow work directories, logs, delivery packages, references, indices, or production inputs. The repository's `.gitignore` enforces this default for new Git users.
 
 ## Determinism and external dependencies

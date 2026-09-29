@@ -67,6 +67,35 @@ def _successful_downstream(command, *, cwd, stdout_path, stderr_path):
     return 0
 
 
+def test_retry_puts_its_fresh_work_dir_under_the_work_root(monkeypatch, project_factory, tmp_path):
+    root, source = _failed_frozen_run(project_factory)
+    _mock_runtime(monkeypatch, root)
+    work_root = tmp_path / "large-volume"
+    monkeypatch.setenv("RNASEQ_WORK_ROOT", str(work_root))
+    commands: list[list[str]] = []
+
+    def downstream(command, **kwargs):
+        commands.append(command)
+        return _successful_downstream(command, **kwargs)
+
+    monkeypatch.setattr("rnaseq.service._run_command", downstream)
+    retry = execute_retry_service_run(root, retry_of=f"{source.case_id}/{source.run_id}")
+    expected = work_root / retry.case_id / retry.run_id / "work"
+    assert [command[command.index("-work-dir") + 1] for command in commands] == [str(expected / "downstream")]
+    provenance = yaml.safe_load((retry.run_dir / "provenance" / "run_provenance.yaml").read_text(encoding="utf-8"))
+    assert provenance["execution_work_dir"] == str(expected)
+    assert provenance["execution_launch_dir"] == str(root.parent / "retry-nextflow-cache" / retry.case_id / retry.run_id / "launch")
+
+
+def test_relative_work_root_rejects_a_retry_before_allocating_a_run(monkeypatch, project_factory):
+    root, source = _failed_frozen_run(project_factory)
+    _mock_runtime(monkeypatch, root)
+    monkeypatch.setenv("RNASEQ_WORK_ROOT", "nf-rna-work")
+    with pytest.raises(ExecutionPreflightError, match="RNASEQ_WORK_ROOT must be an absolute path"):
+        execute_retry_service_run(root, retry_of=f"{source.case_id}/{source.run_id}")
+    assert [path.name for path in source.run_dir.parent.iterdir()] == [source.run_id]
+
+
 def test_retry_creates_new_run_and_preserves_frozen_scientific_contract(monkeypatch, project_factory):
     root, source = _failed_frozen_run(project_factory)
     _mock_runtime(monkeypatch, root)

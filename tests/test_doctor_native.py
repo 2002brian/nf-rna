@@ -95,6 +95,48 @@ def test_linux_doctor_never_calls_docker_and_passes_without_it(monkeypatch, tmp_
     assert list(tmp_path.iterdir()) == []
 
 
+def test_linux_doctor_checks_the_execution_and_work_roots_separately(monkeypatch, tmp_path):
+    _native_host(monkeypatch, tmp_path)
+    work_root = tmp_path / "large-volume" / "nf-rna-work"
+    work_root.mkdir(parents=True)
+    monkeypatch.setenv("RNASEQ_WORK_ROOT", str(work_root))
+    probed: list[Path] = []
+    real_disk_usage = shutil.disk_usage
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: probed.append(Path(path)) or real_disk_usage(path))
+    by_name = {check.name: check for check in doctor_checks()}
+
+    assert by_name["Execution root"].verdict == "PASS"
+    assert by_name["Execution root"].detail.startswith(f"path={tmp_path / 'execution'};")
+    assert by_name["Execution work root"].verdict == "PASS"
+    assert by_name["Execution work root"].detail.startswith(f"path={work_root}; writable (exists)")
+    assert "RNASEQ_WORK_ROOT" in by_name["Execution work root"].detail
+    assert probed == [work_root, tmp_path]  # the execution root does not exist yet; its nearest ancestor is probed
+    assert f"available_at={work_root};" in by_name["Execution work-directory free space"].detail
+    assert by_name["Execution root free space"].detail.startswith(f"path={tmp_path / 'execution'}; available_at={tmp_path};")
+    assert by_name["Upstream Conda cache"].detail.startswith(f"path={tmp_path / 'execution' / 'cache' / 'upstream-conda'};")
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["large-volume"]  # still non-mutating
+
+
+def test_linux_doctor_work_root_defaults_to_the_execution_root(monkeypatch, tmp_path):
+    _native_host(monkeypatch, tmp_path)
+    by_name = {check.name: check for check in doctor_checks()}
+    assert by_name["Execution work root"].verdict == "PASS"
+    assert by_name["Execution work root"].detail.startswith(f"path={tmp_path / 'execution'};")
+    assert "set RNASEQ_WORK_ROOT to relocate" in by_name["Execution work root"].detail
+    assert "Execution root free space" not in by_name  # one filesystem, one free-space line
+
+
+def test_linux_doctor_reports_a_relative_work_root_without_crashing(monkeypatch, tmp_path):
+    _native_host(monkeypatch, tmp_path)
+    monkeypatch.setenv("RNASEQ_WORK_ROOT", "relative/work")
+    checks = doctor_checks()
+    by_name = {check.name: check for check in checks}
+    assert by_name["Execution work root"].verdict == "FAIL"
+    assert "RNASEQ_WORK_ROOT must be an absolute path" in by_name["Execution work root"].detail
+    assert by_name["Execution root"].verdict == "PASS" and by_name["Upstream Conda cache"].verdict == "PASS"
+    assert doctor_readiness(checks) == (False, ("Execution work root",))
+
+
 def test_linux_doctor_does_not_require_host_bioinformatics_or_r_tools(monkeypatch, tmp_path):
     calls = _native_host(monkeypatch, tmp_path)
     doctor_checks()

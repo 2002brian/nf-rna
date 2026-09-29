@@ -45,6 +45,7 @@ WINDOWS_UNSUPPORTED_MESSAGE = (
 NFCORE_RNASEQ_REVISION = "e7ca46272c8f9d5ceee3f71759f4ba551d3217a4"
 RUN_STATES = {"CREATED", "RUNNING", "SUCCESS", "FAILED", "INTERRUPTED"}
 EXECUTION_ROOT_ENV = "RNASEQ_EXECUTION_ROOT"
+WORK_ROOT_ENV = "RNASEQ_WORK_ROOT"
 HISAT2_WORKFLOW = workflow_asset_path("hisat2_featurecounts.nf")
 HISAT2_LINUX_CONDA_ENV = HISAT2_WORKFLOW.parent / "envs" / "hisat2-featurecounts-linux-64.yml"
 # Reviewed identity of the qualified linux-64 HISAT2/featureCounts environment.
@@ -264,14 +265,7 @@ class ExecutionWorkspace:
     work_dir: Path
 
 
-def resolve_execution_workspace(case_id: str, run_id: str) -> ExecutionWorkspace:
-    """Return the local execution paths for one logical case/run without writing them.
-
-    Nextflow creates ``.nextflow/cache`` below its current working directory.  That
-    LevelDB state is operational scratch data, not a durable project artifact, so
-    it must never be created on a client or shared project filesystem.
-    """
-
+def _execution_base() -> Path:
     configured = os.environ.get(EXECUTION_ROOT_ENV)
     if configured:
         base = Path(configured).expanduser()
@@ -281,8 +275,36 @@ def resolve_execution_workspace(case_id: str, run_id: str) -> ExecutionWorkspace
         base = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "nf-rna"
     if not base.is_absolute():
         raise ExecutionPreflightError(f"{EXECUTION_ROOT_ENV} must be an absolute path when configured.")
-    root = (base / case_id / run_id).resolve()
-    return ExecutionWorkspace(root=root, launch_dir=root / "launch", work_dir=root / "work")
+    return base
+
+
+def _work_base() -> Path | None:
+    configured = os.environ.get(WORK_ROOT_ENV)
+    if not configured:
+        return None
+    try:
+        base = Path(configured).expanduser()
+    except RuntimeError:  # an unknown ~user
+        base = Path(configured)
+    if not base.is_absolute():
+        raise ExecutionPreflightError(f"{WORK_ROOT_ENV} must be an absolute path when configured: {configured!r}")
+    return base
+
+
+def resolve_execution_workspace(case_id: str, run_id: str) -> ExecutionWorkspace:
+    """Return the local execution paths for one logical case/run without writing them.
+
+    Nextflow creates ``.nextflow/cache`` below its current working directory.  That
+    LevelDB state is operational scratch data, not a durable project artifact, so
+    it must never be created on a client or shared project filesystem.  Only the
+    task work directory, which holds the large transient files, may be relocated
+    with ``RNASEQ_WORK_ROOT``; the launch directory stays under the execution root.
+    """
+
+    root = (_execution_base() / case_id / run_id).resolve()
+    work_base = _work_base()
+    work_dir = (work_base / case_id / run_id / "work").resolve() if work_base is not None else root / "work"
+    return ExecutionWorkspace(root=root, launch_dir=root / "launch", work_dir=work_dir)
 
 
 def execution_backend() -> str:
@@ -309,10 +331,16 @@ def runtime_platform_label() -> str:
     return f"{system}-{machine}"
 
 
+def execution_cache_dir(name: str) -> Path:
+    """A shared cache under the execution root; never relocated by ``RNASEQ_WORK_ROOT``."""
+
+    return (_execution_base() / "cache" / name).resolve()
+
+
 def upstream_conda_cache() -> Path:
     """Shared nf-core process environments outside all per-run work directories."""
 
-    return resolve_execution_workspace("cache", "upstream-conda").root
+    return execution_cache_dir("upstream-conda")
 
 
 def check_upstream_conda() -> RuntimeCheck:
@@ -826,16 +854,38 @@ def downstream_runtime_checks() -> tuple[RuntimeCheck, ...]:
     return tuple(checks)
 
 
-def _free_space_check() -> RuntimeCheck:
-    workspace = resolve_execution_workspace("doctor", "resource-check").work_dir
-    disk_probe = workspace
+def _work_root_check() -> RuntimeCheck:
+    name = "Execution work root"
+    try:
+        work_root = resolve_execution_workspace("doctor", "resource-check").work_dir.parents[2]
+    except ExecutionPreflightError as exc:
+        return RuntimeCheck(name, "NOT FOUND", str(exc))
+    source = WORK_ROOT_ENV if os.environ.get(WORK_ROOT_ENV) else f"execution root; set {WORK_ROOT_ENV} to relocate"
+    return _writable_location_check(name, work_root, f"Nextflow task work directories ({source})")
+
+
+def _disk_free_check(name: str, path: Path) -> RuntimeCheck:
+    disk_probe = path
     while not disk_probe.exists() and disk_probe != disk_probe.parent:
         disk_probe = disk_probe.parent
     try:
         free = shutil.disk_usage(disk_probe).free
-        return RuntimeCheck("Execution work-directory free space", "FOUND", f"path={workspace}; available_at={disk_probe}; free={_gib(free)}")
+        return RuntimeCheck(name, "FOUND", f"path={path}; available_at={disk_probe}; free={_gib(free)}")
     except OSError as exc:
-        return RuntimeCheck("Execution work-directory free space", "NOT FOUND", f"path={workspace}; unable to inspect free space: {exc}", "WARN")
+        return RuntimeCheck(name, "NOT FOUND", f"path={path}; unable to inspect free space: {exc}", "WARN")
+
+
+def _free_space_checks() -> tuple[RuntimeCheck, ...]:
+    """Free space where task work lands and, when relocated, where the launch state and caches stay."""
+
+    try:
+        workspace = resolve_execution_workspace("doctor", "resource-check").work_dir
+    except ExecutionPreflightError as exc:
+        return (RuntimeCheck("Execution work-directory free space", "NOT FOUND", str(exc), "WARN"),)
+    checks = [_disk_free_check("Execution work-directory free space", workspace)]
+    if os.environ.get(WORK_ROOT_ENV):
+        checks.append(_disk_free_check("Execution root free space", _execution_base().resolve()))
+    return tuple(checks)
 
 
 def _doctor_budget(project_dir: Path | None) -> tuple[ResourceContract, ResourcePolicy | None]:
@@ -865,7 +915,8 @@ def native_linux_doctor_checks(project_dir: Path | None = None) -> tuple[Runtime
         check_conda_functional(),
         _nfcore_conda_channel_check(project_dir),
         nfcore_pin_check(),
-        _writable_location_check("Execution root", resolve_execution_workspace("doctor", "resource-check").root.parents[1], "Nextflow launch/work directories"),
+        _writable_location_check("Execution root", _execution_base().resolve(), "Nextflow launch directories and runtime caches"),
+        _work_root_check(),
         _writable_location_check("Upstream Conda cache", upstream_conda_cache(), "nf-core and HISAT2/featureCounts process environments"),
         hisat2_conda_env_check(),
         *downstream_runtime_checks(),
@@ -876,7 +927,7 @@ def native_linux_doctor_checks(project_dir: Path | None = None) -> tuple[Runtime
         *_budget_checks(snapshot, budget, policy),
         _reference_runtime_check(project_dir),
         RuntimeCheck("Disk write access", "FOUND" if os.access(probe, os.W_OK) else "NOT FOUND", str(probe)),
-        _free_space_check(),
+        *_free_space_checks(),
     )
 
 
@@ -1010,6 +1061,7 @@ def prepare_run(report: ValidationReport, profile: str) -> PreparedRun:
             "Conda is required for upstream FASTQ execution: " + conda.detail
         )
     prepare_upstream_conda_cache()
+    resolve_execution_workspace("preflight", "paths")  # rejects an invalid RNASEQ_WORK_ROOT before a run exists
     return PreparedRun(report, nextflow.detail, "conda", resources)
 
 

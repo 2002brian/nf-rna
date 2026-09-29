@@ -33,6 +33,8 @@ from rnaseq.execution import (
     suggested_local_resources,
     validate_local_execution_budget,
     resolve_execution_workspace,
+    upstream_conda_cache,
+    ExecutionWorkspace,
     effective_resource_budget,
     validate_effective_resource_budget,
 )
@@ -261,6 +263,44 @@ def test_execution_root_override_is_local_and_portable(monkeypatch, tmp_path):
     assert workspace.root == root / "CASE-001" / "20260828-120000+0800"
     assert workspace.launch_dir == workspace.root / "launch"
     assert workspace.work_dir == workspace.root / "work"
+
+
+def test_unset_work_root_keeps_the_default_linux_layout(monkeypatch, tmp_path):
+    monkeypatch.delenv("RNASEQ_EXECUTION_ROOT", raising=False)
+    monkeypatch.setattr("rnaseq.execution.sys.platform", "linux")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    workspace = resolve_execution_workspace("CASE-001", "20260828-120000+0800")
+    root = tmp_path / "xdg" / "nf-rna" / "CASE-001" / "20260828-120000+0800"
+    assert workspace == ExecutionWorkspace(root=root, launch_dir=root / "launch", work_dir=root / "work")
+    assert upstream_conda_cache() == tmp_path / "xdg" / "nf-rna" / "cache" / "upstream-conda"
+
+
+def test_work_root_moves_only_the_task_work_directory(monkeypatch, tmp_path, isolated_fastq_checksum_cache):
+    from rnaseq.downstream_runtime import _runtime_root
+
+    execution_root, work_root = tmp_path / "linux-cache", tmp_path / "large-volume" / "nf-rna-work"
+    monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(execution_root))
+    runtime_before = _runtime_root()
+    monkeypatch.setenv("RNASEQ_WORK_ROOT", str(work_root))
+    workspace = resolve_execution_workspace("CASE-001", "20260828-120000+0800")
+    assert workspace.root == execution_root / "CASE-001" / "20260828-120000+0800"
+    assert workspace.launch_dir == workspace.root / "launch"
+    assert workspace.work_dir == work_root / "CASE-001" / "20260828-120000+0800" / "work"
+    assert upstream_conda_cache() == execution_root / "cache" / "upstream-conda"
+    assert isolated_fastq_checksum_cache() == execution_root / "cache" / "fastq-sha256" / "checksums.json"
+    assert _runtime_root() == runtime_before
+    assert not tmp_path.joinpath("large-volume").exists()  # resolution never writes
+
+
+@pytest.mark.parametrize("value", ["nf-rna-work", "./work", "~user-that-does-not-exist/work"])
+def test_relative_work_root_fails_clearly(monkeypatch, tmp_path, value, isolated_fastq_checksum_cache):
+    monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(tmp_path / "execution"))
+    monkeypatch.setenv("RNASEQ_WORK_ROOT", value)
+    with pytest.raises(ExecutionPreflightError, match="RNASEQ_WORK_ROOT must be an absolute path"):
+        resolve_execution_workspace("CASE-001", "20260828-120000+0800")
+    # The runtime caches do not depend on the work root.
+    assert upstream_conda_cache() == tmp_path / "execution" / "cache" / "upstream-conda"
+    assert isolated_fastq_checksum_cache() == tmp_path / "execution" / "cache" / "fastq-sha256" / "checksums.json"
 
 
 def test_project_doctor_surfaces_a_missing_adopted_reference_error(monkeypatch, tmp_path):

@@ -50,6 +50,7 @@ from rnaseq.execution import (
     nfcore_runtime_params,
     NFCORE_CONDA_PROFILE,
     NFCORE_RNASEQ_REVISION,
+    execution_cache_dir,
     prepare_upstream_conda_cache,
     render_upstream_conda_config,
     upstream_conda_cache,
@@ -199,7 +200,7 @@ FASTQ_IDENTITY_CONTRACT = {
 
 
 def _fastq_checksum_cache_path() -> Path:
-    return resolve_execution_workspace("cache", "fastq-sha256").root / "checksums.json"
+    return execution_cache_dir("fastq-sha256") / "checksums.json"
 
 
 def _fastq_fingerprint(path: Path) -> tuple[int, int]:
@@ -1672,6 +1673,7 @@ def _backend_preflight(report: ValidationReport) -> None:
 
     assert report.config is not None
     execution_backend()  # refuses unsupported platforms
+    resolve_execution_workspace("preflight", "paths")  # rejects an invalid RNASEQ_WORK_ROOT before a run exists
     if report.config.input.type is InputType.FASTQ:
         conda = check_upstream_conda()
         if conda.state != "FOUND":

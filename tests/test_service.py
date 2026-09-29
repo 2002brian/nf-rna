@@ -679,7 +679,21 @@ def test_downstream_command_freezes_l1_and_rejects_enrichment_or_invalid_levels(
         build_downstream_nextflow_command(run)
 
 
-def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outputs(monkeypatch, tmp_path):
+def test_relative_work_root_rejects_a_run_before_allocating_it(monkeypatch, project_factory, tmp_path):
+    root = project_factory()
+    report = validate_project(root)
+    generate_plan(report)
+    monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(tmp_path / "local-nextflow-cache"))
+    monkeypatch.setenv("RNASEQ_WORK_ROOT", "nf-rna-work")
+    monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "25.10.4"))
+    monkeypatch.setattr("rnaseq.service.downstream_runtime_preflight", lambda: None)
+    with pytest.raises(ExecutionPreflightError, match="RNASEQ_WORK_ROOT must be an absolute path"):
+        execute_service_run(report, case_id="CASE-BAD-WORK-ROOT")
+    assert not (root / "runs" / "CASE-BAD-WORK-ROOT").exists()
+
+
+@pytest.mark.parametrize("relocated_work", [False, True], ids=["default-work-root", "RNASEQ_WORK_ROOT"])
+def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outputs(monkeypatch, tmp_path, relocated_work):
     """A fake Nextflow process proves cache state never lands under the project."""
 
     root = tmp_path / "mounted-client-project"
@@ -701,6 +715,9 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     generate_plan(report)
     local_root = tmp_path / "local-nextflow-cache"
     monkeypatch.setenv("RNASEQ_EXECUTION_ROOT", str(local_root))
+    work_root = tmp_path / "large-work-filesystem"
+    if relocated_work:
+        monkeypatch.setenv("RNASEQ_WORK_ROOT", str(work_root))
     monkeypatch.setattr("rnaseq.service.check_nextflow", lambda: RuntimeCheck("Nextflow", "FOUND", "25.10.4"))
     monkeypatch.setattr("rnaseq.service.check_upstream_conda", lambda: RuntimeCheck("Conda", "FOUND", "conda 25.3.1"))
     observed: list[tuple[list[str], Path]] = []
@@ -743,6 +760,18 @@ def test_service_runs_nextflow_from_local_execution_root_and_preserves_case_outp
     assert str(upstream_conda_config.resolve()) not in observed[1][0]
     assert (local_root / run.case_id / run.run_id / "launch" / ".nextflow" / "cache" / "000003.log").is_file()
     assert not (run.run_dir / ".nextflow").exists()
+    # Only the task work directory moves; provenance records it with the existing keys.
+    execution_root = local_root / run.case_id / run.run_id
+    expected_work = (work_root if relocated_work else local_root) / run.case_id / run.run_id / "work"
+    assert [command[command.index("-work-dir") + 1] for command, _cwd in observed] == [
+        str(expected_work / "upstream"), str(expected_work / "downstream"),
+    ]
+    provenance = yaml.safe_load((run.run_dir / "provenance" / "run_provenance.yaml").read_text(encoding="utf-8"))
+    assert provenance["execution_root"] == str(execution_root)
+    assert provenance["execution_launch_dir"] == str(execution_root / "launch")
+    assert provenance["execution_work_dir"] == str(expected_work)
+    assert not [key for key in provenance if "work_root" in key]
+    assert work_root.exists() is relocated_work
     assert not (run.run_dir / "work").exists()
     assert (run.run_dir / "upstream" / "nfcore_rnaseq" / "salmon" / "salmon.merged.gene_counts.tsv").is_file()
     assert (run.run_dir / "downstream" / "report" / "report.html").is_file()

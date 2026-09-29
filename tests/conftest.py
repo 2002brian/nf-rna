@@ -69,10 +69,24 @@ def nfcore_compatible_conda_channels(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def isolated_fastq_checksum_cache(tmp_path_factory, monkeypatch):
-    """Never let tests write FASTQ checksum records into the user's real cache."""
+    """Never let tests write FASTQ checksum records into the user's real cache.
 
+    Returns the real path resolver for tests that check where it points.
+    """
+
+    import rnaseq.service
+
+    original = rnaseq.service._fastq_checksum_cache_path
     cache = tmp_path_factory.mktemp("fastq-sha256") / "checksums.json"
     monkeypatch.setattr("rnaseq.service._fastq_checksum_cache_path", lambda: cache)
+    return original
+
+
+@pytest.fixture(autouse=True)
+def default_work_root(monkeypatch):
+    """Ignore an operator's RNASEQ_WORK_ROOT (e.g. a Conda env variable); tests opt in explicitly."""
+
+    monkeypatch.delenv("RNASEQ_WORK_ROOT", raising=False)
 
 
 def base_config() -> dict[str, Any]:

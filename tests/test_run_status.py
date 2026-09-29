@@ -400,6 +400,31 @@ def test_a_task_being_retried_while_running_is_not_shown_as_failed(tmp_path):
     assert "1 running / 0 queued / 0 failed\n" in output and "1 failed attempt later succeeded on retry" in output
 
 
+def test_status_follows_a_work_dir_outside_the_execution_root(tmp_path):
+    launch = tmp_path / "linux-cache" / "CASE-A" / RUN_ID / "launch"
+    work = tmp_path / "large-volume" / "CASE-A" / RUN_ID / "work" / "upstream"
+    run_dir = _route_run(tmp_path / "project", "hisat2_featurecounts")
+    _state(run_dir, status="RUNNING", phase="upstream", upstream_command=["nextflow", "run", "-work-dir", str(work)])
+    (run_dir / "logs" / "rnaseq.process.json").write_text(json.dumps(current_process_identity()), encoding="utf-8")
+    (run_dir / "provenance" / "run_provenance.yaml").write_text(yaml.safe_dump({
+        "execution_root": str(launch.parent), "execution_launch_dir": str(launch), "execution_work_dir": str(work.parent),
+    }), encoding="utf-8")
+    launch.mkdir(parents=True)
+    (launch / ".nextflow.log").write_text("heartbeat\n", encoding="utf-8")
+    heartbeat = NOW.timestamp() - 5
+    os.utime(launch / ".nextflow.log", (heartbeat, heartbeat))
+    for path in (run_dir / "run_state.json", run_dir / "logs" / "rnaseq.process.json", run_dir / "provenance" / "run_provenance.yaml"):
+        os.utime(path, (NOW.timestamp() - 600, NOW.timestamp() - 600))
+    name = "HISAT2_ALIGN (S1)"
+    (run_dir / "logs" / "upstream.stdout.log").write_text(f"[bb/000002] Submitted process > {name}\n", encoding="utf-8")
+    os.utime(run_dir / "logs" / "upstream.stdout.log", (NOW.timestamp() - 600, NOW.timestamp() - 600))
+    _task_dir(work, "bb/000002", begin=NOW.timestamp() - 65)
+    output = _render(run_dir)
+    assert "1 running / 0 queued / 0 failed\n" in output
+    assert "S1 HISAT2_ALIGN 01:05" in output  # elapsed read from the relocated task directory
+    assert "last write 0m 05s ago" in output  # heartbeat read from the launch directory under the execution root
+
+
 def _multilane(run_dir: Path) -> None:
     (run_dir / "frozen" / "samplesheet.csv").write_text(
         "sample,fastq_1,fastq_2,strandedness\n" + "".join(f"{s},{s}_L{l}_R1.fq.gz,{s}_L{l}_R2.fq.gz,unstranded\n" for s in SAMPLES for l in (1, 2)), encoding="utf-8",
