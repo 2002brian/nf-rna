@@ -524,7 +524,7 @@ def _report_l1_only(
         "<li>Samples are never automatically excluded by this pipeline.</li>"
         "</ul>",
         _image_html(l1 / "pca.png", "PCA"),
-        _image_html(l1 / "pca_by_batch.png", "PCA colored by batch"),
+        _image_html(l1 / "pca_by_batch.png", "PCA colored by batch; shape shows the biological group"),
         _top_table_html(l1 / "pca_variance.tsv", ("component", "proportion_variance"), top_n=2),
         _top_table_html(l1 / "library_size_qc.tsv", ("sample_id", "input_total", "retained_total", "size_factor", "normalized_total"), top_n=20),
         _image_html(l1 / "sample_correlation.png", "Sample correlation (blind VST)"),
@@ -599,7 +599,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
         "<li>Samples are never automatically excluded by this pipeline.</li>"
         "</ul>",
         _image_html(l1 / "pca.png", "PCA"),
-        _image_html(l1 / "pca_by_batch.png", "PCA colored by batch"),
+        _image_html(l1 / "pca_by_batch.png", "PCA colored by batch; shape shows the biological group"),
         _top_table_html(l1 / "pca_variance.tsv", ("component", "proportion_variance"), top_n=2),
         _top_table_html(l1 / "library_size_qc.tsv", ("sample_id", "input_total", "retained_total", "size_factor", "normalized_total"), top_n=20),
         _image_html(l1 / "sample_correlation.png", "Sample correlation (blind VST)"),
@@ -801,6 +801,9 @@ def enrichment_config(contract_path: Path, inputs: Path, l2: Path, kind: str, ou
         root = l2 / "contrasts" / item["contrast_id"]
         contrasts.append({
             "contrast_id": item["contrast_id"],
+            # Figure labelling only: the sign convention of the ranked statistic.
+            "numerator": item.get("numerator"),
+            "denominator": item.get("denominator"),
             "all_genes": str(root / "all_genes.tsv"),
             "significant": str(root / "significant.tsv"),
             "up": str(root / "upregulated.tsv"),

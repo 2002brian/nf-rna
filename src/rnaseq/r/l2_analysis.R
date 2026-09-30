@@ -5,6 +5,7 @@ script_file <- sub("^--file=", "", script_arg[grep("^--file=", script_arg)][[1]]
 source(file.path(dirname(normalizePath(script_file)), "provenance.R"))
 source(file.path(dirname(normalizePath(script_file)), "design_metadata.R"))
 source(file.path(dirname(normalizePath(script_file)), "sample_inputs.R"))
+source(file.path(dirname(normalizePath(script_file)), "figures.R"))
 suppressPackageStartupMessages({ library(jsonlite); library(DESeq2); library(ggplot2); library(pheatmap) })
 cfg <- fromJSON(args[[2]], simplifyVector = FALSE)
 dir.create(cfg$output_dir, recursive = TRUE, showWarnings = FALSE)
@@ -94,6 +95,7 @@ vst_table <- read.delim(cfg$l1_vst, check.names = FALSE, stringsAsFactors = FALS
 rownames(vst_table) <- vst_table[[1]]
 vst_matrix <- as.matrix(vst_table[, samples, drop = FALSE])
 write_results <- function(df, path) write.table(df, path, sep = "\t", quote = FALSE, row.names = FALSE, na = "NA")
+fig <- nf_rna_figure_context(cfg)
 for (item in cfg$contrasts) {
   contrast_id <- item$contrast_id; factor <- item$factor; numerator <- item$numerator; denominator <- item$denominator
   if (!(factor %in% names(metadata))) stop(paste("contrast factor absent from metadata:", factor))
@@ -109,32 +111,97 @@ for (item in cfg$contrasts) {
   up_df <- significant_df[significant_df$log2FoldChange > 0, , drop = FALSE]
   down_df <- significant_df[significant_df$log2FoldChange < 0, , drop = FALSE]
   write_results(significant_df, file.path(directory, "significant.tsv")); write_results(up_df, file.path(directory, "upregulated.tsv")); write_results(down_df, file.path(directory, "downregulated.tsv"))
-  plot_df <- data.frame(lfc = result_df$log2FoldChange, plot_padj = ifelse(is.na(result_df$padj), NA_real_, pmax(result_df$padj, .Machine$double.xmin)), group = ifelse(significant & result_df$log2FoldChange > 0, "Up", ifelse(significant & result_df$log2FoldChange < 0, "Down", "Not significant")))
-  p <- ggplot(plot_df, aes(x = lfc, y = -log10(plot_padj), color = group)) + geom_point(na.rm = TRUE, alpha = 0.75, size = 1.5) + scale_color_manual(values = c("Up" = "#b2182b", "Down" = "#2166ac", "Not significant" = "#8c8c8c")) + labs(x = paste0("log2 fold change (", numerator, " / ", denominator, ")"), y = "-log10(padj)", color = NULL) + theme_minimal()
-  ggsave(file.path(directory, "volcano.png"), p, width = 7, height = 5, dpi = 150)
-  ggsave(file.path(directory, "volcano.tiff"), p, width = 7, height = 5, dpi = 300, compression = "lzw")
-  heatmap_status <- "NOT_APPLICABLE"
+  # Display policy only: padj == 0 (underflow) is drawn at the smallest positive
+  # double and marked as capped; the tables keep the reported padj.
+  padj_floor <- .Machine$double.xmin
+  direction <- ifelse(significant & result_df$log2FoldChange > 0, "Up", ifelse(significant & result_df$log2FoldChange < 0, "Down", "Not significant"))
+  plot_df <- data.frame(lfc = result_df$log2FoldChange, plot_padj = ifelse(is.na(result_df$padj), NA_real_, pmax(result_df$padj, padj_floor)), group = direction,
+                        capped = !is.na(result_df$padj) & result_df$padj < padj_floor)
+  plot_df <- plot_df[order(plot_df$group != "Not significant"), , drop = FALSE]  # significant points drawn on top, no transparency
+  drawable <- is.finite(result_df$log2FoldChange) & !is.na(result_df$padj)
+  counts <- table(factor(direction[drawable], levels = names(NF_RNA_DIRECTION_COLOURS)))
+  direction_labels <- c(Up = sprintf("Higher in %s (%d)", numerator, counts[["Up"]]), Down = sprintf("Higher in %s (%d)", denominator, counts[["Down"]]), "Not significant" = sprintf("Not significant (%d)", counts[["Not significant"]]))
+  x_extent <- max(c(abs(plot_df$lfc[is.finite(plot_df$lfc)]), cfg$thresholds$abs_log2fc, 1), na.rm = TRUE) * 1.05
+  line <- nf_rna_linewidth(0.5)
+  p <- ggplot(plot_df, aes(x = lfc, y = -log10(plot_padj), color = group, shape = capped)) +
+    geom_hline(yintercept = -log10(cfg$thresholds$padj), linetype = "dashed", linewidth = line, colour = "grey40") +
+    (if (cfg$thresholds$abs_log2fc > 0) geom_vline(xintercept = c(-1, 1) * cfg$thresholds$abs_log2fc, linetype = "dashed", linewidth = line, colour = "grey40")) +
+    geom_point(na.rm = TRUE, size = 0.8) +
+    scale_color_manual(values = NF_RNA_DIRECTION_COLOURS, labels = direction_labels, breaks = names(NF_RNA_DIRECTION_COLOURS), name = NULL) +
+    scale_shape_manual(values = c("FALSE" = 16, "TRUE" = 17), breaks = "TRUE", labels = "padj = 0, drawn at display floor", name = NULL, guide = if (any(plot_df$capped)) "legend" else "none") +
+    scale_x_continuous(limits = c(-x_extent, x_extent)) +
+    labs(x = paste0("log2 fold change (", numerator, " / ", denominator, ")"), y = "-log10(adjusted P, BH)") + nf_rna_theme(fig) + theme(legend.position = "bottom")
+  nf_rna_save_figure(fig, p, file.path(directory, "volcano"), fig$profile$double_col_mm, 120, cfg$output_dir, list(
+    kind = "volcano", contrast = list(contrast_id = contrast_id, factor = factor, numerator = numerator, denominator = denominator, direction = "log2FC > 0: higher in numerator"),
+    statistics = list(fold_change = "DESeq2 unshrunken log2FoldChange", adjusted_p = "DESeq2 padj (Benjamini-Hochberg, independent filtering)"),
+    thresholds = list(padj_below = cfg$thresholds$padj, abs_log2fc_at_least = cfg$thresholds$abs_log2fc, lines = "dashed lines at the significance thresholds"),
+    display = list(padj_zero_floor = padj_floor, capped_points = sum(plot_df$capped), x_axis = "symmetric about 0", genes_without_padj = "not drawn", labels = "none; no genes are labelled", legend_counts = "drawn genes only (finite log2FC and non-NA padj)", genes_not_drawn = sum(!drawable)),
+    counts = as.list(counts), colours = as.list(NF_RNA_DIRECTION_COLOURS),
+    source_data = list(nf_rna_source_data(file.path(directory, "all_genes.tsv"), cfg$output_dir, "all DESeq2 results for this contrast"))
+  ))
+  heatmap_status <- "NOT_APPLICABLE"; heatmap_reason <- "no significant genes"
   if (nrow(significant_df) > 0) {
     ordered <- significant_df[order(significant_df$padj, significant_df$gene_id), , drop = FALSE]
     selected <- head(ordered, cfg$heatmap_top_n)
     write.table(data.frame(gene_id = selected$gene_id), file.path(directory, "heatmap_genes.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
     heatmap_samples <- samples[metadata[samples, factor] %in% c(numerator, denominator)]
     heatmap_values <- vst_matrix[selected$gene_id, heatmap_samples, drop = FALSE]
-    z <- t(scale(t(heatmap_values))); z[is.na(z)] <- 0
-    png(file.path(directory, "heatmap.png"), width = 1050, height = max(450, 18 * nrow(z) + 250), res = 150)
-    pheatmap(z, cluster_rows = nrow(z) > 1, cluster_cols = length(heatmap_samples) > 1, main = paste0("Significant genes: ", contrast_id), fontsize_row = ifelse(nrow(z) > 30, 6, 9))
-    dev.off(); heatmap_status <- "AVAILABLE"
-    tiff(file.path(directory, "heatmap.tiff"), width = 7, height = max(3, 0.12 * nrow(z) + 1.7), units = "in", res = 300, compression = "lzw")
-    pheatmap(z, cluster_rows = nrow(z) > 1, cluster_cols = length(heatmap_samples) > 1, main = paste0("Significant genes: ", contrast_id), fontsize_row = ifelse(nrow(z) > 30, 6, 9))
-    dev.off()
+    # Undefined z-scores (missing values, constant rows) stay NA; they are never
+    # drawn as 0.  Rows with no defined z-score are left out of the drawing and
+    # listed in heatmap_zscores.tsv/figure_manifest.json.
+    z <- nf_rna_row_zscore(heatmap_values)
+    write_results(data.frame(gene_id = rownames(z), z, check.names = FALSE), file.path(directory, "heatmap_zscores.tsv"))
+    undefined <- attr(z, "undefined_rows")
+    drawn <- z[!(rownames(z) %in% undefined), , drop = FALSE]
+    if (nrow(drawn) > 0) {
+      z_limit <- 2
+      display <- nf_rna_saturate(drawn, z_limit)
+      row_tree <- nf_rna_cluster(drawn); column_tree <- nf_rna_cluster(t(drawn))
+      group_colours <- nf_rna_categorical_colors(levels(metadata[[factor]]))  # same levels and order as the L1 PCA
+      annotation <- data.frame(metadata[heatmap_samples, factor], row.names = heatmap_samples, check.names = FALSE); names(annotation) <- factor
+      annotation_colours <- setNames(list(group_colours[intersect(names(group_colours), unique(annotation[[factor]]))]), factor)
+      profile <- fig$profile
+      overhead_mm <- 40 + nf_rna_pt_to_mm(profile$small_pt) * 0.6 * max(nchar(heatmap_samples))
+      row_pt <- profile$small_pt
+      fits <- function(pt) overhead_mm + nrow(display) * nf_rna_pt_to_mm(pt) * 1.25 <= profile$max_height_mm
+      while (!fits(row_pt) && row_pt > profile$min_pt) row_pt <- row_pt - 0.5
+      show_rows <- fits(row_pt)
+      height_mm <- if (show_rows) max(80, overhead_mm + nrow(display) * nf_rna_pt_to_mm(row_pt) * 1.25) else profile$max_height_mm
+      legend_at <- seq(-z_limit, z_limit, by = 1)
+      heat <- pheatmap(display, color = nf_rna_diverging_palette(100), breaks = seq(-z_limit, z_limit, length.out = 101), na_col = NF_RNA_NA_COLOUR,
+        cluster_rows = if (is.null(row_tree)) FALSE else row_tree, cluster_cols = if (is.null(column_tree)) FALSE else column_tree,
+        annotation_col = annotation, annotation_colors = annotation_colours, border_color = NA, show_rownames = show_rows,
+        legend_breaks = legend_at, legend_labels = c(paste0("\u2264", -z_limit), legend_at[-c(1, length(legend_at))], paste0("\u2265", z_limit)),
+        main = if (nrow(display) == nrow(selected)) sprintf("%s: row z-score of VST, top %d genes by padj", contrast_id, nrow(selected)) else sprintf("%s: row z-score of VST, top %d genes by padj (%d drawn)", contrast_id, nrow(selected), nrow(display)),
+        fontsize = profile$base_pt, fontsize_row = row_pt, fontsize_col = profile$small_pt, silent = TRUE)
+      nf_rna_save_figure(fig, heat, file.path(directory, "heatmap"), profile$double_col_mm, height_mm, cfg$output_dir, list(
+        kind = "DEG heatmap", contrast = list(contrast_id = contrast_id, factor = factor, numerator = numerator, denominator = denominator),
+        display_subset = list(rule = sprintf("top %d significant genes by padj, ties by gene_id", cfg$heatmap_top_n), selected = nrow(selected), drawn = nrow(display), significant_total = nrow(significant_df),
+                              samples = "samples in the numerator and denominator groups"),
+        transformation = list(values = "blind VST from L1", row_zscore = "per gene across the drawn samples: (x - mean) / sd (n - 1)",
+                              undefined_policy = "missing values and rows with <2 finite values or zero variance stay NA; rows with no defined z-score are not drawn",
+                              undefined_rows = as.list(undefined), missing_cells_drawn = sum(is.na(drawn)), na_colour = NF_RNA_NA_COLOUR,
+                              colour_saturation = sprintf("visual only: colours saturate at |z| >= %d (legend \u2264-%d / \u2265%d); heatmap_zscores.tsv keeps the unclipped values", z_limit, z_limit, z_limit)),
+        clustering = list(rows = if (is.null(row_tree)) "off (undefined distances or <2 rows)" else "complete linkage, Euclidean distance on unclipped z-scores",
+                          columns = if (is.null(column_tree)) "off (undefined distances or <2 samples)" else "complete linkage, Euclidean distance on unclipped z-scores"),
+        colour_scale = list(kind = "diverging, midpoint 0", limits = c(-z_limit, z_limit), colours = as.list(NF_RNA_DIVERGING_ENDS)), group_colours = as.list(group_colours),
+        row_labels = if (show_rows) sprintf("%.1f pt gene IDs", row_pt) else "hidden: too many rows to label legibly at this height",
+        source_data = list(nf_rna_source_data(file.path(directory, "heatmap_zscores.tsv"), cfg$output_dir, "z-scores (unclipped, NA preserved)"),
+                           nf_rna_source_data(file.path(directory, "heatmap_genes.tsv"), cfg$output_dir, "selected genes"),
+                           nf_rna_source_data(file.path(directory, "significant.tsv"), cfg$output_dir, "complete significant result set"))
+      ))
+      heatmap_status <- "AVAILABLE"; heatmap_reason <- NULL
+    } else heatmap_reason <- "no selected gene has a defined row z-score"
   }
   tested <- sum(!is.na(result_df$pvalue))
   summary <- list(input_genes = nrow(source_counts), filtered_genes = sum(!keep), retained_genes = sum(keep), tested_genes = tested, pvalue_na = sum(is.na(result_df$pvalue)), padj_na = sum(is.na(result_df$padj)), independent_filtering = TRUE, multiple_testing_method = "Benjamini-Hochberg (DESeq2 default)", fit_method = fit_method, heatmap_status = heatmap_status, heatmap_top_n = cfg$heatmap_top_n)
+  if (!is.null(heatmap_reason) && nrow(significant_df) > 0) summary$heatmap_reason <- heatmap_reason
   write(toJSON(summary, auto_unbox = TRUE, pretty = TRUE), file.path(directory, "backend_summary.json"))
 }
+nf_rna_write_figure_manifest(fig, cfg$output_dir)
 nf_rna_write_provenance(
   cfg, cfg$output_dir, "L2", "SUCCESS",
-  c("DESeq2", "tximport", "ggplot2", "pheatmap", "jsonlite"),
+  c("DESeq2", "tximport", "ggplot2", "pheatmap", "scales", "systemfonts", "jsonlite"),
   list(contrast_count = length(cfg$contrasts), independent_filtering = TRUE, fit_method = fit_method),
   design_details
 )

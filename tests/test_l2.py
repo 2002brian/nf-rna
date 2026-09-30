@@ -158,7 +158,7 @@ def test_real_l2_replicated_raw_counts_outputs_and_determinism(tmp_path):
     assert (contrast / "heatmap.png").stat().st_size > 0
     assert (contrast / "heatmap.tiff").stat().st_size > 0
     assert not list(contrast.glob("*.svg"))
-    assert not list(contrast.glob("*.pdf"))
+    assert {path.name for path in contrast.glob("*.pdf")} == {"volcano.pdf", "heatmap.pdf"}
     heatmap_genes = [row["gene_id"] for row in _rows(contrast / "heatmap_genes.tsv")]
     assert set(heatmap_genes) == {row["gene_id"] for row in significant}
     summary = yaml.safe_load((contrast / "summary.yaml").read_text())
@@ -166,9 +166,9 @@ def test_real_l2_replicated_raw_counts_outputs_and_determinism(tmp_path):
     assert "fallback" in summary["fit_method"]
     assert "biological interpretation" in (contrast / "contrast_report.md").read_text()
     assert json.loads((first.output_dir / "l2_state.json").read_text())["status"] == "SUCCESS"
-    before = {_path.name: _digest(_path) for _path in (contrast / "all_genes.tsv", contrast / "significant.tsv", contrast / "upregulated.tsv", contrast / "downregulated.tsv", contrast / "summary.yaml", contrast / "heatmap_genes.tsv")}
+    before = {_path.name: _digest(_path) for _path in (contrast / "all_genes.tsv", contrast / "significant.tsv", contrast / "upregulated.tsv", contrast / "downregulated.tsv", contrast / "summary.yaml", contrast / "heatmap_genes.tsv", contrast / "heatmap_zscores.tsv")}
     execute_l2(prepared)
-    assert before == {_path.name: _digest(_path) for _path in (contrast / "all_genes.tsv", contrast / "significant.tsv", contrast / "upregulated.tsv", contrast / "downregulated.tsv", contrast / "summary.yaml", contrast / "heatmap_genes.tsv")}
+    assert before == {_path.name: _digest(_path) for _path in (contrast / "all_genes.tsv", contrast / "significant.tsv", contrast / "upregulated.tsv", contrast / "downregulated.tsv", contrast / "summary.yaml", contrast / "heatmap_genes.tsv", contrast / "heatmap_zscores.tsv")}
 
 
 def test_l2_blocks_n1_inference_without_affecting_l1_state(project_factory):
@@ -230,15 +230,17 @@ def test_l2_backend_failure_preserves_separate_failed_state(monkeypatch, project
     assert state["status"] == "FAILED"
 
 
-def test_production_figure_export_contract_is_png_and_300dpi_tiff():
+def test_production_figures_are_exported_only_through_the_central_figure_policy():
+    """Every backend draws through figures.R: PNG report preview, 300-dpi LZW TIFF and Cairo PDF; never SVG."""
+
     root = Path(__file__).parents[1] / "src" / "rnaseq" / "r"
     for name in ("l1_analysis.R", "l2_analysis.R", "go_analysis.R", "gsea_analysis.R", "kegg_analysis.R"):
         text = (root / name).read_text(encoding="utf-8")
-        assert ".png" in text
-        assert ".tiff" in text
-        assert "dpi = 300" in text or "dpi=300" in text or "res = 300" in text or "res=300" in text
-        assert ".svg" not in text
-        assert ".pdf" not in text
-        assert "600" not in text
-        assert "provenance.R" in text
-    assert (root / "provenance.R").is_file()
+        assert '"figures.R"' in text and "provenance.R" in text
+        assert any(call in text for call in ("nf_rna_save_figure(", "nf_rna_ora_dotplot(", "nf_rna_gsea_dotplot(")) and "nf_rna_write_figure_manifest(" in text
+        for direct in ("ggsave(", "png(", "tiff(", "pdf(", ".svg", "theme_minimal("):
+            assert direct not in text, (name, direct)
+    policy = (root / "figures.R").read_text(encoding="utf-8")
+    assert 'formats=c("png", "tiff", "pdf")' in policy
+    assert 'compression="lzw", bg="white"' in policy and "cairo_pdf(" in policy
+    assert "general=list(" in policy and "raster_dpi=300" in policy.split("nature=list(")[0]

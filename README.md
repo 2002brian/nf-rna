@@ -119,9 +119,10 @@ rnaseq run . --case-id CASE-001 --profile local --yes
 rnaseq status .            # execution dashboard of the latest run
 rnaseq status . --watch    # redraw until the run finishes (Ctrl-C stops watching only)
 rnaseq status . --all      # one line per recorded run
+rnaseq clean . --case-id CASE-001 --run <run-id>   # free a finished run's Nextflow work
 ```
 
-Final results are delivered to `runs/<case-id>/<run-id>/delivery/`. New projects use hardware-aware automatic CPU/memory limits (`execution.max_cpus: auto`, `execution.max_memory_gb: auto`); explicit integer limits in `project.yaml` are preserved.
+Final results are delivered to `runs/<case-id>/<run-id>/delivery/`. Each run's disposable Nextflow work directory (often hundreds of GB for FASTQ runs) is kept until you remove it with `rnaseq clean`; see [Runtime](docs/runtime.md#nextflow-work-directories-and-rnaseq-clean). New projects use hardware-aware automatic CPU/memory limits (`execution.max_cpus: auto`, `execution.max_memory_gb: auto`); explicit integer limits in `project.yaml` are preserved.
 
 The wizard creates a project scaffold; it does not infer scientific inputs. FASTQ projects also need an execution-ready reference. Register an existing checksum-bound managed reference with `rnaseq reference register /absolute/reference-root`, or configure a supported reference route. See the [detailed Quick Start](docs/quickstart.md).
 

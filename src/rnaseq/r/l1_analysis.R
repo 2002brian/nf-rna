@@ -5,6 +5,7 @@ script_file <- sub("^--file=", "", script_arg[grep("^--file=", script_arg)][[1]]
 source(file.path(dirname(normalizePath(script_file)), "provenance.R"))
 source(file.path(dirname(normalizePath(script_file)), "design_metadata.R"))
 source(file.path(dirname(normalizePath(script_file)), "sample_inputs.R"))
+source(file.path(dirname(normalizePath(script_file)), "figures.R"))
 suppressPackageStartupMessages({ library(jsonlite); library(yaml); library(DESeq2); library(ggplot2); library(pheatmap) })
 cfg <- fromJSON(args[[2]], simplifyVector = FALSE)
 dir.create(cfg$output_dir, recursive = TRUE, showWarnings = FALSE)
@@ -58,26 +59,64 @@ write.table(scores, file.path(cfg$output_dir, "pca_scores.tsv"), sep = "\t", quo
 write.table(data.frame(component = paste0("PC", seq_along(variance)), proportion_variance = variance), file.path(cfg$output_dir, "pca_variance.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
 color_name <- tail(all.vars(formula), 1)
 scores$group <- as.factor(metadata[scores$sample_id, color_name])
-p <- ggplot(scores, aes(x = PC1, y = PC2, color = group, label = sample_id)) + geom_point(size = 3) + geom_text(vjust = -0.8, show.legend = FALSE) + labs(color = color_name, x = sprintf("PC1 (%.1f%%)", 100 * variance[[1]]), y = sprintf("PC2 (%.1f%%)", 100 * ifelse(length(variance) >= 2, variance[[2]], 0))) + theme_minimal()
-ggsave(file.path(cfg$output_dir, "pca.png"), p, width = 7, height = 5, dpi = 150)
-ggsave(file.path(cfg$output_dir, "pca.tiff"), p, width = 7, height = 5, dpi = 300, compression = "lzw")
+fig <- nf_rna_figure_context(cfg)
+pc_labels <- labs(x = sprintf("PC1 (%.1f%%)", 100 * variance[[1]]), y = sprintf("PC2 (%.1f%%)", 100 * ifelse(length(variance) >= 2, variance[[2]], 0)))
+# PC scores share one unit, so both axes use the same scale (coord_fixed).
+pca_plot <- function(colour_by, colour_name, shape_by, shape_name) {
+  colours <- nf_rna_categorical_colors(levels(scores[[colour_by]]))
+  shapes <- nf_rna_categorical_shapes(levels(scores[[shape_by]]))
+  mapping <- if (is.null(shapes)) aes(x = PC1, y = PC2, color = .data[[colour_by]]) else aes(x = PC1, y = PC2, color = .data[[colour_by]], shape = .data[[shape_by]])
+  p <- ggplot(scores, mapping) + geom_point(size = 2) +
+    do.call(geom_text, c(list(mapping = aes(label = sample_id), vjust = -0.9, show.legend = FALSE), nf_rna_text_size(fig$profile$min_pt))) +
+    scale_color_manual(values = colours, name = colour_name) +
+    scale_x_continuous(expand = expansion(mult = 0.05)) + scale_y_continuous(expand = expansion(mult = 0.15)) +
+    coord_fixed(clip = "off") + pc_labels + nf_rna_theme(fig)
+  if (!is.null(shapes)) p <- p + scale_shape_manual(values = shapes, name = shape_name)
+  list(plot = p, colours = colours, shapes = shapes)
+}
+# With equal scaling the panel's aspect ratio is the data's; size the figure
+# to it (instead of padding a fixed height with white space).
+pca_height_mm <- function() {
+  x_range <- max(diff(range(scores$PC1)), 1e-9); y_range <- max(diff(range(scores$PC2)), x_range * 0.02)
+  panel_width <- fig$profile$double_col_mm - 45
+  min(fig$profile$max_height_mm, max(50, 25 + panel_width * (y_range * 1.3) / (x_range * 1.1)))
+}
+pca_meta <- function(encoding) list(
+  kind = "PCA", data = "blind VST, all retained genes, prcomp(center = TRUE, scale. = FALSE)", axes = "PC1/PC2 with proportion of variance explained; equal axis scaling",
+  encoding = encoding, ellipses = "none", paired_lines = "none",
+  source_data = list(nf_rna_source_data(file.path(cfg$output_dir, "pca_scores.tsv"), cfg$output_dir, "PC coordinates"), nf_rna_source_data(file.path(cfg$output_dir, "pca_variance.tsv"), cfg$output_dir, "proportion of variance"))
+)
+main_pca <- pca_plot("group", color_name, "group", color_name)
+nf_rna_save_figure(fig, main_pca$plot, file.path(cfg$output_dir, "pca"), fig$profile$double_col_mm, pca_height_mm(), cfg$output_dir,
+  pca_meta(list(colour = color_name, shape = if (is.null(main_pca$shapes)) "none (too many levels)" else color_name, colours = as.list(main_pca$colours), palette = nf_rna_categorical_palette_name(length(main_pca$colours)))))
 if (!is.null(cfg$design_variable_types) && identical(cfg$design_variable_types[["batch"]], "categorical")) {
-  scores$batch <- metadata[scores$sample_id, "batch"]
-  batch_p <- ggplot(scores, aes(x = PC1, y = PC2, color = batch, label = sample_id)) + geom_point(size = 3) + geom_text(vjust = -0.8, show.legend = FALSE) + labs(color = "batch", x = sprintf("PC1 (%.1f%%)", 100 * variance[[1]]), y = sprintf("PC2 (%.1f%%)", 100 * ifelse(length(variance) >= 2, variance[[2]], 0))) + theme_minimal()
-  ggsave(file.path(cfg$output_dir, "pca_by_batch.png"), batch_p, width = 7, height = 5, dpi = 150)
-  ggsave(file.path(cfg$output_dir, "pca_by_batch.tiff"), batch_p, width = 7, height = 5, dpi = 300, compression = "lzw")
+  scores$batch <- as.factor(metadata[scores$sample_id, "batch"])
+  # Batch is the colour; the biological group keeps its meaning as the shape.
+  batch_pca <- pca_plot("batch", "batch", "group", color_name)
+  nf_rna_save_figure(fig, batch_pca$plot, file.path(cfg$output_dir, "pca_by_batch"), fig$profile$double_col_mm, pca_height_mm(), cfg$output_dir,
+    pca_meta(list(colour = "batch", shape = if (is.null(batch_pca$shapes)) "none (too many levels)" else color_name, colours = as.list(batch_pca$colours), palette = nf_rna_categorical_palette_name(length(batch_pca$colours)))))
 }
 corr <- cor(vst_matrix, method = "pearson")
 write.table(data.frame(sample_id = rownames(corr), corr, check.names = FALSE), file.path(cfg$output_dir, "sample_correlation.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
-png(file.path(cfg$output_dir, "sample_correlation.png"), width = 1050, height = 900, res = 150)
-pheatmap(corr, main = "Sample correlation (blind VST)")
-dev.off()
-tiff(file.path(cfg$output_dir, "sample_correlation.tiff"), width = 7, height = 6, units = "in", res = 300, compression = "lzw")
-pheatmap(corr, main = "Sample correlation (blind VST)")
-dev.off()
+# Pearson r has a meaningful zero: a diverging scale centred on 0 is used only
+# when negative correlations occur; otherwise a sequential scale spans the
+# observed range up to 1 so that QC differences stay visible.
+if (all(corr >= 0, na.rm = TRUE)) {
+  corr_scale <- nf_rna_sequential_limits(floor(min(corr, na.rm = TRUE) * 100) / 100, upper = 1)
+  corr_breaks <- seq(corr_scale$limits[[1]], corr_scale$limits[[2]], length.out = 101); corr_colours <- nf_rna_sequential_palette(100); corr_kind <- "sequential"
+} else {
+  corr_breaks <- seq(-1, 1, length.out = 101); corr_colours <- nf_rna_diverging_palette(100); corr_kind <- "diverging, midpoint 0"
+}
+corr_plot <- pheatmap(corr, color = corr_colours, breaks = corr_breaks, border_color = NA, main = "Pearson correlation (blind VST)",
+  fontsize = fig$profile$base_pt, fontsize_row = fig$profile$small_pt, fontsize_col = fig$profile$small_pt, silent = TRUE)
+nf_rna_save_figure(fig, corr_plot, file.path(cfg$output_dir, "sample_correlation"), fig$profile$double_col_mm, 150, cfg$output_dir,
+  list(kind = "sample correlation heatmap", data = "Pearson correlation of blind VST", clustering = "pheatmap default: complete linkage of Euclidean distances between correlation profiles",
+       colour_scale = list(kind = corr_kind, limits = range(corr_breaks), na_colour = "pheatmap default"),
+       source_data = list(nf_rna_source_data(file.path(cfg$output_dir, "sample_correlation.tsv"), cfg$output_dir, "correlation matrix"))))
+nf_rna_write_figure_manifest(fig, cfg$output_dir)
 flags <- character()
 median_library <- median(library_size$input_total)
 for (i in seq_len(nrow(library_size))) if (library_size$input_total[[i]] < median_library * 0.25) flags <- c(flags, paste0("LOW_LIBRARY_SIZE: ", library_size$sample_id[[i]], " is below 25% of the median input total."))
 summary <- list(source_type = cfg$source_type, samples = samples, genes_input = nrow(source_counts), genes_removed_all_zero = sum(all_zero), genes_removed_low_total = sum(low_total), genes_retained = sum(keep), filter = cfg$filter, normalization = list(method = if (cfg$source_type == "salmon_tximport") "DESeq2 with tximport average-transcript-length normalization offsets" else "DESeq2 median-ratio size factors", scalar_size_factors_available = !all(is.na(size_factor_values))), vst = list(method = if (nrow(dds) < 1000) "DESeq2 varianceStabilizingTransformation (exact small-matrix path)" else "DESeq2 vst"), package_versions = list(R = R.version.string, DESeq2 = as.character(packageVersion("DESeq2")), tximport = if (cfg$source_type == "salmon_tximport") as.character(packageVersion("tximport")) else NULL), pca_proportion_variance = as.list(variance), flags = as.list(flags))
 write(toJSON(summary, auto_unbox = TRUE, pretty = TRUE, null = "null"), file.path(cfg$output_dir, "backend_summary.json"))
-nf_rna_write_provenance(cfg, cfg$output_dir, "L1", "SUCCESS", c("DESeq2", "tximport", "ggplot2", "pheatmap", "yaml", "jsonlite"), summary)
+nf_rna_write_provenance(cfg, cfg$output_dir, "L1", "SUCCESS", c("DESeq2", "tximport", "ggplot2", "pheatmap", "scales", "systemfonts", "yaml", "jsonlite"), summary)

@@ -298,6 +298,7 @@ def test_downstream_command_is_argument_array_and_delivery_is_allowlisted(projec
     (downstream / "l2" / "logs" / "r.stderr.log").write_text("internal", encoding="utf-8")
     (downstream / "l2" / "scientific_provenance.json").write_text('{"schema_version":"nf-rna.scientific-provenance.v1"}\n', encoding="utf-8")
     (downstream / "l2" / "r_session_info.txt").write_text("R version fixture\n", encoding="utf-8")
+    (downstream / "l2" / "figure_manifest.json").write_text('{"schema_version":"nf-rna.figure-manifest.v1"}\n', encoding="utf-8")
     (downstream / "l2" / "enrichment" / "gsea_go" / "BP").mkdir(parents=True)
     (downstream / "l2" / "enrichment" / "gsea_go" / "BP" / "all_terms.tsv").write_text("ID\tDescription\nGO:1\tterm\n", encoding="utf-8")
     (downstream / "l2" / "enrichment" / "gsea_go" / "BP" / "dotplot.png").write_bytes(b"png")
@@ -340,7 +341,8 @@ def test_downstream_command_is_argument_array_and_delivery_is_allowlisted(projec
     assert not (downstream / "enrichment").exists()
     assert not (downstream / "l2" / "enrichment" / "enrichment").exists()
     assert not (delivery / "figures" / "vector_pdf_svg").exists()
-    assert not list(delivery.rglob("*.pdf"))
+    assert [path.relative_to(delivery).as_posix() for path in delivery.rglob("*.pdf")] == ["figures/pdf/l2/contrasts/a/volcano.pdf"]
+    assert (delivery / "methods_and_versions" / "l2" / "figure_manifest.json").is_file()
     assert not list(delivery.rglob("*.svg"))
     assert not any(path.name.endswith(".log") or path.name.startswith("._") for path in delivery.rglob("*"))
 

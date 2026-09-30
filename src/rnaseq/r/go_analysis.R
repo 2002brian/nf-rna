@@ -5,9 +5,11 @@ script_file <- sub("^--file=", "", script_arg[grep("^--file=", script_arg)][[1]]
 source(file.path(dirname(normalizePath(script_file)), "provenance.R"))
 source(file.path(dirname(normalizePath(script_file)), "ora_helpers.R"))
 source(file.path(dirname(normalizePath(script_file)), "annotation_mapping_qc.R"))
+source(file.path(dirname(normalizePath(script_file)), "figures.R"))
 suppressPackageStartupMessages({ library(jsonlite); library(AnnotationDbi); library(clusterProfiler); library(ggplot2) })
 cfg <- fromJSON(args[[2]], simplifyVector=FALSE)
 dir.create(cfg$output_dir, recursive=TRUE, showWarnings=FALSE)
+fig <- nf_rna_figure_context(cfg)
 orgdb <- get(cfg$orgdb_package, envir=asNamespace(cfg$orgdb_package))
 input_type <- cfg$annotation$input_id_type
 normalize_id <- function(x) if (input_type == "ENSEMBL") sub("\\.[0-9]+$", "", x) else x
@@ -59,10 +61,9 @@ run_ontology <- function(targets, universe, ontology, directory, mapping) {
   write_table(terms, all_path); write_table(significant, out); member_table(significant, mapping, members)
   if (nrow(terms) < nrow(significant)) stop("GO evaluated term count cannot be smaller than significant term count")
   if (!nrow(significant)) return(list(status="NO_SIGNIFICANT_TERMS", evaluated_term_count=nrow(terms), significant_term_count=0))
-  top <- head(significant, 15); top$Description <- factor(top$Description, levels=rev(top$Description))
-  p <- ggplot(top, aes(x=Description, y=-log10(p.adjust), size=Count)) + geom_point(color="#2166ac") + coord_flip() + labs(x=NULL, y="-log10(GO adjusted p-value)") + theme_minimal()
-  ggsave(file.path(directory, paste0("dotplot_", ontology, ".png")), p, width=7, height=5, dpi=150)
-  ggsave(file.path(directory, paste0("dotplot_", ontology, ".tiff")), p, width=7, height=5, dpi=300, compression="lzw")
+  nf_rna_ora_dotplot(fig, head(significant, 15), sprintf("-log10(GO %s adjusted P, %s)", ontology, cfg$annotation$enrichment$go$p_adjust_method), file.path(directory, paste0("dotplot_", ontology)), cfg$output_dir,
+    list(ontology=ontology, display_subset=sprintf("top 15 significant terms by adjusted P, ties by ID, of %d significant (pvalue <= %s, qvalue <= %s)", nrow(significant), cfg$annotation$enrichment$go$pvalue_cutoff, cfg$annotation$enrichment$go$qvalue_cutoff),
+         source_tables=list(nf_rna_source_data(out, cfg$output_dir, "all significant terms"))))
   list(status="SUCCESS", evaluated_term_count=nrow(terms), significant_term_count=nrow(significant))
 }
 
@@ -113,4 +114,5 @@ overall <- if (any(statuses == "FAILED")) "FAILED" else if (any(statuses == "BLO
 annotation_contract <- list(input_id_type=cfg$annotation$input_id_type, target_id_type=cfg$annotation$target_id_type, warning_threshold=as.numeric(cfg$annotation$mapping_warning_rate), blocking_threshold=as.numeric(cfg$annotation$minimum_mapping_rate))
 summary <- list(status=overall, annotation_qc_status=annotation_qc_status(contrast_summaries), annotation=annotation_contract, annotation_database=cfg$orgdb_package, annotation_database_version=as.character(packageVersion(cfg$orgdb_package)), clusterProfiler_version=as.character(packageVersion("clusterProfiler")), contrasts=contrast_summaries)
 write(toJSON(summary, auto_unbox=TRUE, pretty=TRUE, null="null"), file.path(cfg$output_dir, "go_backend_summary.json"))
-nf_rna_write_provenance(cfg, cfg$output_dir, "GO_ORA", overall, c("AnnotationDbi", "clusterProfiler", "ggplot2", "jsonlite", cfg$orgdb_package), summary)
+nf_rna_write_figure_manifest(fig, cfg$output_dir)
+nf_rna_write_provenance(cfg, cfg$output_dir, "GO_ORA", overall, c("AnnotationDbi", "clusterProfiler", "ggplot2", "scales", "systemfonts", "jsonlite", cfg$orgdb_package), summary)

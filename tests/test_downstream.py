@@ -36,7 +36,9 @@ def test_raw_counts_l1_real_backend_is_structured_and_text_deterministic(project
     assert normalized.read_text().splitlines()[0] == "gene_id\tC1\tC2\tC3\tT1\tT2\tT3"
     assert all((first.output_dir / name).is_file() for name in ("vst.tsv", "pca.png", "pca.tiff", "sample_correlation.png", "sample_correlation.tiff", "filtering_summary.yaml", "l1_report.md"))
     assert not list(first.output_dir.glob("*.svg"))
-    assert not list(first.output_dir.glob("*.pdf"))
+    assert {path.name for path in first.output_dir.glob("*.pdf")} == {"pca.pdf", "sample_correlation.pdf"}
+    figures = json.loads((first.output_dir / "figure_manifest.json").read_text())
+    assert {item["id"] for item in figures["figures"]} == {"pca", "sample_correlation"}
     before = {_path.name: _digest(_path) for _path in (normalized, first.output_dir / "vst.tsv", first.output_dir / "pca_scores.tsv", first.output_dir / "sample_correlation.tsv")}
     execute_l1(prepared)
     assert before == {_path.name: _digest(_path) for _path in (normalized, first.output_dir / "vst.tsv", first.output_dir / "pca_scores.tsv", first.output_dir / "sample_correlation.tsv")}

@@ -39,6 +39,7 @@ rnaseq plan .
 rnaseq doctor .
 rnaseq run . --case-id CASE-001 --profile local --yes
 rnaseq status .          # add --watch to follow a running case
+rnaseq clean . --case-id CASE-001 --run <run-id>   # after SUCCESS: remove the disposable Nextflow work
 ```
 
 The wizard writes `project.yaml`, `metadata.csv`, `contrasts.csv`, `input/`, and `planning/`; it does not import data unless explicit import flags are supplied. FASTQ projects require an execution-ready reference.

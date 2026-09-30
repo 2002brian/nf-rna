@@ -1556,7 +1556,11 @@ def assemble_delivery(run: CaseRun) -> Path:
         _write_text(destination, content)
         declared_files.append(destination)
 
-    figures = {".png": delivery / "figures" / "png", ".tif": delivery / "figures" / "tiff_300dpi", ".tiff": delivery / "figures" / "tiff_300dpi"}
+    figures = {
+        ".png": delivery / "figures" / "png", ".tif": delivery / "figures" / "tiff_300dpi", ".tiff": delivery / "figures" / "tiff_300dpi",
+        # Cairo PDF drawn at the same physical size by the R figure policy.
+        ".pdf": delivery / "figures" / "pdf",
+    }
     tables = delivery / "tables"
     counts_dir = delivery / "counts"
     for directory in [*figures.values(), tables, counts_dir, delivery / "methods_and_versions"]:
@@ -1613,7 +1617,7 @@ def assemble_delivery(run: CaseRun) -> Path:
             copy_declared(path, figures[suffix] / relative)
         elif suffix in {".tsv", ".csv"}:
             copy_declared(path, tables / relative)
-        elif path.name in {"scientific_provenance.json", "r_session_info.txt"}:
+        elif path.name in {"scientific_provenance.json", "r_session_info.txt", "figure_manifest.json"}:
             # These are module-produced scientific records, not task logs.
             copy_declared(path, delivery / "methods_and_versions" / relative)
     handoff = run.run_dir / "frozen" / "upstream_handoff_manifest.yaml"

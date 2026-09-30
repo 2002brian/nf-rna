@@ -117,9 +117,10 @@ rnaseq run . --case-id CASE-001 --profile local --yes
 rnaseq status .            # 最新 run 的執行儀表板
 rnaseq status . --watch    # 持續更新直到 run 結束（Ctrl-C 只停止監看）
 rnaseq status . --all      # 每個 run 一行的歷史摘要
+rnaseq clean . --case-id CASE-001 --run <run-id>   # 釋放已完成 run 的 Nextflow work
 ```
 
-最終結果位於 `runs/<case-id>/<run-id>/delivery/`。新專案預設依硬體自動設定 CPU／記憶體上限（`execution.max_cpus: auto`、`execution.max_memory_gb: auto`）；`project.yaml` 中明確指定的整數上限會被保留。
+最終結果位於 `runs/<case-id>/<run-id>/delivery/`。每個 run 的 Nextflow work 目錄是可丟棄的中間資料（FASTQ run 常達數百 GB），會保留到你以 `rnaseq clean` 明確移除為止；見 [Runtime](docs/runtime.md#nextflow-work-directories-and-rnaseq-clean)。新專案預設依硬體自動設定 CPU／記憶體上限（`execution.max_cpus: auto`、`execution.max_memory_gb: auto`）；`project.yaml` 中明確指定的整數上限會被保留。
 
 wizard 只建立 project scaffold，不會推測科學輸入。FASTQ 專案還需要 execution-ready reference；可用 `rnaseq reference register /absolute/reference-root` 註冊既有的 checksum-bound managed reference，或設定支援的 reference route。詳細內容請見 [Quick Start](docs/quickstart.md)。
 

@@ -6,10 +6,12 @@ source(file.path(dirname(normalizePath(script_file)), "provenance.R"))
 source(file.path(dirname(normalizePath(script_file)), "gsea_core_members.R"))
 source(file.path(dirname(normalizePath(script_file)), "annotation_mapping_qc.R"))
 source(file.path(dirname(normalizePath(script_file)), "gsea_term_filtering.R"))
+source(file.path(dirname(normalizePath(script_file)), "figures.R"))
 suppressPackageStartupMessages({ library(jsonlite); library(AnnotationDbi); library(clusterProfiler); library(ggplot2) })
 
 cfg <- fromJSON(args[[2]], simplifyVector = FALSE)
 dir.create(cfg$output_dir, recursive = TRUE, showWarnings = FALSE)
+fig <- nf_rna_figure_context(cfg)
 orgdb <- get(cfg$orgdb_package, envir = asNamespace(cfg$orgdb_package))
 input_type <- cfg$annotation$input_id_type
 gsea_cfg <- cfg$annotation$enrichment$gsea
@@ -55,7 +57,7 @@ map_ranked_sources <- function(source, stat) {
   mapping
 }
 
-run_ontology <- function(gene_list, ranked_mapping, ontology, root) {
+run_ontology <- function(gene_list, ranked_mapping, ontology, root, contrast) {
   directory <- file.path(root, ontology); dir.create(directory, recursive=TRUE, showWarnings=FALSE)
   result <- raw <- terms <- significant <- positive <- negative <- top <- p <- core_audit <- filtered <- NULL
   on.exit({ rm(result, raw, terms, significant, positive, negative, top, p, core_audit, filtered); gc(verbose=FALSE) }, add=TRUE)
@@ -79,10 +81,9 @@ run_ontology <- function(gene_list, ranked_mapping, ontology, root) {
     plot_terms <- significant[!is.na(significant$NES), , drop=FALSE]
     if (nrow(plot_terms) > 0) {
       top <- head(plot_terms[order(-abs(plot_terms$NES), plot_terms$ID), , drop=FALSE], 15)
-      top$Description <- factor(top$Description, levels=rev(top$Description))
-      p <- ggplot(top, aes(x=Description, y=NES, size=setSize, color=NES)) + geom_point() + coord_flip() + scale_color_gradient2(low="#b2182b", mid="grey90", high="#2166ac") + labs(x=NULL, y="Normalized enrichment score") + theme_minimal()
-    ggsave(file.path(directory, "dotplot.png"), p, width=7, height=5, dpi=150)
-    ggsave(file.path(directory, "dotplot.tiff"), p, width=7, height=5, dpi=300, compression="lzw")
+      nf_rna_gsea_dotplot(fig, top, contrast, gsea_cfg$padj_cutoff, gsea_cfg$p_adjust_method, file.path(directory, "dotplot"), cfg$output_dir,
+        list(ontology=ontology, seed=as.integer(gsea_cfg$seed), display_subset=sprintf("top 15 significant terms by |NES|, ties by ID, of %d significant (pvalue <= %s, adjusted P <= %s)", nrow(plot_terms), gsea_cfg$pvalue_cutoff, gsea_cfg$padj_cutoff),
+             source_tables=list(nf_rna_source_data(file.path(directory, "significant.tsv"), cfg$output_dir, "all significant terms"), nf_rna_source_data(file.path(root, "ranked_gene_list.tsv"), cfg$output_dir, "ranked gene list"))))
       rm(plot_terms)
     }
     summary <- list(status=if (nrow(significant) == 0) "NO_SIGNIFICANT_TERMS" else "SUCCESS", evaluated_terms=nrow(terms), all_terms=nrow(terms), significant_terms=nrow(significant), positive_terms=nrow(positive), negative_terms=nrow(negative), p_adjust_method=gsea_cfg$p_adjust_method, configured_pvalue_cutoff=as.numeric(gsea_cfg$pvalue_cutoff), configured_padj_cutoff=as.numeric(gsea_cfg$padj_cutoff), calculation_pvalue_cutoff=1, min_gs_size=as.integer(gsea_cfg$min_gs_size), max_gs_size=as.integer(gsea_cfg$max_gs_size), na_pathways=sum(is.na(terms$pvalue) | is.na(terms$p.adjust) | is.na(terms$NES)), core_member_rows=core_audit$rows)
@@ -133,7 +134,7 @@ for (contrast in cfg$contrasts) {
   gene_list <- ranked$stat; names(gene_list) <- ranked$entrez_id
   ontologies <- list(); completed_ontologies <- character(); failed_ontology <- NULL
   for (ontology in c("BP", "MF", "CC")) {
-    outcome <- run_ontology(gene_list, ranked_mapping, ontology, root)
+    outcome <- run_ontology(gene_list, ranked_mapping, ontology, root, contrast)
     ontologies[[ontology]] <- outcome
     if (outcome$status == "FAILED") { failed_ontology <- ontology; break }
     completed_ontologies <- c(completed_ontologies, ontology)
@@ -148,4 +149,5 @@ overall <- if (any(vapply(contrast_summaries, function(x) x$status == "FAILED", 
 annotation_contract <- list(input_id_type=cfg$annotation$input_id_type, target_id_type=cfg$annotation$target_id_type, warning_threshold=as.numeric(cfg$annotation$mapping_warning_rate), blocking_threshold=as.numeric(cfg$annotation$minimum_mapping_rate))
 summary <- list(status=overall, reason=if (length(blocked_reasons)>0) paste(blocked_reasons, collapse=" ") else NULL, annotation_qc_status=annotation_qc_status(contrast_summaries), annotation=annotation_contract, annotation_database=cfg$orgdb_package, annotation_database_version=as.character(packageVersion(cfg$orgdb_package)), clusterProfiler_version=as.character(packageVersion("clusterProfiler")), contrasts=contrast_summaries)
 write(toJSON(summary, auto_unbox=TRUE, pretty=TRUE, null="null"), file.path(cfg$output_dir, "gsea_backend_summary.json"))
-nf_rna_write_provenance(cfg, cfg$output_dir, "GO_GSEA", overall, c("AnnotationDbi", "clusterProfiler", "ggplot2", "jsonlite", cfg$orgdb_package), summary)
+nf_rna_write_figure_manifest(fig, cfg$output_dir)
+nf_rna_write_provenance(cfg, cfg$output_dir, "GO_GSEA", overall, c("AnnotationDbi", "clusterProfiler", "ggplot2", "scales", "systemfonts", "jsonlite", cfg$orgdb_package), summary)

@@ -941,6 +941,72 @@ def status_command(
         raise typer.Exit(code=0)
 
 
+@app.command("clean")
+def clean_command(
+    project_dir: Path,
+    case_id: str = typer.Option(..., "--case-id", "--case", help="Case ID of the run whose work directory is removed."),
+    run_id: str = typer.Option(..., "--run", help="Exact run ID (YYYYMMDD-HHMMSS+ZZZZ) of that case."),
+    force: bool = typer.Option(False, "--force", help="Also remove the work of a FAILED or INTERRUPTED run (never of a running run)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be removed; delete nothing."),
+    yes: bool = typer.Option(False, "--yes", help="Delete without an interactive confirmation."),
+) -> None:
+    """Remove one finished run's disposable Nextflow work directory; the durable run record is kept.
+
+    The path comes from the run's own provenance, never from the arguments.
+    SUCCESS runs are eligible; FAILED and INTERRUPTED runs need --force because
+    their work is what diagnosis and retry use; a running run is always refused.
+    """
+
+    from rnaseq.cleanup import AlreadyAbsent, check_no_live_processes, execute_work_cleanup, format_bytes, measure_work, plan_work_cleanup
+
+    try:
+        plan = plan_work_cleanup(project_dir, case_id, run_id)
+    except ExecutionPreflightError as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except (OSError, UnicodeError) as exc:
+        typer.echo(f"SYSTEM ERROR: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    state = plan.effective_state if plan.effective_state == plan.recorded_state else f"{plan.effective_state} (recorded {plan.recorded_state})"
+    typer.echo(f"Run: {plan.case_id}/{plan.run_id}")
+    typer.echo(f"State: {state}" + (f" - {plan.state_note}" if plan.state_note else ""))
+    typer.echo(f"Work directory: {plan.work_dir}")
+    typer.echo(f"  recorded in: {plan.source}")
+    typer.echo(f"Durable run record (never removed): {plan.run_dir}")
+    if not plan.exists:
+        typer.echo("Nothing to clean: the work directory does not exist (already cleaned or never created).")
+        return
+    refusal = plan.refusal(force=force) or check_no_live_processes(plan)
+    if refusal:
+        typer.echo(f"REFUSED: {refusal}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo("Measuring work directory size ...")
+    usage = measure_work(plan.work_dir)
+    unreadable = f"; {usage.unreadable} entries could not be read" if usage.unreadable else ""
+    typer.echo(f"Work size: about {format_bytes(usage.bytes)} in {usage.files:,} files{unreadable}")
+    if dry_run:
+        typer.echo("Dry run: nothing was removed.")
+        return
+    if not yes and not typer.confirm(f"Permanently remove {plan.work_dir}?", default=False):
+        typer.echo("Cleanup cancelled; nothing was removed.")
+        return
+    try:
+        warning = execute_work_cleanup(plan, force=force, usage=usage)
+    except AlreadyAbsent:
+        typer.echo("Nothing to clean: the work directory disappeared before deletion (another cleanup may have removed it).")
+        return
+    except ExecutionPreflightError as exc:
+        typer.echo(f"REFUSED: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except OSError as exc:
+        typer.echo(f"SYSTEM ERROR: cleanup stopped part-way: {exc}. The durable run record is untouched; re-run to finish.", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"Cleaned: removed {plan.work_dir} (about {format_bytes(usage.bytes)} freed).")
+    typer.echo(f"Durable run record preserved: {plan.run_dir}")
+    if warning:
+        typer.echo(f"WARNING: {warning}", err=True)
+
+
 @app.command("sanitize-delivery")
 def sanitize_delivery_command(run_dir: Path) -> None:
     """Remove AppleDouble sidecars from exactly one completed run's delivery tree."""
