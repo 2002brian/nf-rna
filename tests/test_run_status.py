@@ -7,7 +7,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -150,7 +150,9 @@ def _status(project: Path, *arguments: str) -> str:
 # ------------------------------------------------------------------ route-aware fixtures
 
 SAMPLES = ("S1", "S2", "S3")
-NOW = datetime(2026, 9, 25, 21, 0, 0).astimezone()
+# An explicit instant: fixtures record +08:00 timestamps, so the reference time
+# must not depend on the host time zone (CI runs with TZ=UTC).
+NOW = datetime(2026, 9, 25, 21, 0, 0, tzinfo=timezone(timedelta(hours=8)))
 
 
 def _route_run(tmp_path: Path, method: str, *, case: str = "CASE-A", run_id: str = RUN_ID, enrichment=(), preset: str = "L2") -> Path:
@@ -503,6 +505,16 @@ def test_running_dashboard_shows_stage_progress_running_tasks_and_counts(tmp_pat
     assert "Tasks\n12 completed / 1 running / 2 queued / 0 failed\n(further tasks are created as Nextflow progresses; total not yet known)" in output
     assert "Last update 21:00:00" in output and "Activity last write" in output
     assert f"Log {run_dir / 'logs' / 'rnaseq.log'}" in output
+
+
+@pytest.mark.parametrize("offset_hours", [8, 0, -7])
+def test_running_elapsed_time_is_an_absolute_duration_in_any_time_zone(tmp_path, offset_hours):
+    # The same instant expressed in different zones gives the same elapsed time.
+    run_dir = _route_run(tmp_path, "hisat2_featurecounts")
+    _state(run_dir, status="RUNNING", phase="upstream")
+    (run_dir / "logs" / "rnaseq.process.json").write_text(json.dumps(current_process_identity()), encoding="utf-8")
+    now = NOW.astimezone(timezone(timedelta(hours=offset_hours)))
+    assert "\nRUNNING 29m 28s elapsed\n" in _render(run_dir, now)
 
 
 def test_running_task_without_a_recorded_work_dir_has_no_invented_elapsed_time(tmp_path):
