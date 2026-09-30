@@ -168,14 +168,18 @@ for (item in cfg$contrasts) {
       show_rows <- fits(row_pt)
       height_mm <- if (show_rows) max(80, overhead_mm + nrow(display) * nf_rna_pt_to_mm(row_pt) * 1.25) else profile$max_height_mm
       legend_at <- seq(-z_limit, z_limit, by = 1)
+      # Compact two-line title; the selection rule and transformations are in the manifest.
+      heat_title <- nf_rna_heatmap_title(fig, numerator, denominator, width_mm = profile$double_col_mm,
+        detail = if (nrow(display) == nrow(selected)) sprintf("Top %d DEGs \u00b7 row z-score of VST", nrow(selected)) else sprintf("Top %d DEGs (%d drawn) \u00b7 row z-score of VST", nrow(selected), nrow(display)))
       heat <- pheatmap(display, color = nf_rna_diverging_palette(100), breaks = seq(-z_limit, z_limit, length.out = 101), na_col = NF_RNA_NA_COLOUR,
         cluster_rows = if (is.null(row_tree)) FALSE else row_tree, cluster_cols = if (is.null(column_tree)) FALSE else column_tree,
         annotation_col = annotation, annotation_colors = annotation_colours, border_color = NA, show_rownames = show_rows,
         legend_breaks = legend_at, legend_labels = c(paste0("\u2264", -z_limit), legend_at[-c(1, length(legend_at))], paste0("\u2265", z_limit)),
-        main = if (nrow(display) == nrow(selected)) sprintf("%s: row z-score of VST, top %d genes by padj", contrast_id, nrow(selected)) else sprintf("%s: row z-score of VST, top %d genes by padj (%d drawn)", contrast_id, nrow(selected), nrow(display)),
-        fontsize = profile$base_pt, fontsize_row = row_pt, fontsize_col = profile$small_pt, silent = TRUE)
+        main = heat_title, fontsize = profile$base_pt, fontsize_row = row_pt, fontsize_col = profile$small_pt, silent = TRUE)
+      heat <- nf_rna_span_pheatmap_title(heat)
       nf_rna_save_figure(fig, heat, file.path(directory, "heatmap"), profile$double_col_mm, height_mm, cfg$output_dir, list(
-        kind = "DEG heatmap", contrast = list(contrast_id = contrast_id, factor = factor, numerator = numerator, denominator = denominator),
+        kind = "DEG heatmap", title = heat_title, title_layout = "contrast line(s) over a detail line, centred across the full figure width",
+        contrast = list(contrast_id = contrast_id, factor = factor, numerator = numerator, denominator = denominator),
         display_subset = list(rule = sprintf("top %d significant genes by padj, ties by gene_id", cfg$heatmap_top_n), selected = nrow(selected), drawn = nrow(display), significant_total = nrow(significant_df),
                               samples = "samples in the numerator and denominator groups"),
         transformation = list(values = "blind VST from L1", row_zscore = "per gene across the drawn samples: (x - mean) / sd (n - 1)",

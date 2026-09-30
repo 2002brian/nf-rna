@@ -175,6 +175,31 @@ nf_rna_display_labels <- function(x, width=45, max_lines=2) {
   labels
 }
 
+# Compact heatmap title: "<numerator> vs <denominator>" over a detail line.
+# pheatmap draws titles bold at 1.3 x fontsize; when the contrast line would
+# not fit the figure width (conservative 0.7 em per character) it is broken
+# before "vs", so group names are never truncated.
+nf_rna_heatmap_title <- function(context, numerator, denominator, detail, width_mm) {
+  title_pt <- 1.3 * context$profile$base_pt
+  budget <- floor(width_mm / (nf_rna_pt_to_mm(title_pt) * 0.7))
+  contrast <- sprintf("%s vs %s", numerator, denominator)
+  if (nchar(contrast) > budget) contrast <- sprintf("%s\nvs %s", numerator, denominator)
+  paste0(contrast, "\n", detail)
+}
+
+# pheatmap places its title over the matrix column only, with clipping off,
+# so a title wider than the matrix runs past the page edge.  Span it across
+# every column of the figure instead; the figure size is unchanged.
+nf_rna_span_pheatmap_title <- function(heat) {
+  layout <- heat$gtable$layout
+  main <- layout$name == "main"
+  if (any(main)) {
+    heat$gtable$layout$l[main] <- 1L
+    heat$gtable$layout$r[main] <- ncol(heat$gtable)
+  }
+  heat
+}
+
 # ------------------------------------------------------------------ export
 
 nf_rna_draw <- function(figure) {
@@ -234,7 +259,7 @@ nf_rna_source_data <- function(path, output_root, description) {
 }
 
 nf_rna_write_figure_manifest <- function(context, output_dir) {
-  packages <- c("ggplot2", "pheatmap", "scales", "systemfonts")
+  packages <- c("ggplot2", "ggrepel", "pheatmap", "scales", "systemfonts")
   versions <- lapply(packages, function(p) if (requireNamespace(p, quietly=TRUE)) as.character(utils::packageVersion(p)) else NA_character_)
   names(versions) <- packages
   software <- grDevices::grSoftVersion()

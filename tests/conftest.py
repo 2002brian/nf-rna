@@ -157,6 +157,36 @@ def production_capable_execution_capacity(monkeypatch):
     return snapshot
 
 
+def pdf_text_origins(path: Path) -> list[tuple[float, float]]:
+    """Page-space origin (pt) of every text line in a single-page Cairo PDF.
+
+    Cairo writes each text object as ``Tm`` followed by relative ``Td`` moves,
+    under one y-flip ``cm``; the returned x is therefore the page x of the
+    first glyph.  A negative x means text starts left of the page.
+    """
+
+    import re
+    import zlib
+
+    data = path.read_bytes()
+    origins: list[tuple[float, float]] = []
+    for match in re.finditer(rb"stream\r?\n(.*?)endstream", data, re.S):
+        try:
+            content = zlib.decompress(match.group(1))
+        except zlib.error:
+            continue
+        for block in re.findall(rb"BT(.*?)ET", content, re.S):
+            a = b = c = d = e = f = 0.0
+            for op in re.finditer(rb"((?:-?[\d.]+\s+){6})Tm|((?:-?[\d.]+\s+){2})Td", block):
+                if op.group(1):
+                    a, b, c, d, e, f = (float(value) for value in op.group(1).split())
+                else:
+                    tx, ty = (float(value) for value in op.group(2).split())
+                    e, f = e + tx * a + ty * c, f + tx * b + ty * d
+                origins.append((e, f))
+    return origins
+
+
 def require_rscript() -> str:
     executable = shutil.which("Rscript")
     if executable is None:

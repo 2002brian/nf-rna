@@ -6,7 +6,7 @@ source(file.path(dirname(normalizePath(script_file)), "provenance.R"))
 source(file.path(dirname(normalizePath(script_file)), "design_metadata.R"))
 source(file.path(dirname(normalizePath(script_file)), "sample_inputs.R"))
 source(file.path(dirname(normalizePath(script_file)), "figures.R"))
-suppressPackageStartupMessages({ library(jsonlite); library(yaml); library(DESeq2); library(ggplot2); library(pheatmap) })
+suppressPackageStartupMessages({ library(jsonlite); library(yaml); library(DESeq2); library(ggplot2); library(pheatmap); library(ggrepel) })
 cfg <- fromJSON(args[[2]], simplifyVector = FALSE)
 dir.create(cfg$output_dir, recursive = TRUE, showWarnings = FALSE)
 samples <- unlist(cfg$samples, use.names = FALSE)
@@ -62,12 +62,18 @@ scores$group <- as.factor(metadata[scores$sample_id, color_name])
 fig <- nf_rna_figure_context(cfg)
 pc_labels <- labs(x = sprintf("PC1 (%.1f%%)", 100 * variance[[1]]), y = sprintf("PC2 (%.1f%%)", 100 * ifelse(length(variance) >= 2, variance[[2]], 0)))
 # PC scores share one unit, so both axes use the same scale (coord_fixed).
+NF_RNA_PCA_LABEL_SEED <- 20260930L
 pca_plot <- function(colour_by, colour_name, shape_by, shape_name) {
   colours <- nf_rna_categorical_colors(levels(scores[[colour_by]]))
   shapes <- nf_rna_categorical_shapes(levels(scores[[shape_by]]))
   mapping <- if (is.null(shapes)) aes(x = PC1, y = PC2, color = .data[[colour_by]]) else aes(x = PC1, y = PC2, color = .data[[colour_by]], shape = .data[[shape_by]])
+  # Repelled labels keep every sample ID legible in tight clusters.  The seed and
+  # an iteration-only stopping rule (no wall-clock limit) make the layout
+  # deterministic; labels stay inside the panel and never drop a sample.
   p <- ggplot(scores, mapping) + geom_point(size = 2) +
-    do.call(geom_text, c(list(mapping = aes(label = sample_id), vjust = -0.9, show.legend = FALSE), nf_rna_text_size(fig$profile$min_pt))) +
+    geom_text_repel(aes(label = sample_id), size = nf_rna_pt_to_mm(fig$profile$min_pt), family = fig$font$family, show.legend = FALSE,
+                    seed = NF_RNA_PCA_LABEL_SEED, max.time = Inf, max.iter = 10000, max.overlaps = Inf,
+                    box.padding = 0.3, point.padding = 0.3, min.segment.length = 0.4, segment.size = nf_rna_linewidth(0.3), segment.colour = "grey50") +
     scale_color_manual(values = colours, name = colour_name) +
     scale_x_continuous(expand = expansion(mult = 0.05)) + scale_y_continuous(expand = expansion(mult = 0.15)) +
     coord_fixed(clip = "off") + pc_labels + nf_rna_theme(fig)
@@ -84,6 +90,7 @@ pca_height_mm <- function() {
 pca_meta <- function(encoding) list(
   kind = "PCA", data = "blind VST, all retained genes, prcomp(center = TRUE, scale. = FALSE)", axes = "PC1/PC2 with proportion of variance explained; equal axis scaling",
   encoding = encoding, ellipses = "none", paired_lines = "none",
+  labels = list(text = "every sample_id, unabbreviated", placement = sprintf("ggrepel::geom_text_repel, seed %d, iteration-limited (max.iter 10000, no time limit), kept inside the panel; leader lines only for displaced labels", NF_RNA_PCA_LABEL_SEED)),
   source_data = list(nf_rna_source_data(file.path(cfg$output_dir, "pca_scores.tsv"), cfg$output_dir, "PC coordinates"), nf_rna_source_data(file.path(cfg$output_dir, "pca_variance.tsv"), cfg$output_dir, "proportion of variance"))
 )
 main_pca <- pca_plot("group", color_name, "group", color_name)
@@ -119,4 +126,4 @@ median_library <- median(library_size$input_total)
 for (i in seq_len(nrow(library_size))) if (library_size$input_total[[i]] < median_library * 0.25) flags <- c(flags, paste0("LOW_LIBRARY_SIZE: ", library_size$sample_id[[i]], " is below 25% of the median input total."))
 summary <- list(source_type = cfg$source_type, samples = samples, genes_input = nrow(source_counts), genes_removed_all_zero = sum(all_zero), genes_removed_low_total = sum(low_total), genes_retained = sum(keep), filter = cfg$filter, normalization = list(method = if (cfg$source_type == "salmon_tximport") "DESeq2 with tximport average-transcript-length normalization offsets" else "DESeq2 median-ratio size factors", scalar_size_factors_available = !all(is.na(size_factor_values))), vst = list(method = if (nrow(dds) < 1000) "DESeq2 varianceStabilizingTransformation (exact small-matrix path)" else "DESeq2 vst"), package_versions = list(R = R.version.string, DESeq2 = as.character(packageVersion("DESeq2")), tximport = if (cfg$source_type == "salmon_tximport") as.character(packageVersion("tximport")) else NULL), pca_proportion_variance = as.list(variance), flags = as.list(flags))
 write(toJSON(summary, auto_unbox = TRUE, pretty = TRUE, null = "null"), file.path(cfg$output_dir, "backend_summary.json"))
-nf_rna_write_provenance(cfg, cfg$output_dir, "L1", "SUCCESS", c("DESeq2", "tximport", "ggplot2", "pheatmap", "scales", "systemfonts", "yaml", "jsonlite"), summary)
+nf_rna_write_provenance(cfg, cfg$output_dir, "L1", "SUCCESS", c("DESeq2", "tximport", "ggplot2", "ggrepel", "pheatmap", "scales", "systemfonts", "yaml", "jsonlite"), summary)

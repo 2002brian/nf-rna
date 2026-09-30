@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from conftest import BASE_COUNTS, BASE_METADATA, base_config, require_r_packages
+from conftest import BASE_COUNTS, BASE_METADATA, base_config, pdf_text_origins, require_r_packages
 from rnaseq.downstream import L1Result
 from rnaseq.errors import DownstreamExecutionError
 from rnaseq.l2 import execute_l2, prepare_l2
@@ -161,6 +161,10 @@ def test_real_l2_replicated_raw_counts_outputs_and_determinism(tmp_path):
     assert {path.name for path in contrast.glob("*.pdf")} == {"volcano.pdf", "heatmap.pdf"}
     heatmap_genes = [row["gene_id"] for row in _rows(contrast / "heatmap_genes.tsv")]
     assert set(heatmap_genes) == {row["gene_id"] for row in significant}
+    heatmap = next(item for item in json.loads((first.output_dir / "figure_manifest.json").read_text())["figures"] if item["id"].endswith("/heatmap"))
+    assert heatmap["title"] == "Treatment vs Control\nTop 20 DEGs \u00b7 row z-score of VST"
+    width_pt = next(item for item in heatmap["files"] if item["format"] == "pdf")["width_pt"]
+    assert all(0 <= x <= width_pt for x, _ in pdf_text_origins(contrast / "heatmap.pdf"))
     summary = yaml.safe_load((contrast / "summary.yaml").read_text())
     assert summary["independent_filtering"] is True
     assert "fallback" in summary["fit_method"]

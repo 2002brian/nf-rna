@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import require_r_packages
+from conftest import pdf_text_origins, require_r_packages
 
 
 FIGURES_R = Path(__file__).resolve().parents[1] / "src" / "rnaseq" / "r" / "figures.R"
@@ -216,6 +216,46 @@ cat(toJSON(list(font=ctx$font), auto_unbox=TRUE))
         png = (tmp_path / f"{stem}.png").read_bytes()
         assert struct.unpack(">II", png[16:24]) == (files["png"]["width_px"], files["png"]["height_px"])
         assert pdf_pages(tmp_path / f"{stem}.pdf") == [(0.0, 0.0, float(width_pt), float(height_pt))]
+
+
+def test_pheatmap_title_spans_the_figure_and_stays_on_the_page(tmp_path):
+    # A narrow matrix with long row labels and a legend: pheatmap centres its
+    # title over the matrix column, so a long title starts left of the page.
+    result = run_r(r'''
+ctx <- nf_rna_figure_context(list())
+m <- matrix(c(1, 2, 3, 4, 5, 6, 2, 1, 3), 3, dimnames=list(paste0("ENSMUSG0000000000", 1:3, "_long_label"), c("S1", "S2", "S3")))
+title <- nf_rna_heatmap_title(ctx, "Resistant", "Parental", "Top 50 DEGs \u00b7 row z-score of VST", width_mm=85)
+make <- function() pheatmap(m, main=title, fontsize=ctx$profile$base_pt, silent=TRUE)
+nf_rna_save_figure(ctx, make(), file.path(getwd(), "unspanned"), 85, 80, getwd(), formats="pdf")
+spanned <- nf_rna_span_pheatmap_title(make())
+nf_rna_save_figure(ctx, spanned, file.path(getwd(), "spanned"), 85, 80, getwd(), formats="pdf")
+main <- spanned$gtable$layout[spanned$gtable$layout$name == "main", ]
+grDevices::pdf(NULL, width=85 / 25.4, height=80 / 25.4)
+title_width <- grid::convertWidth(grid::grobWidth(spanned$gtable$grobs[[which(spanned$gtable$layout$name == "main")]]), "mm", valueOnly=TRUE)
+grDevices::dev.off()
+cat(toJSON(list(l=main$l, r=main$r, columns=ncol(spanned$gtable), title_width_mm=title_width), auto_unbox=TRUE))
+''', tmp_path)
+    assert (result["l"], result["r"]) == (1, result["columns"])
+    assert result["title_width_mm"] < 85
+    assert min(x for x, _ in pdf_text_origins(tmp_path / "unspanned.pdf")) < 0  # the defect this guards against
+    spanned = pdf_text_origins(tmp_path / "spanned.pdf")
+    assert spanned and min(x for x, _ in spanned) >= 0
+    # Spanning the title never changes the figure size.
+    assert pdf_pages(tmp_path / "spanned.pdf") == pdf_pages(tmp_path / "unspanned.pdf")
+
+
+def test_heatmap_title_breaks_long_group_names_instead_of_truncating(tmp_path):
+    result = run_r(r'''
+ctx <- nf_rna_figure_context(list())
+detail <- "Top 50 DEGs \u00b7 row z-score of VST"
+long_num <- "Irradiated_resistant_subline_133Gy_passage_12"; long_den <- "Irradiated_parental_line_22Gy_passage_3"
+cat(toJSON(list(short=nf_rna_heatmap_title(ctx, "133Gy", "22Gy", detail, width_mm=180),
+  long=nf_rna_heatmap_title(ctx, long_num, long_den, detail, width_mm=180)), auto_unbox=TRUE))
+''', tmp_path)
+    assert result["short"] == "133Gy vs 22Gy\nTop 50 DEGs \u00b7 row z-score of VST"
+    assert result["long"] == (
+        "Irradiated_resistant_subline_133Gy_passage_12\nvs Irradiated_parental_line_22Gy_passage_3\nTop 50 DEGs \u00b7 row z-score of VST"
+    )
 
 
 def test_tiff_export_is_byte_deterministic(tmp_path):

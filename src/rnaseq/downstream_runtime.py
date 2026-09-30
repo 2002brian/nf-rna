@@ -47,6 +47,8 @@ LOCKS_PACKAGE = "rnaseq.workflows"
 REQUIRED_R_PACKAGES = (
     "DESeq2", "tximport", "clusterProfiler", "AnnotationDbi", "org.Hs.eg.db",
     "org.Mm.eg.db", "ggplot2", "pheatmap", "yaml", "jsonlite",
+    # Locked via clusterProfiler -> enrichplot; L1 uses it directly for PCA labels.
+    "ggrepel",
 )
 
 

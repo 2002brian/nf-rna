@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from conftest import BASE_CONTRASTS, base_config, require_r_packages
+from conftest import BASE_CONTRASTS, base_config, pdf_text_origins, require_r_packages
 from rnaseq.downstream import execute_l1, prepare_l1
 from rnaseq.errors import DownstreamExecutionError
 from rnaseq.validators import validate_project
@@ -21,7 +21,7 @@ def _digest(path: Path) -> str:
 
 def test_raw_counts_l1_real_backend_is_structured_and_text_deterministic(project_factory):
     pytest.importorskip("yaml")
-    require_r_packages("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap")
+    require_r_packages("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
     counts = "gene_id,C1,C2,C3,T1,T2,T3\n" + "\n".join(
         f"Gene{index},{10 + index},{12 + index},{9 + index},{40 + index},{45 + index},{43 + index}"
         for index in range(1, 101)
@@ -39,9 +39,15 @@ def test_raw_counts_l1_real_backend_is_structured_and_text_deterministic(project
     assert {path.name for path in first.output_dir.glob("*.pdf")} == {"pca.pdf", "sample_correlation.pdf"}
     figures = json.loads((first.output_dir / "figure_manifest.json").read_text())
     assert {item["id"] for item in figures["figures"]} == {"pca", "sample_correlation"}
-    before = {_path.name: _digest(_path) for _path in (normalized, first.output_dir / "vst.tsv", first.output_dir / "pca_scores.tsv", first.output_dir / "sample_correlation.tsv")}
+    pca = next(item for item in figures["figures"] if item["id"] == "pca")
+    assert pca["labels"]["text"] == "every sample_id, unabbreviated" and "geom_text_repel, seed" in pca["labels"]["placement"]
+    assert figures["package_versions"]["ggrepel"]
+    width_pt = next(item for item in pca["files"] if item["format"] == "pdf")["width_pt"]
+    assert all(0 <= x <= width_pt for x, _ in pdf_text_origins(first.output_dir / "pca.pdf"))
+    before = {_path.name: _digest(_path) for _path in (normalized, first.output_dir / "vst.tsv", first.output_dir / "pca_scores.tsv", first.output_dir / "sample_correlation.tsv", first.output_dir / "pca.tiff", first.output_dir / "pca.png")}
     execute_l1(prepared)
-    assert before == {_path.name: _digest(_path) for _path in (normalized, first.output_dir / "vst.tsv", first.output_dir / "pca_scores.tsv", first.output_dir / "sample_correlation.tsv")}
+    # Repelled PCA labels use a fixed seed and no time limit: rasters are byte-identical.
+    assert before == {_path.name: _digest(_path) for _path in (normalized, first.output_dir / "vst.tsv", first.output_dir / "pca_scores.tsv", first.output_dir / "sample_correlation.tsv", first.output_dir / "pca.tiff", first.output_dir / "pca.png")}
 
 
 def test_fastq_l1_requires_explicit_successful_handoff_and_upgrades_legacy(project_factory):
