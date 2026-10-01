@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import re
 import shutil
 from copy import deepcopy
 from pathlib import Path
@@ -244,6 +245,11 @@ def test_production_figures_are_exported_only_through_the_central_figure_policy(
         assert any(call in text for call in ("nf_rna_save_figure(", "nf_rna_ora_dotplot(", "nf_rna_gsea_dotplot(")) and "nf_rna_write_figure_manifest(" in text
         for direct in ("ggsave(", "png(", "tiff(", "pdf(", ".svg", "theme_minimal("):
             assert direct not in text, (name, direct)
+    for script in sorted(root.glob("*.R")):
+        if script.name == "figures.R":
+            continue
+        code = "\n".join(line.split("#", 1)[0] for line in script.read_text(encoding="utf-8").splitlines())
+        assert not re.search(r"\b(?:ggsave|png|tiff|jpeg|bmp|svg|pdf|cairo_pdf|postscript|dev\.copy|dev\.print|savePlot)\s*\(", code), script.name
     policy = (root / "figures.R").read_text(encoding="utf-8")
     assert 'formats=c("png", "tiff", "pdf")' in policy
     assert 'compression="lzw", bg="white"' in policy and "cairo_pdf(" in policy

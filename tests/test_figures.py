@@ -284,3 +284,34 @@ def test_profiles_carry_the_reviewed_targets(tmp_path):
     for profile in result.values():
         assert profile["min_pt"] <= profile["small_pt"] <= profile["base_pt"]
         assert profile["double_col_mm"] <= profile["max_width_mm"]
+
+
+def test_enrichment_dotplots_export_all_formats_and_keep_long_labels_on_the_page(tmp_path):
+    result = run_r(r'''
+ctx <- nf_rna_figure_context(list())
+long <- paste(rep("regulation of a very long biological process description", 4), collapse=" ")
+ora <- data.frame(ID=sprintf("GO:%07d", 1:15), Description=c(long, sprintf("short term %d", 2:15)), p.adjust=c(0, 10^-(3:16)),
+                  Count=seq(30, 2, length.out=15), stringsAsFactors=FALSE)
+nf_rna_ora_dotplot(ctx, ora, "-log10(GO BP adjusted P, BH)", file.path(getwd(), "ora"), getwd())
+gsea <- data.frame(ID=sprintf("GO:%07d", 1:12), Description=c(long, sprintf("pathway %d", 2:12)), NES=seq(-2.4, 2.4, length.out=12),
+                   setSize=seq(20, 200, length.out=12), p.adjust=seq(0.001, 0.04, length.out=12), pvalue=0.001, qvalue=0.01,
+                   enrichmentScore=0.5, stringsAsFactors=FALSE)
+nf_rna_gsea_dotplot(ctx, gsea, list(numerator="133Gy", denominator="control"), 0.05, "BH", file.path(getwd(), "gsea"), getwd())
+nf_rna_write_figure_manifest(ctx, getwd())
+cat(toJSON(list(ok=TRUE), auto_unbox=TRUE))
+''', tmp_path)
+    assert result["ok"]
+    manifest = json.loads((tmp_path / "figure_manifest.json").read_text())
+    assert {item["id"] for item in manifest["figures"]} == {"ora", "gsea"}
+    for item in manifest["figures"]:
+        profile = manifest["profile"]
+        assert item["width_mm"] <= profile["max_width_mm"] and item["height_mm"] <= profile["max_height_mm"]
+        files = {entry["format"]: entry for entry in item["files"]}
+        assert set(files) == {"png", "tiff", "pdf"} and files["tiff"]["dpi"] == 300 and files["png"]["dpi"] == 150
+        width_pt = round(item["width_mm"] / 25.4 * 72)
+        tags = tiff_tags(tmp_path / f"{item['id']}.tiff")
+        assert tags[259] == 5 and tags[262] == 2 and tags[277] == 3 and tags[282] == tags[283] == 300
+        assert (tags[256], tags[257]) == (files["tiff"]["width_px"], files["tiff"]["height_px"])
+        assert abs(files["tiff"]["width_px"] - 2 * files["png"]["width_px"]) <= 1  # each raster is drawn natively at its own dpi
+        assert all(0 <= x <= width_pt for x, _ in pdf_text_origins(tmp_path / f"{item['id']}.pdf"))
+        assert (tmp_path / f"{item['id']}_source_data.tsv").is_file()

@@ -584,9 +584,9 @@ def new_project(
                     if method == "hisat2_featurecounts":
                         reference_hisat2_index = Path(typer.prompt("Prepared HISAT2 index directory (blank if not built)", default="")) if typer.confirm("Is a HISAT2 index already prepared?", default=False) else None
             if input_type == "fastq":
-                preset = _wizard_choice("Analysis scope", [("qc", "Quantification + technical QC only"), ("L1", "Expression-level QC and exploratory analysis"), ("L2", "L1 plus differential expression and enrichment")], default="L1")
+                preset = _wizard_choice("Analysis scope", [("qc", "Quantification + technical QC only"), ("L1", "Expression-level QC and exploratory analysis"), ("L2", "L1 plus differential expression (enrichment is opt-in: set analysis.enrichment in project.yaml)")], default="L1")
             else:
-                preset = _wizard_choice("Analysis scope", [("L1", "Expression-level QC and exploratory analysis"), ("L2", "L1 plus differential expression and enrichment")], default="L2")
+                preset = _wizard_choice("Analysis scope", [("L1", "Expression-level QC and exploratory analysis"), ("L2", "L1 plus differential expression (enrichment is opt-in: set analysis.enrichment in project.yaml)")], default="L2")
             design_type = "two_group" if preset == "qc" else _wizard_choice("Experimental design", [("two_group", "Unpaired two-level condition"), ("paired_two_group", "Biologically paired two-level condition"), ("multi_group", "At least three condition levels")], default="two_group")
             if design_type == "paired_two_group" and metadata is None:
                 pair_id = typer.prompt("Pairing metadata column", default="patient")

@@ -1054,3 +1054,36 @@ def test_raw_counts_delivery_still_rejects_malformed_matrices(project_factory, c
 def test_count_validation_still_rejects_malformed_records_around_blank_lines(project_factory, counts, code):
     report = validate_project(project_factory(counts=counts + "\n"))
     assert code in {issue.code for issue in report.errors}
+
+
+def test_delivery_keeps_every_contrast_figure_in_its_own_directory(project_factory):
+    _root, _report, run = _frozen_run(project_factory)
+    downstream = run.run_dir / "downstream"
+    (downstream / "report").mkdir()
+    (downstream / "report" / "report.html").write_text("<html></html>", encoding="utf-8")
+    contrasts = ("A_vs_C", "B_vs_C", "B_vs_A")
+    for contrast in contrasts:
+        directory = downstream / "l2" / "contrasts" / contrast
+        directory.mkdir(parents=True)
+        (directory / "all_genes.tsv").write_text(f"gene_id\n{contrast}\n", encoding="utf-8")
+        for figure in ("volcano", "heatmap"):
+            for suffix in ("png", "tiff", "pdf"):
+                (directory / f"{figure}.{suffix}").write_bytes(f"{contrast}:{figure}".encode())
+    multiqc = run.run_dir / "upstream" / "nfcore_rnaseq" / "multiqc" / "multiqc_report.html"
+    multiqc.parent.mkdir(parents=True)
+    multiqc.write_text("<html></html>", encoding="utf-8")
+    (run.run_dir / "frozen" / "upstream_handoff_manifest.yaml").write_text(
+        yaml.safe_dump({"multiqc": {"html": str(multiqc.relative_to(run.run_dir))}}, sort_keys=False), encoding="utf-8",
+    )
+    (run.run_dir / "provenance" / "run_provenance.yaml").write_text("pipeline_version: 0.4.3\n", encoding="utf-8")
+    delivery = assemble_delivery(run)
+    for contrast in contrasts:
+        for figure in ("volcano", "heatmap"):
+            for folder, suffix in (("png", "png"), ("tiff_300dpi", "tiff"), ("pdf", "pdf")):
+                delivered = delivery / "figures" / folder / "l2" / "contrasts" / contrast / f"{figure}.{suffix}"
+                assert delivered.read_bytes() == f"{contrast}:{figure}".encode()
+        assert (delivery / "tables" / "l2" / "contrasts" / contrast / "all_genes.tsv").read_text(encoding="utf-8") == f"gene_id\n{contrast}\n"
+    listed = {entry["relative_path"] for entry in yaml.safe_load((delivery / "delivery_manifest.yaml").read_text(encoding="utf-8"))["files"]}
+    delivered_figures = {path.relative_to(delivery).as_posix() for path in (delivery / "figures").rglob("*") if path.is_file()}
+    assert len(delivered_figures) == len(contrasts) * 2 * 3
+    assert delivered_figures <= listed
