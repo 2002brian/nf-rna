@@ -184,3 +184,45 @@ def test_go_ora_uses_finite_pvalue_mapped_universe_and_emits_not_applicable_sche
     provenance = (output / "scientific_provenance.json").read_text(encoding="utf-8")
     assert str(tmp_path) not in provenance
     assert '"source_revision": "fixture"' in provenance
+
+
+def test_go_ora_dotplots_identify_comparison_and_foreground_from_contrast_metadata(tmp_path):
+    """End to end with the real GO annotation: the label comes from numerator/denominator, never the contrast ID."""
+
+    import subprocess
+
+    require_r_packages("AnnotationDbi", "clusterProfiler", "org.Mm.eg.db", "ggplot2", "ggrepel", "pheatmap", "systemfonts", "jsonlite")
+    all_genes, significant, empty = tmp_path / "all_genes.tsv", tmp_path / "significant.tsv", tmp_path / "empty.tsv"
+    prepare = subprocess.run(["Rscript", "-e", (
+        'suppressMessages(library(org.Mm.eg.db)); set.seed(1);'
+        'immune <- unique(AnnotationDbi::select(org.Mm.eg.db, keys="GO:0006955", keytype="GOALL", columns="ENTREZID")$ENTREZID);'
+        'immune <- head(sort(immune), 150);'
+        'background <- head(setdiff(sort(AnnotationDbi::keys(org.Mm.eg.db, "ENTREZID")), immune), 2500);'
+        'genes <- c(immune, background);'
+        f'write.table(data.frame(gene_id=genes, pvalue=0.5, padj=0.9), "{all_genes}", sep="\t", quote=FALSE, row.names=FALSE);'
+        f'write.table(data.frame(gene_id=immune), "{significant}", sep="\t", quote=FALSE, row.names=FALSE)')],
+        capture_output=True, text=True, check=False)
+    assert prepare.returncode == 0, prepare.stderr
+    empty.write_text("gene_id\n", encoding="utf-8")
+    output = tmp_path / "go"
+    config = {
+        "output_dir": str(output), "orgdb_package": "org.Mm.eg.db",
+        "annotation": {"organism": "Mus musculus", "input_id_type": "ENTREZID", "target_id_type": "ENTREZID", "mapping_warning_rate": 0, "minimum_mapping_rate": 0, "minimum_mapped_foreground": 5, "enrichment": {"go": {"pvalue_cutoff": 0.05, "qvalue_cutoff": 0.2, "p_adjust_method": "BH"}}},
+        "contrasts": [{"contrast_id": "Misleading_vs_Id", "numerator": "133Gy", "denominator": "22Gy", "all_genes": str(all_genes), "significant": str(significant), "up": str(empty), "down": str(empty)}],
+        "runtime": {"script": "go_analysis.R", "source_revision": "fixture", "container_image": "fixture", "output_schema": "nf-rna.scientific-provenance.v1"},
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    script = Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "go_analysis.R"
+    result = subprocess.run(["Rscript", str(script), "--config", str(config_path)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    records = {item["id"]: item for item in json.loads((output / "figure_manifest.json").read_text(encoding="utf-8"))["figures"]}
+    assert records, "the immune foreground must produce at least one significant GO ORA dotplot"
+    for record in records.values():
+        assert record["subtitle"] == "133Gy vs 22Gy \u2014 Significant DE genes"
+        assert record["foreground"] == "significant"
+        assert record["contrast"] == {"contrast_id": "Misleading_vs_Id", "numerator": "133Gy", "denominator": "22Gy"}
+        assert "Misleading" not in record["subtitle"]
+        assert {entry["format"] for entry in record["files"]} == {"png", "tiff", "pdf"}
+        for entry in record["files"]:
+            assert (output / entry["path"]).stat().st_size > 0

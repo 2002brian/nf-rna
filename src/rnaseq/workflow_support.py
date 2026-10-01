@@ -636,6 +636,8 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
             "<h2>L2 — over-representation analysis</h2>",
             "<p>ORA uses the successfully mapped subset of statistically tested genes (finite DESeq2 p-value) as its universe. NA, NaN, Inf, and -Inf p-values are excluded; tested genes with an NA adjusted p-value remain eligible.</p>",
         ])
+        # GO and KEGG ORA summaries name their term counts differently.
+        term_count_fields = {"go": ("evaluated_term_count", "significant_term_count"), "kegg": ("tested_terms", "significant_terms")}
         for module, label, summary_name in (("go", "GO ORA", "go_backend_summary.json"), ("kegg", "KEGG ORA", "kegg_backend_summary.json")):
             if module not in selected:
                 continue
@@ -665,7 +667,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
                     sections.append(
                         f"<p>{escape(str(foreground))}: state <strong>{escape(str(outcome.get('status', 'not available')))}</strong>; "
                         f"foreground genes {_value(outcome, 'foreground_significant_genes')}; mapped foreground genes {_value(outcome, 'successfully_mapped_foreground_genes')}; "
-                        f"evaluated terms {_value(outcome, 'evaluated_term_count')}; significant terms {_value(outcome, 'significant_term_count')}.</p>"
+                        f"evaluated terms {_value(outcome, term_count_fields[module][0])}; significant terms {_value(outcome, term_count_fields[module][1])}.</p>"
                     )
 
     if "gsea" in selected:

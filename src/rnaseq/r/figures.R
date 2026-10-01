@@ -75,6 +75,7 @@ nf_rna_theme <- function(context) {
       legend.text=ggplot2::element_text(size=profile$small_pt),
       legend.title=ggplot2::element_text(size=profile$base_pt),
       plot.title=ggplot2::element_text(size=profile$base_pt, face="bold"),
+      plot.subtitle=ggplot2::element_text(size=profile$base_pt, colour="black", lineheight=1.05, margin=ggplot2::margin(b=3)),
       plot.background=ggplot2::element_rect(fill="white", colour=NA),
       panel.background=ggplot2::element_rect(fill="white", colour=NA),
       legend.key.size=grid::unit(3.5, "mm")
@@ -286,15 +287,51 @@ nf_rna_write_figure_manifest <- function(context, output_dir) {
 
 # ------------------------------------------------------------------ enrichment dotplots
 
-nf_rna_dotplot_height <- function(context, labels) {
+nf_rna_dotplot_height <- function(context, labels, subtitle_lines=0) {
   lines <- sum(lengths(strsplit(labels, "\n", fixed=TRUE)))
-  min(context$profile$max_height_mm, max(60, 25 + lines * nf_rna_pt_to_mm(context$profile$small_pt) * 1.6 + length(labels) * 2))
+  body <- max(60, 25 + lines * nf_rna_pt_to_mm(context$profile$small_pt) * 1.6 + length(labels) * 2)
+  min(context$profile$max_height_mm, body + subtitle_lines * nf_rna_pt_to_mm(context$profile$base_pt) * 1.5)
+}
+
+# Break text to at most `width` characters per line; a single token longer than
+# the width is broken as well, so no group name can run past the figure edge.
+nf_rna_wrap_text <- function(text, width) {
+  width <- max(10L, as.integer(width))
+  unlist(lapply(strsplit(text, "\n", fixed=TRUE)[[1]], function(line) {
+    pieces <- strwrap(line, width=width)
+    if (!length(pieces)) return("")
+    unlist(lapply(pieces, function(piece) if (nchar(piece) <= width) piece else regmatches(piece, gregexpr(sprintf(".{1,%d}", width), piece))[[1]]))
+  }))
+}
+
+NF_RNA_ORA_FOREGROUNDS <- c(significant="Significant DE genes", up="Upregulated genes", down="Downregulated genes")
+
+# Caption that makes a standalone ORA dotplot self-identifying.  The comparison
+# and its direction come from the contrast's numerator/denominator (never from
+# the contrast ID); "up" is higher in the numerator, "down" in the denominator.
+nf_rna_ora_subtitle <- function(context, contrast, foreground, width_mm=context$profile$double_col_mm, max_lines=4) {
+  numerator <- contrast$numerator; denominator <- contrast$denominator
+  if (!is.character(numerator) || !is.character(denominator) || !nzchar(numerator) || !nzchar(denominator)) {
+    stop("ORA figure subtitle requires the contrast numerator and denominator")
+  }
+  label <- NF_RNA_ORA_FOREGROUNDS[foreground]
+  if (length(foreground) != 1 || is.na(label)) stop(paste("unknown ORA foreground:", foreground))
+  direction <- switch(foreground, up=sprintf(" (higher in %s)", numerator), down=sprintf(" (higher in %s)", denominator), "")
+  budget <- floor(0.8 * width_mm / (nf_rna_pt_to_mm(context$profile$base_pt) * 0.6))
+  comparison <- sprintf("%s vs %s", numerator, denominator)
+  if (nchar(comparison) > budget) comparison <- sprintf("%s\nvs %s", numerator, denominator)
+  lines <- nf_rna_wrap_text(paste0(comparison, " \u2014 ", unname(label), direction), budget)
+  if (length(lines) > max_lines) {
+    lines <- lines[seq_len(max_lines)]
+    lines[[max_lines]] <- paste0(substr(lines[[max_lines]], 1, max(1, budget - 3)), "...")
+  }
+  paste(lines, collapse="\n")
 }
 
 nf_rna_write_source_table <- function(table, path) write.table(table, path, sep="\t", quote=FALSE, row.names=FALSE, na="NA")
 
 # Over-representation dotplot of an already selected, ordered term subset.
-nf_rna_ora_dotplot <- function(context, top, x_label, path_stem, output_root, meta=list()) {
+nf_rna_ora_dotplot <- function(context, top, x_label, path_stem, output_root, meta=list(), subtitle=NULL) {
   labels <- nf_rna_display_labels(top$Description)
   source <- data.frame(display_rank=seq_len(nrow(top)), ID=top$ID, Description=top$Description, display_label=gsub("\n", " ", labels, fixed=TRUE),
                        label_truncated=attr(labels, "truncated"), top[, intersect(c("GeneRatio", "BgRatio", "pvalue", "p.adjust", "qvalue", "Count"), names(top)), drop=FALSE],
@@ -311,9 +348,11 @@ nf_rna_ora_dotplot <- function(context, top, x_label, path_stem, output_root, me
     ggplot2::scale_shape_manual(values=c("FALSE"=16, "TRUE"=17), breaks="TRUE", labels="adjusted P = 0, drawn at display floor", name=NULL, guide=if (any(top$capped)) "legend" else "none") +
     ggplot2::scale_y_discrete(labels=stats::setNames(labels, top$ID)) +
     ggplot2::scale_size_area(max_size=5, name="Genes") + ggplot2::expand_limits(x=0) +
-    ggplot2::labs(x=x_label, y=NULL) + nf_rna_theme(context)
-  nf_rna_save_figure(context, p, path_stem, context$profile$double_col_mm, nf_rna_dotplot_height(context, labels), output_root, c(list(
-    kind="ORA dotplot", x="-log10(adjusted P) as reported by clusterProfiler", size="number of foreground genes in the term (Count)",
+    ggplot2::labs(x=x_label, y=NULL, subtitle=subtitle) + nf_rna_theme(context)
+  if (!is.null(subtitle)) p <- p + ggplot2::theme(plot.title.position="plot")
+  subtitle_lines <- if (is.null(subtitle)) 0 else length(strsplit(subtitle, "\n", fixed=TRUE)[[1]])
+  nf_rna_save_figure(context, p, path_stem, context$profile$double_col_mm, nf_rna_dotplot_height(context, labels, subtitle_lines), output_root, c(list(
+    kind="ORA dotplot", subtitle=subtitle, x="-log10(adjusted P) as reported by clusterProfiler", size="number of foreground genes in the term (Count)",
     display=list(padj_zero_floor=.Machine$double.xmin, capped_points=sum(top$capped)),
     labels=sprintf("term descriptions wrapped to 45 characters, at most 2 lines; %d truncated; full ID/Description in the source-data table", sum(attr(labels, "truncated"))),
     source_data=list(nf_rna_source_data(source_path, output_root, "plotted terms with full IDs and descriptions"))), meta))

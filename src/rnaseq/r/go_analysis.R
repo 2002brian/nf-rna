@@ -52,7 +52,7 @@ member_table <- function(terms, mapping, path) {
   write_table(do.call(rbind, rows), path)
 }
 
-run_ontology <- function(targets, universe, ontology, directory, mapping) {
+run_ontology <- function(targets, universe, ontology, directory, mapping, contrast, foreground) {
   all_path <- file.path(directory, paste0("GO_", ontology, "_all_terms.tsv")); out <- file.path(directory, paste0("GO_", ontology, ".tsv")); members <- file.path(directory, paste0("GO_", ontology, "_gene_members.tsv"))
   result <- suppressMessages(enrichGO(gene=targets, universe=universe, OrgDb=orgdb, keyType="ENTREZID", ont=ontology, pAdjustMethod=cfg$annotation$enrichment$go$p_adjust_method, pvalueCutoff=1, qvalueCutoff=1, readable=FALSE))
   terms <- if (is.null(result)) empty_go() else as.data.frame(result)
@@ -62,8 +62,10 @@ run_ontology <- function(targets, universe, ontology, directory, mapping) {
   if (nrow(terms) < nrow(significant)) stop("GO evaluated term count cannot be smaller than significant term count")
   if (!nrow(significant)) return(list(status="NO_SIGNIFICANT_TERMS", evaluated_term_count=nrow(terms), significant_term_count=0))
   nf_rna_ora_dotplot(fig, head(significant, 15), sprintf("-log10(GO %s adjusted P, %s)", ontology, cfg$annotation$enrichment$go$p_adjust_method), file.path(directory, paste0("dotplot_", ontology)), cfg$output_dir,
-    list(ontology=ontology, display_subset=sprintf("top 15 significant terms by adjusted P, ties by ID, of %d significant (pvalue <= %s, qvalue <= %s)", nrow(significant), cfg$annotation$enrichment$go$pvalue_cutoff, cfg$annotation$enrichment$go$qvalue_cutoff),
-         source_tables=list(nf_rna_source_data(out, cfg$output_dir, "all significant terms"))))
+    list(ontology=ontology, contrast=list(contrast_id=contrast$contrast_id, numerator=contrast$numerator, denominator=contrast$denominator), foreground=foreground,
+         display_subset=sprintf("top 15 significant terms by adjusted P, ties by ID, of %d significant (pvalue <= %s, qvalue <= %s)", nrow(significant), cfg$annotation$enrichment$go$pvalue_cutoff, cfg$annotation$enrichment$go$qvalue_cutoff),
+         source_tables=list(nf_rna_source_data(out, cfg$output_dir, "all significant terms"))),
+    subtitle=nf_rna_ora_subtitle(fig, contrast, foreground))
   list(status="SUCCESS", evaluated_term_count=nrow(terms), significant_term_count=nrow(significant))
 }
 
@@ -97,7 +99,7 @@ for (contrast in cfg$contrasts) {
     if (mapping_qc$status == "BLOCKED") outcome <- list(status="BLOCKED", reason=paste0("GO ORA blocked: ", mapping_qc$reason), evaluated_term_count=0, significant_term_count=0) else if (length(targets) < cfg$annotation$minimum_mapped_foreground) {
       outcome <- list(status="NOT_APPLICABLE", reason=paste0("only ", length(targets), " mapped foreground genes"), ontologies=write_empty_ontology_artifacts(directory, tested_mapping), evaluated_term_count=0, significant_term_count=0)
     } else {
-      outcomes <- lapply(c("BP", "MF", "CC"), function(ontology) run_ontology(targets, universe, ontology, directory, tested_mapping)); names(outcomes) <- c("BP", "MF", "CC")
+      outcomes <- lapply(c("BP", "MF", "CC"), function(ontology) run_ontology(targets, universe, ontology, directory, tested_mapping, contrast, name)); names(outcomes) <- c("BP", "MF", "CC")
       evaluated_term_count <- sum(vapply(outcomes, function(x) x$evaluated_term_count, numeric(1)))
       significant_term_count <- sum(vapply(outcomes, function(x) x$significant_term_count, numeric(1)))
       if (evaluated_term_count < significant_term_count) stop("GO aggregate evaluated term count cannot be smaller than significant term count")

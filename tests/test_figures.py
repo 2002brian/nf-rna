@@ -315,3 +315,59 @@ cat(toJSON(list(ok=TRUE), auto_unbox=TRUE))
         assert abs(files["tiff"]["width_px"] - 2 * files["png"]["width_px"]) <= 1  # each raster is drawn natively at its own dpi
         assert all(0 <= x <= width_pt for x, _ in pdf_text_origins(tmp_path / f"{item['id']}.pdf"))
         assert (tmp_path / f"{item['id']}_source_data.tsv").is_file()
+
+
+def test_ora_subtitle_states_comparison_direction_and_foreground_from_contrast_metadata(tmp_path):
+    result = run_r(r'''
+ctx <- nf_rna_figure_context(list())
+# The contrast ID is deliberately misleading: it must never be parsed for the label.
+c1 <- list(contrast_id="A_vs_B_misleading", numerator="133Gy", denominator="22Gy")
+long <- list(contrast_id="x", numerator=paste(rep("Irradiated_resistant_subline_133Gy_passage_12", 3), collapse="_"), denominator="control")
+unbreakable <- list(contrast_id="x", numerator=strrep("N", 400), denominator=strrep("D", 400))
+err <- tryCatch({nf_rna_ora_subtitle(ctx, list(contrast_id="a_vs_b"), "up"); "no error"}, error=function(e) conditionMessage(e))
+bad_fg <- tryCatch({nf_rna_ora_subtitle(ctx, c1, "sideways"); "no error"}, error=function(e) conditionMessage(e))
+cat(toJSON(list(
+  significant=nf_rna_ora_subtitle(ctx, c1, "significant"), up=nf_rna_ora_subtitle(ctx, c1, "up"), down=nf_rna_ora_subtitle(ctx, c1, "down"),
+  long=nf_rna_ora_subtitle(ctx, long, "down"), unbreakable=nf_rna_ora_subtitle(ctx, unbreakable, "up"), missing=err, bad_foreground=bad_fg,
+  budget=floor(0.8 * ctx$profile$double_col_mm / (nf_rna_pt_to_mm(ctx$profile$base_pt) * 0.6))), auto_unbox=TRUE))
+''', tmp_path)
+    assert result["significant"] == "133Gy vs 22Gy — Significant DE genes"
+    assert result["up"] == "133Gy vs 22Gy — Upregulated genes (higher in 133Gy)"
+    assert result["down"] == "133Gy vs 22Gy — Downregulated genes (higher in 22Gy)"
+    assert "misleading" not in "".join(v for v in result.values() if isinstance(v, str)) and "A_vs_B" not in result["up"]
+    for key in ("long", "unbreakable"):
+        lines = result[key].split("\n")
+        assert len(lines) <= 4 and all(len(line) <= result["budget"] for line in lines), key
+    assert result["long"].split("\n")[0].startswith("Irradiated_resistant_subline")
+    assert result["unbreakable"].endswith("...")
+    assert "requires the contrast numerator and denominator" in result["missing"]
+    assert "unknown ORA foreground" in result["bad_foreground"]
+
+
+def test_ora_dotplot_with_subtitle_keeps_the_same_plot_in_every_format(tmp_path):
+    result = run_r(r'''
+ctx <- nf_rna_figure_context(list())
+ora <- data.frame(ID=sprintf("GO:%07d", 1:6), Description=sprintf("term %d", 1:6), p.adjust=10^-(3:8), Count=seq(30, 5, length.out=6), stringsAsFactors=FALSE)
+contrast <- list(contrast_id="whatever", numerator="Treatment", denominator="Control")
+sub <- nf_rna_ora_subtitle(ctx, contrast, "up")
+nf_rna_ora_dotplot(ctx, ora, "-log10(adjusted P)", file.path(getwd(), "with"), getwd(), subtitle=sub)
+nf_rna_ora_dotplot(ctx, ora, "-log10(adjusted P)", file.path(getwd(), "without"), getwd())
+nf_rna_write_figure_manifest(ctx, getwd())
+cat(toJSON(list(subtitle=sub), auto_unbox=TRUE))
+''', tmp_path)
+    records = {item["id"]: item for item in json.loads((tmp_path / "figure_manifest.json").read_text())["figures"]}
+    assert records["with"]["subtitle"] == result["subtitle"] == "Treatment vs Control — Upregulated genes (higher in Treatment)"
+    assert records["without"].get("subtitle") is None
+    assert records["with"]["height_mm"] > records["without"]["height_mm"]  # room for the caption, no clipping
+    source = lambda stem: (tmp_path / f"{stem}_source_data.tsv").read_text()
+    assert source("with") == source("without")  # plotted terms, order and values are unchanged
+    for stem in ("with", "without"):
+        files = {entry["format"]: entry for entry in records[stem]["files"]}
+        assert set(files) == {"png", "tiff", "pdf"} and files["tiff"]["dpi"] == 300 and files["png"]["dpi"] == 150
+        tags = tiff_tags(tmp_path / f"{stem}.tiff")
+        assert (tags[256], tags[257]) == (files["tiff"]["width_px"], files["tiff"]["height_px"])
+        assert tags[259] == 5 and tags[262] == 2 and tags[277] == 3 and tags[282] == tags[283] == 300
+        assert struct.unpack(">II", (tmp_path / f"{stem}.png").read_bytes()[16:24]) == (files["png"]["width_px"], files["png"]["height_px"])
+        width_pt = round(records[stem]["width_mm"] / 25.4 * 72)
+        assert pdf_pages(tmp_path / f"{stem}.pdf")[0][2] == float(width_pt)
+        assert all(0 <= x <= width_pt for x, _ in pdf_text_origins(tmp_path / f"{stem}.pdf"))

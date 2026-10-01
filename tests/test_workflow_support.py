@@ -579,7 +579,10 @@ def test_report_cli_accepts_all_enrichment_paths_and_rejects_incomplete_or_unkno
     assert "unrecognized arguments" in unknown.stderr
 
 
-def _render_enrichment_report(project_factory, selection: list[str], ora_cutoffs: dict[str, tuple[float, float]] | None = None) -> str:
+def _render_enrichment_report(
+    project_factory, selection: list[str], ora_cutoffs: dict[str, tuple[float, float]] | None = None,
+    ora_foregrounds: dict[str, dict[str, dict]] | None = None,
+) -> str:
     contract, contract_path, l2, inputs = _frozen_contract(project_factory, schema_version="1.1")
     contract["analysis"] = {"enrichment": selection}
     for module, (pvalue_cutoff, qvalue_cutoff) in (ora_cutoffs or {}).items():
@@ -592,7 +595,9 @@ def _render_enrichment_report(project_factory, selection: list[str], ora_cutoffs
         if module in selection:
             root = l2 / "enrichment" / module
             root.mkdir(parents=True)
-            (root / summary_name).write_text(json.dumps({"status": "SUCCESS", "contrasts": []}), encoding="utf-8")
+            foregrounds = (ora_foregrounds or {}).get(module)
+            contrasts = [] if foregrounds is None else [{"contrast_id": "Treatment_vs_Control", "universe": {}, "foregrounds": foregrounds}]
+            (root / summary_name).write_text(json.dumps({"status": "SUCCESS", "contrasts": contrasts}), encoding="utf-8")
             enrichment_dirs.append(root)
     output = l2.parent / "enrichment-report"
     report(contract_path, inputs, l1, l2, output, enrichment_dirs)
@@ -806,3 +811,31 @@ def test_samples_rejects_metadata_order_different_from_staged_sample_order(tmp_p
         match="staged metadata sample IDs disagree with staged execution inputs sample list",
     ):
         _samples(inputs)
+
+
+def test_report_shows_go_and_kegg_ora_term_counts_from_each_backends_own_fields(project_factory):
+    text = _render_enrichment_report(project_factory, ["go", "kegg"], ora_foregrounds={
+        "go": {"significant": {"status": "SUCCESS", "evaluated_term_count": 6305, "significant_term_count": 550}},
+        "kegg": {
+            "significant": {"status": "SUCCESS", "tested_terms": 319, "significant_terms": 31},
+            "down": {"status": "NO_SIGNIFICANT_TERMS", "tested_terms": 175, "significant_terms": 0},
+        },
+    })
+    go_section = text[text.index("<h3>GO ORA</h3>"):text.index("<h3>KEGG ORA</h3>")]
+    kegg_section = text[text.index("<h3>KEGG ORA</h3>"):]
+    assert "evaluated terms 6305; significant terms 550." in go_section
+    assert "evaluated terms 319; significant terms 31." in kegg_section
+    assert "evaluated terms 175; significant terms 0." in kegg_section  # zero is a value, not a missing field
+    assert "not available; significant terms" not in kegg_section
+
+
+def test_report_marks_missing_ora_term_counts_as_unavailable_and_does_not_borrow_the_other_backends_fields(project_factory):
+    text = _render_enrichment_report(project_factory, ["go", "kegg"], ora_foregrounds={
+        "go": {"significant": {"status": "SUCCESS", "tested_terms": 9, "significant_terms": 9}},
+        "kegg": {"significant": {"status": "SUCCESS", "evaluated_term_count": 9, "significant_term_count": 9}, "up": {"status": "SUCCESS", "tested_terms": 12}},
+    })
+    go_section = text[text.index("<h3>GO ORA</h3>"):text.index("<h3>KEGG ORA</h3>")]
+    kegg_section = text[text.index("<h3>KEGG ORA</h3>"):]
+    assert "evaluated terms not available; significant terms not available." in go_section
+    assert "evaluated terms not available; significant terms not available." in kegg_section
+    assert "evaluated terms 12; significant terms not available." in kegg_section

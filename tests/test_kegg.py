@@ -198,3 +198,13 @@ def test_kegg_gsea_core_member_writer_is_indexed_and_streamed():
     assert "rows <- list()" not in helper
     assert "do.call(rbind, rows)" not in helper
     assert 'write_kegg_member_table(terms,mapping,"core_enrichment"' in script
+
+
+def test_kegg_ora_dotplot_is_labelled_from_the_contrast_metadata_and_foreground():
+    """KEGG needs the network at runtime; the shared labelling helper is exercised in test_figures and test_go."""
+
+    script = (Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "kegg_analysis.R").read_text(encoding="utf-8")
+    assert "run_fg <- function(ids, name, root, mapping, tested, universe, contrast)" in script
+    assert "subtitle=nf_rna_ora_subtitle(fig, contrast, name)" in script
+    assert "foreground=name" in script and "numerator=contrast$numerator, denominator=contrast$denominator" in script
+    assert "tested_mapping,tested,universe,contrast)" in script  # the contrast is passed explicitly, not read from the loop scope
