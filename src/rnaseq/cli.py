@@ -931,6 +931,14 @@ def design_command(
             for issue in after.errors:
                 typer.echo(f"  - {issue.message}", err=True)
             raise typer.Exit(code=1)
+        # `run` refuses stale planning artifacts, and the configuration and contrasts
+        # just changed, so refresh them here rather than leaving a failing next step.
+        try:
+            generate_plan(after)
+        except (ValueError, OSError) as exc:
+            rollback_design(loaded.config_path, loaded.contrasts_path, previous)
+            typer.echo(f"ERROR: Planning artifacts could not be refreshed ({exc}); nothing was changed.", err=True)
+            raise typer.Exit(code=1) from exc
     except typer.Exit:
         raise
     except (DesignSetupError, ProjectCreationError) as exc:
@@ -941,6 +949,7 @@ def design_command(
         raise typer.Exit(code=2) from exc
     typer.echo(f"Wrote {len(proposal.contrasts)} contrast(s) to contrasts.csv, froze design.condition_order ({', '.join(proposal.levels)}), and set the scope to L2.")
     typer.echo("L2 validation: " + after.state)
+    typer.echo("Planning artifacts refreshed for the new configuration (equivalent to `rnaseq plan`).")
     reuse = _latest_successful_run(Path(project_dir))
     hint = f" --reuse-upstream {reuse}" if reuse else ""
     typer.echo(f"Next: rnaseq run {project_dir} --case-id CASE-ID{hint}")

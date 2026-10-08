@@ -586,6 +586,40 @@ def test_design_rolls_back_if_the_final_l2_validation_fails(monkeypatch, tmp_pat
     assert before == {name: (root / name).read_bytes() for name in before}
 
 
+def test_design_refreshes_the_plan_so_run_preflight_stays_fresh(tmp_path):
+    """Regression: `run` refuses stale planning artifacts, and `design` changes the planned configuration."""
+
+    from rnaseq.errors import ExecutionPreflightError
+    from rnaseq.execution import require_fresh_plan
+
+    root = _ready(tmp_path, "proj", THREE_GROUP, design="multi_group")
+    assert runner.invoke(app, ["plan", str(root)]).exit_code == 0
+    require_fresh_plan(validate_project(root))  # fresh before design
+    result = _design(root, "--yes")
+    assert result.exit_code == 0 and "Planning artifacts refreshed" in result.output
+    require_fresh_plan(validate_project(root))  # still fresh: design refreshed the plan
+    manifest = yaml.safe_load((root / "planning" / "manifest.preview.yaml").read_text(encoding="utf-8"))
+    assert [item["contrast_id"] for item in manifest["contrasts"]["definitions"]] == ["DrugA_vs_Control", "DrugB_vs_Control", "DrugB_vs_DrugA"]
+    assert manifest["planned_downstream"]["preset"] == "L2"
+    # The guard itself is unchanged: a later manual edit still makes the plan stale.
+    (root / "contrasts.csv").write_text(CONTRAST_HEADER + "x,condition,DrugA,Control\n", encoding="utf-8")
+    with pytest.raises(ExecutionPreflightError, match="changed since planning"):
+        require_fresh_plan(validate_project(root))
+
+
+def test_design_rolls_back_if_the_plan_cannot_be_refreshed(monkeypatch, tmp_path):
+    root = _ready(tmp_path, "proj")
+    before = {name: (root / name).read_bytes() for name in ("project.yaml", "contrasts.csv")}
+
+    def broken(_report):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("rnaseq.cli.generate_plan", broken)
+    result = _design(root, "--yes")
+    assert result.exit_code == 1 and "nothing was changed" in result.output
+    assert before == {name: (root / name).read_bytes() for name in before}
+
+
 def test_design_never_mutates_existing_run_records(tmp_path):
     root = _ready(tmp_path, "proj")
     frozen = root / "runs" / "L1-001" / "20260101-000000+0000" / "frozen"

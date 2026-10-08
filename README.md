@@ -128,7 +128,7 @@ rnaseq plan .
 rnaseq doctor .
 rnaseq run . --case-id L1-001 --profile local --yes     # L1: QC and exploratory analysis
 # Review the L1 QC: sample boxplots, PCA, library sizes. Then set up differential expression:
-rnaseq design .            # reads metadata.csv, shows the model, proposes contrasts, asks for confirmation
+rnaseq design .            # reads metadata.csv, shows the model, proposes contrasts, asks for confirmation (also refreshes the plan)
 rnaseq run . --case-id L2-001 --profile local --yes     # L2: differential expression
 rnaseq status .            # execution dashboard of the latest run
 rnaseq status . --watch    # redraw until the run finishes (Ctrl-C stops watching only)

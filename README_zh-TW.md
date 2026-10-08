@@ -126,7 +126,7 @@ rnaseq plan .
 rnaseq doctor .
 rnaseq run . --case-id L1-001 --profile local --yes     # L1：QC 與探索性分析
 # 檢視 L1 QC（sample boxplot、PCA、library size），再設定差異表現分析：
-rnaseq design .            # 讀取 metadata.csv、顯示 model、提出 contrast 並請你確認
+rnaseq design .            # 讀取 metadata.csv、顯示 model、提出 contrast 並請你確認（同時更新 plan）
 rnaseq run . --case-id L2-001 --profile local --yes     # L2：差異表現分析
 rnaseq status .            # 最新 run 的執行儀表板
 rnaseq status . --watch    # 持續更新直到 run 結束（Ctrl-C 只停止監看）
