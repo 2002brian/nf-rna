@@ -545,6 +545,8 @@ def _report_l1_only(
         _top_table_html(l1 / "pca_variance.tsv", ("component", "proportion_variance"), top_n=2),
         _top_table_html(l1 / "library_size_qc.tsv", ("sample_id", "input_total", "retained_total", "size_factor", "normalized_total"), top_n=20),
         _image_html(l1 / "sample_correlation.png", "Sample correlation (blind VST)"),
+        _image_html(l1 / "boxplot_log2_raw_counts.png", "Per-sample distribution of log2(raw count + 1), before normalization"),
+        _image_html(l1 / "boxplot_vst.png", "Per-sample distribution of blind VST expression (QC only; not evidence for or against a batch effect)"),
         "<h2>L2 — differential expression</h2><p>Not requested for this L1 project.</p>",
         "<h2>L2 — GSEA</h2><p>Not requested for this L1 project.</p>",
         "<h2>Methods and reproducibility</h2>",
@@ -620,6 +622,8 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
         _top_table_html(l1 / "pca_variance.tsv", ("component", "proportion_variance"), top_n=2),
         _top_table_html(l1 / "library_size_qc.tsv", ("sample_id", "input_total", "retained_total", "size_factor", "normalized_total"), top_n=20),
         _image_html(l1 / "sample_correlation.png", "Sample correlation (blind VST)"),
+        _image_html(l1 / "boxplot_log2_raw_counts.png", "Per-sample distribution of log2(raw count + 1), before normalization"),
+        _image_html(l1 / "boxplot_vst.png", "Per-sample distribution of blind VST expression (QC only; not evidence for or against a batch effect)"),
         "<h2>L2 — differential expression</h2>",
     ]
 

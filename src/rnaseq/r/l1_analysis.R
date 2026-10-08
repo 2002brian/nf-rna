@@ -76,6 +76,9 @@ pca_plot <- function(colour_by, colour_name, shape_by, shape_name) {
                     box.padding = 0.3, point.padding = 0.3, min.segment.length = 0.4, segment.size = nf_rna_linewidth(0.3), segment.colour = "grey50") +
     scale_color_manual(values = colours, name = colour_name) +
     scale_x_continuous(expand = expansion(mult = 0.05)) + scale_y_continuous(expand = expansion(mult = 0.15)) +
+    # With fewer than three samples PC2 does not exist (all zero); give the fixed-aspect panel the same
+    # minimum height as pca_height_mm() so it never collapses to zero size.
+    expand_limits(y = mean(range(scores$PC2)) + c(-1, 1) * 0.01 * max(diff(range(scores$PC1)), 1e-9)) +
     coord_fixed(clip = "off") + pc_labels + nf_rna_theme(fig)
   if (!is.null(shapes)) p <- p + scale_shape_manual(values = shapes, name = shape_name)
   list(plot = p, colours = colours, shapes = shapes)
@@ -120,6 +123,37 @@ nf_rna_save_figure(fig, corr_plot, file.path(cfg$output_dir, "sample_correlation
   list(kind = "sample correlation heatmap", data = "Pearson correlation of blind VST", clustering = "pheatmap default: complete linkage of Euclidean distances between correlation profiles",
        colour_scale = list(kind = corr_kind, limits = range(corr_breaks), na_colour = "pheatmap default"),
        source_data = list(nf_rna_source_data(file.path(cfg$output_dir, "sample_correlation.tsv"), cfg$output_dir, "correlation matrix"))))
+# Sample-level expression distributions (QC only: they say nothing about batch
+# effects).  The same retained genes and the same sample order (cfg$samples) are
+# used before and after normalization.
+raw_log2 <- log2(source_counts[keep, samples, drop = FALSE] + 1)
+distribution_stats <- rbind(nf_rna_sample_box_stats(raw_log2, samples, "log2_raw_count_plus_1"), nf_rna_sample_box_stats(vst_matrix, samples, "blind_vst"))
+write.table(distribution_stats, file.path(cfg$output_dir, "sample_distribution_qc.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
+box_group <- nf_rna_sample_annotation(metadata, samples, color_name)
+# The batch annotation is QC-only and independent of the DE design: any metadata column named
+# "batch" with a value for every plotted sample is shown, whether or not the formula uses it.
+box_batch <- NULL
+box_batch_note <- "none (no batch column in metadata)"
+if ("batch" %in% colnames(metadata)) {
+  batch_values <- trimws(as.character(metadata[samples, "batch"]))
+  if (anyNA(batch_values) || any(batch_values == "")) box_batch_note <- "none (batch column has missing values for some samples)"
+  else box_batch <- nf_rna_sample_annotation(metadata, samples, "batch")
+}
+box_meta <- function(data, y_label, matrix_label, box) list(
+  kind = "sample expression distribution boxplot", data = data, y_axis = y_label,
+  box = "one box per sample: Tukey hinges (quartiles), median line, whiskers to the most extreme value within 1.5 x IQR; outliers not drawn",
+  order = "cfg sample order, identical to the PCA/correlation tables", genes = "all genes retained by the L1 filter",
+  encoding = list(fill = color_name, colours = as.list(box$colours), batch_marker = if (is.null(box_batch)) box_batch_note else if (is.null(box$shapes)) "none (too many batch levels)" else "black marker shape below each box", batch_in_de_design = identical(cfg$design_variable_types[["batch"]], "categorical") || "batch" %in% all.vars(formula), batch_values = "plotted values are not batch-corrected"),
+  labels = if (box$labels_shown) sprintf("every sample_id, rotated %d degrees", box$rotation) else "hidden: more than 100 samples",
+  interpretation = "distribution-level QC only; boxplots neither show nor exclude a batch effect",
+  source_data = list(nf_rna_source_data(file.path(cfg$output_dir, "sample_distribution_qc.tsv"), cfg$output_dir, sprintf("box statistics (matrix = %s)", matrix_label)))
+)
+for (spec in list(
+  list(stem = "boxplot_log2_raw_counts", values = "raw", y = "log2(raw count + 1)", data = "log2(raw count + 1) of the L1-retained genes, before size-factor normalization", matrix = "log2_raw_count_plus_1"),
+  list(stem = "boxplot_vst", values = "vst", y = "VST expression (blind, log2 scale)", data = "blind VST of the L1-retained genes (the matrix used for PCA and correlation)", matrix = "blind_vst"))) {
+  box <- nf_rna_sample_boxplot(fig, distribution_stats[distribution_stats$matrix == spec$matrix, , drop = FALSE], box_group, color_name, spec$y, box_batch, "batch")
+  nf_rna_save_figure(fig, box$plot, file.path(cfg$output_dir, spec$stem), fig$profile$double_col_mm, box$height_mm, cfg$output_dir, box_meta(spec$data, spec$y, spec$matrix, box))
+}
 nf_rna_write_figure_manifest(fig, cfg$output_dir)
 flags <- character()
 median_library <- median(library_size$input_total)

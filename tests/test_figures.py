@@ -371,3 +371,67 @@ cat(toJSON(list(subtitle=sub), auto_unbox=TRUE))
         width_pt = round(records[stem]["width_mm"] / 25.4 * 72)
         assert pdf_pages(tmp_path / f"{stem}.pdf")[0][2] == float(width_pt)
         assert all(0 <= x <= width_pt for x, _ in pdf_text_origins(tmp_path / f"{stem}.pdf"))
+
+
+BOXPLOT_R_SETUP = """
+ctx <- nf_rna_figure_context(list())
+samples <- c("S3", "S1", "S2", "S4")
+set.seed(1)
+m <- matrix(rnorm(400, mean = 8), ncol = 4, dimnames = list(paste0("g", 1:100), c("S1", "S2", "S3", "S4")))
+metadata <- data.frame(sample_id = c("S1", "S2", "S3", "S4"), condition = c("Control", "Control", "Treatment", "Treatment"),
+                       batch = c("B1", "B2", "B1", "B2"), row.names = c("S1", "S2", "S3", "S4"), stringsAsFactors = FALSE)
+"""
+
+
+def test_sample_box_stats_follow_requested_sample_order_and_never_reorder_silently(tmp_path):
+    out = run_r(BOXPLOT_R_SETUP + """
+stats <- nf_rna_sample_box_stats(m, samples, "x")
+expected <- grDevices::boxplot.stats(m[, "S3"], coef = 1.5)$stats
+bad_missing <- tryCatch({nf_rna_sample_box_stats(m[, c("S1", "S2")], samples, "x"); "no error"}, error = function(e) conditionMessage(e))
+dup <- m; colnames(dup) <- c("S1", "S1", "S3", "S4")
+bad_dup <- tryCatch({nf_rna_sample_box_stats(dup, samples, "x"); "no error"}, error = function(e) conditionMessage(e))
+cat(toJSON(list(order = stats$sample_id, median_s3 = stats$median[[1]], expected = expected[[3]], whisker = c(stats$whisker_low[[1]], stats$whisker_high[[1]]), expected_whisker = expected[c(1, 5)], genes = stats$genes, bad_missing = bad_missing, bad_dup = bad_dup), auto_unbox = TRUE), "\\n")
+""", tmp_path)
+    assert out["order"] == ["S3", "S1", "S2", "S4"]
+    assert out["median_s3"] == pytest.approx(out["expected"])
+    assert out["whisker"] == pytest.approx(out["expected_whisker"])
+    assert out["genes"] == [100, 100, 100, 100]
+    assert "does not contain exactly the expected samples" in out["bad_missing"]
+    assert "does not contain exactly the expected samples" in out["bad_dup"]
+
+
+def test_sample_annotation_is_matched_by_sample_id_and_rejects_missing_metadata(tmp_path):
+    out = run_r(BOXPLOT_R_SETUP + """
+ann <- nf_rna_sample_annotation(metadata, samples, "condition")
+shuffled <- metadata[c("S4", "S2", "S1", "S3"), , drop = FALSE]
+ann_shuffled <- nf_rna_sample_annotation(shuffled, samples, "condition")
+missing_sample <- tryCatch({nf_rna_sample_annotation(metadata[c("S1", "S2"), ], samples, "condition"); "no error"}, error = function(e) conditionMessage(e))
+missing_column <- tryCatch({nf_rna_sample_annotation(metadata, samples, "sex"); "no error"}, error = function(e) conditionMessage(e))
+na_meta <- metadata; na_meta$condition[1] <- NA
+missing_value <- tryCatch({nf_rna_sample_annotation(na_meta, samples, "condition"); "no error"}, error = function(e) conditionMessage(e))
+cat(toJSON(list(ann = as.character(ann), ann_shuffled = as.character(ann_shuffled), missing_sample = missing_sample, missing_column = missing_column, missing_value = missing_value), auto_unbox = TRUE), "\\n")
+""", tmp_path)
+    # samples are S3, S1, S2, S4 -> Treatment, Control, Control, Treatment, whatever the metadata row order
+    assert out["ann"] == ["Treatment", "Control", "Control", "Treatment"]
+    assert out["ann_shuffled"] == out["ann"]
+    assert "does not contain every sample" in out["missing_sample"]
+    assert "absent from metadata" in out["missing_column"]
+    assert "missing values" in out["missing_value"]
+
+
+@pytest.mark.parametrize("with_batch", (False, True))
+def test_sample_boxplot_exports_all_formats_with_and_without_batch(tmp_path, with_batch):
+    batch_arg = 'nf_rna_sample_annotation(metadata, samples, "batch"), "batch"' if with_batch else "NULL, NULL"
+    out = run_r(BOXPLOT_R_SETUP + f"""
+stats <- nf_rna_sample_box_stats(m, samples, "x")
+group <- nf_rna_sample_annotation(metadata, samples, "condition")
+box <- nf_rna_sample_boxplot(ctx, stats, group, "condition", "log2(raw count + 1)", {batch_arg})
+nf_rna_save_figure(ctx, box$plot, file.path(getwd(), "box"), ctx$profile$double_col_mm, box$height_mm, getwd())
+built <- ggplot2::ggplot_build(box$plot)
+cat(toJSON(list(files = sort(list.files(getwd(), pattern = "^box\\\\.")), x_levels = levels(box$plot$data$sample_id), layers = length(box$plot$layers), shapes = names(box$shapes), height = box$height_mm), auto_unbox = TRUE), "\\n")
+""", tmp_path)
+    assert out["files"] == ["box.pdf", "box.png", "box.tiff"]
+    assert out["x_levels"] == ["S3", "S1", "S2", "S4"]
+    assert out["layers"] == (2 if with_batch else 1)
+    assert (out["shapes"] == ["B1", "B2"]) if with_batch else not out["shapes"]  # no batch: NULL serialises as {}
+    assert 0 < out["height"] <= 250

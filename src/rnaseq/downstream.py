@@ -29,6 +29,7 @@ L1_FILTER = {"rule": "remove genes with total count < 10 after all-zero removal"
 L1_OUTPUTS = (
     "normalized_counts.tsv", "vst.tsv", "library_size_qc.tsv", "pca_scores.tsv",
     "pca_variance.tsv", "sample_correlation.tsv", "pca.png", "sample_correlation.png",
+    "sample_distribution_qc.tsv", "boxplot_log2_raw_counts.png", "boxplot_vst.png",
     "backend_summary.json",
 )
 

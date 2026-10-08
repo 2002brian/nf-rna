@@ -254,3 +254,85 @@ def test_production_figures_are_exported_only_through_the_central_figure_policy(
     assert 'formats=c("png", "tiff", "pdf")' in policy
     assert 'compression="lzw", bg="white"' in policy and "cairo_pdf(" in policy
     assert "general=list(" in policy and "raster_dpi=300" in policy.split("nature=list(")[0]
+
+
+def _imbalanced_batch_project(tmp_path: Path, name: str, formula: str, variables: dict[str, str]) -> Path:
+    """Deterministic 8-sample dataset: genes 1-60 are higher in batch B2 (no condition effect),
+    genes 61-80 are truly higher in Treatment; batch is imbalanced against condition (1/3 vs 3/1)."""
+
+    import math
+    import random
+
+    rng = random.Random(7)
+
+    def poisson(lam: float) -> int:
+        if lam >= 30:
+            return max(0, round(rng.gauss(lam, math.sqrt(lam))))
+        limit, k, p = math.exp(-lam), 0, 1.0
+        while True:
+            p *= rng.random()
+            if p <= limit:
+                return k
+            k += 1
+
+    samples = ["C1", "C2", "C3", "C4", "T1", "T2", "T3", "T4"]
+    condition = ["Control"] * 4 + ["Treatment"] * 4
+    batch = ["B1", "B1", "B1", "B2", "B1", "B2", "B2", "B2"]
+    lines = ["gene_id," + ",".join(samples)]
+    for gene in range(1, 201):
+        base = math.exp(rng.gauss(5, 1))
+        row = []
+        for index in range(8):
+            mean = base * (4.0 if gene <= 60 and batch[index] == "B2" else 1.0) * (2.5 if 61 <= gene <= 80 and condition[index] == "Treatment" else 1.0)
+            row.append(poisson(mean * rng.gammavariate(40, 1 / 40)))
+        lines.append(f"Gene{gene}," + ",".join(map(str, row)))
+    root = _example_copy(tmp_path / name)
+    (root / "counts.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (root / "metadata.csv").write_text(
+        "sample_id,condition,batch\n" + "".join(f"{s},{c},{b}\n" for s, c, b in zip(samples, condition, batch)), encoding="utf-8")
+    config = yaml.safe_load((root / "project.yaml").read_text(encoding="utf-8"))
+    config["schema_version"] = "1.3"
+    config["analysis"] = {"enrichment": []}
+    config["design"] = {"type": "two_group", "formula": formula, "variables": variables}
+    (root / "project.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return root
+
+
+def test_batch_term_changes_the_fitted_model_and_the_condition_contrast(tmp_path):
+    require_r_packages("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
+    results = {}
+    for name, formula, variables in (
+        ("plain", "~ condition", {"condition": "categorical"}),
+        ("adjusted", "~ batch + condition", {"batch": "categorical", "condition": "categorical"}),
+    ):
+        root = _imbalanced_batch_project(tmp_path, name, formula, variables)
+        output = execute_l2(prepare_l2(validate_project(root), run_id=None)).output_dir
+        design = json.loads((output / "scientific_provenance.json").read_text(encoding="utf-8"))["design"]
+        table = {row["gene_id"]: float(row["log2FoldChange"]) for row in _rows(output / "contrasts" / "Treatment_vs_Control" / "all_genes.tsv")}
+        results[name] = (design["model_matrix"]["column_names"], table, json.loads((output / "backend_config.json").read_text())["formula"])
+        # Plotted/QC values are never batch-corrected: blind VST does not depend on the design.
+        results[name] += (_digest(output.parent / "l1" / "vst.tsv"),)
+    assert results["plain"][0] == ["(Intercept)", "conditionTreatment"] and results["plain"][2] == "~ condition"
+    assert results["adjusted"][0] == ["(Intercept)", "batchB2", "conditionTreatment"] and results["adjusted"][2] == "~ batch + condition"
+    assert results["plain"][3] == results["adjusted"][3]
+
+    plain, adjusted = results["plain"][1], results["adjusted"][1]
+    batch_genes = [f"Gene{i}" for i in range(1, 61)]
+    median = lambda values: sorted(values)[len(values) // 2]
+    # Batch-only genes look condition-responsive without adjustment and lose most of that apparent effect with it.
+    assert median([abs(plain[g]) for g in batch_genes]) > 2 * median([abs(adjusted[g]) for g in batch_genes])
+    assert sum(abs(plain[g] - adjusted[g]) > 0.01 for g in plain) > 0.9 * len(plain)
+
+
+def test_l1_boxplot_samples_follow_sample_order_not_metadata_row_order(tmp_path):
+    require_r_packages("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
+    root = _imbalanced_batch_project(tmp_path, "shuffled", "~ batch + condition", {"batch": "categorical", "condition": "categorical"})
+    lines = (root / "metadata.csv").read_text(encoding="utf-8").splitlines()
+    (root / "metadata.csv").write_text("\n".join([lines[0], *reversed(lines[1:])]) + "\n", encoding="utf-8")
+    prepared = prepare_l2(validate_project(root), run_id=None)
+    output = execute_l2(prepared).output_dir.parent / "l1"
+    rows = _rows(output / "sample_distribution_qc.tsv")
+    assert [row["sample_id"] for row in rows if row["matrix"] == "blind_vst"] == list(prepared.l1.sample_ids)
+    manifest = json.loads((output / "figure_manifest.json").read_text(encoding="utf-8"))
+    box = next(item for item in manifest["figures"] if item["id"] == "boxplot_vst")
+    assert box["encoding"]["fill"] == "condition" and box["encoding"]["batch_marker"] == "black marker shape below each box"

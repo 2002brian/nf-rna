@@ -285,6 +285,68 @@ nf_rna_write_figure_manifest <- function(context, output_dir) {
   write(jsonlite::toJSON(document, auto_unbox=TRUE, pretty=TRUE, null="null", na="null", digits=NA), file.path(output_dir, "figure_manifest.json"))
 }
 
+# ------------------------------------------------------------------ sample distribution boxplots
+
+# Per-sample Tukey box statistics of a genes x samples matrix.  Columns are
+# matched to `samples` by name and the result follows `samples` exactly; a
+# missing or duplicated column is an error, never a silent reorder or drop.
+nf_rna_sample_box_stats <- function(values, samples, matrix_label) {
+  if (anyDuplicated(colnames(values)) || !all(samples %in% colnames(values))) {
+    stop(paste0("sample distribution matrix '", matrix_label, "' does not contain exactly the expected samples"))
+  }
+  values <- values[, samples, drop = FALSE]
+  rows <- lapply(seq_along(samples), function(i) {
+    x <- as.numeric(values[, i]); x <- x[is.finite(x)]
+    s <- if (length(x)) grDevices::boxplot.stats(x, coef = 1.5)$stats else rep(NA_real_, 5)
+    data.frame(sample_id = samples[[i]], matrix = matrix_label, genes = length(x), whisker_low = s[[1]], q1 = s[[2]], median = s[[3]], q3 = s[[4]], whisker_high = s[[5]], stringsAsFactors = FALSE)
+  })
+  do.call(rbind, rows)
+}
+
+# Metadata values for `samples`, looked up by sample_id.  Absent samples or
+# missing values stop the plot instead of producing an NA/shifted annotation.
+nf_rna_sample_annotation <- function(metadata, samples, variable) {
+  if (!(variable %in% colnames(metadata))) stop(paste("annotation variable is absent from metadata:", variable))
+  if (!all(samples %in% rownames(metadata))) stop("metadata does not contain every sample being plotted")
+  values <- metadata[samples, variable]
+  if (anyNA(values)) stop(paste("annotation variable has missing values for plotted samples:", variable))
+  factor(as.character(values), levels = if (is.factor(metadata[[variable]])) levels(metadata[[variable]]) else sort(unique(as.character(values))))
+}
+
+# One box per sample, in the order of `stats$sample_id`.  Fill = group; an
+# optional black marker row below the boxes = batch (shape).  Outliers are not
+# drawn: with thousands of genes per sample they carry no per-sample message.
+nf_rna_sample_boxplot <- function(context, stats, group, group_name, y_label, batch = NULL, batch_name = NULL) {
+  profile <- context$profile
+  samples <- stats$sample_id
+  stats$sample_id <- factor(samples, levels = samples)
+  stats$group <- group
+  colours <- nf_rna_categorical_colors(levels(group))
+  p <- ggplot2::ggplot(stats, ggplot2::aes(x = sample_id)) +
+    ggplot2::geom_boxplot(ggplot2::aes(ymin = whisker_low, lower = q1, middle = median, upper = q3, ymax = whisker_high, fill = group),
+                          stat = "identity", width = 0.7, linewidth = nf_rna_linewidth(0.5), colour = "black") +
+    ggplot2::scale_fill_manual(values = colours, name = group_name, drop = FALSE)
+  shapes <- NULL
+  if (!is.null(batch)) {
+    shapes <- nf_rna_categorical_shapes(levels(batch))
+    if (!is.null(shapes)) {
+      span <- max(stats$whisker_high, na.rm = TRUE) - min(stats$whisker_low, na.rm = TRUE)
+      stats$batch <- batch; stats$batch_y <- min(stats$whisker_low, na.rm = TRUE) - 0.08 * max(span, 1e-9)
+      p <- p + ggplot2::geom_point(data = stats, ggplot2::aes(x = sample_id, y = batch_y, shape = batch), size = 1.8, colour = "black", inherit.aes = FALSE) +
+        ggplot2::scale_shape_manual(values = shapes, name = batch_name, drop = FALSE)
+    }
+  }
+  show_labels <- length(samples) <= 100
+  rotation <- if (length(samples) > 8) 90 else 45
+  p <- p + ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = 0.05)) +
+    ggplot2::labs(x = NULL, y = y_label) + nf_rna_theme(context) +
+    ggplot2::theme(legend.position = "bottom", axis.text.x = if (show_labels) ggplot2::element_text(angle = rotation, hjust = 1, vjust = if (rotation == 90) 0.5 else 1) else ggplot2::element_blank(),
+                   axis.ticks.x = if (show_labels) ggplot2::element_line() else ggplot2::element_blank())
+  label_mm <- if (show_labels) nf_rna_pt_to_mm(profile$small_pt) * 0.6 * max(nchar(samples)) else 0
+  list(plot = p, colours = colours, shapes = shapes, labels_shown = show_labels, rotation = if (show_labels) rotation else NA_real_,
+       height_mm = min(profile$max_height_mm, 65 + label_mm))
+}
+
 # ------------------------------------------------------------------ enrichment dotplots
 
 nf_rna_dotplot_height <- function(context, labels, subtitle_lines=0) {

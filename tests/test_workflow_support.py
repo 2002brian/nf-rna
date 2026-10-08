@@ -413,6 +413,24 @@ def _write_report_artifacts(contrasts_path: Path, l2: Path) -> tuple[Path, Path,
     return l1, go_root, kegg_root
 
 
+def test_report_embeds_l1_sample_boxplots_and_flags_their_absence(project_factory):
+    contract, contract_path, l2, inputs = _frozen_contract(project_factory, schema_version="1.1")
+    l1, go_root, kegg_root = _write_report_artifacts(inputs / "contrasts.csv", l2)
+    absent = l2.parent / "report_absent"
+    report(contract_path, inputs, l1, l2, absent, [go_root, kegg_root])
+    absent_text = (absent / "report.html").read_text(encoding="utf-8")
+    assert "log2(raw count + 1), before normalization: not produced" in absent_text
+
+    (l1 / "boxplot_log2_raw_counts.png").write_bytes(b"png-raw")
+    (l1 / "boxplot_vst.png").write_bytes(b"png-vst")
+    present = l2.parent / "report_present"
+    report(contract_path, inputs, l1, l2, present, [go_root, kegg_root])
+    text = (present / "report.html").read_text(encoding="utf-8")
+    assert "before normalization: not produced" not in text
+    assert "alt='boxplot_log2_raw_counts.png'" in text and "alt='boxplot_vst.png'" in text
+    assert "not evidence for or against a batch effect" in text
+
+
 def test_schema_11_freezes_complete_annotation_and_enrichment_bridge_is_deterministic(project_factory):
     contract, contract_path, l2, inputs = _frozen_contract(project_factory, schema_version="1.1")
     annotation = contract["annotation"]
