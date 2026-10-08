@@ -2033,6 +2033,22 @@ def _retry_command(command: list[str], enabled: bool) -> list[str]:
     return [*command, "-resume"] if enabled else command
 
 
+def _upstream_identity(manifest_path: Path) -> dict[str, Any] | None:
+    """Project the frozen input manifest onto the sections that determine upstream outputs."""
+
+    try:
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    pipeline = manifest.get("pipeline") if isinstance(manifest.get("pipeline"), dict) else {}
+    return {
+        "pipeline": {"name": pipeline.get("name"), "version": pipeline.get("version")},
+        **{section: manifest.get(section) for section in ("input", "upstream", "reference")},
+    }
+
+
 def reuse_upstream_if_compatible(run: CaseRun, frozen: FrozenInputs, reference: str) -> str:
     """Copy a prior nf-core output only when its frozen upstream contract matches."""
 
@@ -2052,10 +2068,23 @@ def reuse_upstream_if_compatible(run: CaseRun, frozen: FrozenInputs, reference: 
     state_path = source / "run_state.json"
     if not state_path.is_file() or json.loads(state_path.read_text(encoding="utf-8")).get("status") != "SUCCESS":
         raise ExecutionPreflightError("--reuse-upstream must refer to a successful case run.")
-    for name in ("input_manifest.yaml", "nfcore.params.json", "nfcore.local.config"):
+    for name in ("nfcore.params.json", "nfcore.local.config"):
         old, current = source / "frozen" / name, run.run_dir / "frozen" / name
         if not old.is_file() or not current.is_file() or old.read_bytes() != current.read_bytes():
             raise ExecutionPreflightError(f"--reuse-upstream is incompatible: frozen {name} differs.")
+    # The frozen samplesheet is the sample -> FASTQ mapping (with per-sample strandedness) that
+    # nf-core consumes; a run without one (no FASTQ input) must be missing from both.
+    old_sheet, current_sheet = source / "frozen" / "samplesheet.csv", run.run_dir / "frozen" / "samplesheet.csv"
+    if old_sheet.is_file() != current_sheet.is_file() or (old_sheet.is_file() and old_sheet.read_bytes() != current_sheet.read_bytes()):
+        raise ExecutionPreflightError("--reuse-upstream is incompatible: frozen samplesheet.csv differs.")
+    # Only what determines the upstream outputs must match.  The whole manifest also records the
+    # analysis scope, design, metadata and contrasts, which legitimately change between an L1 run and
+    # the later L2 run that reuses its upstream (`rnaseq design` sets them).
+    earlier = _upstream_identity(source / "frozen" / "input_manifest.yaml")
+    if earlier is None or earlier != _upstream_identity(run.run_dir / "frozen" / "input_manifest.yaml"):
+        raise ExecutionPreflightError(
+            "--reuse-upstream is incompatible: frozen input_manifest.yaml differs in its input, upstream, or reference identity."
+        )
     if not (source / "handoff" / "upstream_manifest.yaml").is_file():
         raise ExecutionPreflightError("--reuse-upstream has no validated upstream handoff manifest.")
     shutil.copytree(source / "upstream", run.run_dir / "upstream", dirs_exist_ok=True, ignore=shutil.ignore_patterns("._*"))

@@ -912,6 +912,141 @@ def test_upstream_reuse_requires_matching_frozen_contract(project_factory):
         reuse_upstream_if_compatible(other, frozen, "CASE-OLD/20260828-090000+0800")
 
 
+_REUSE_SOURCE = "CASE-L1/20260828-090000+0800"
+_UPSTREAM_MANIFEST = {
+    "schema": {"project_schema_version": "1.3"},
+    "pipeline": {"name": "bulk_rnaseq", "version": "1.3.0", "preset": "L2"},
+    "project": {"id": "reuse"},
+    "configuration": {"file": "project.yaml", "sha256": "a" * 64},
+    "input": {
+        "type": "fastq",
+        "files": [
+            {"relative_path": "input/fastq/S1_R1.fastq.gz", "size_bytes": 10, "sha256": "1" * 64},
+            {"relative_path": "input/fastq/S1_R2.fastq.gz", "size_bytes": 10, "sha256": "2" * 64},
+        ],
+    },
+    "upstream": {
+        "engine": "nfcore_rnaseq", "pipeline_version": "3.26.0", "sequencing_layout": "paired_end",
+        "strandedness": "auto", "preprocessing": "pretrimmed", "skip_trimming": True,
+        "nfcore_preprocessing_arguments": ["--skip_trimming"],
+        "nfcore_runtime_params": {"skip_alignment": True, "skip_trimming": True},
+        "quantification": {"method": "salmon"},
+    },
+    "reference": {"source": "custom", "fasta": "reference/fasta/genome.fasta", "gtf": "reference/gtf/genes.gtf.gz", "acceptance": "standard"},
+    "metadata": {"file": "metadata.csv", "sha256": "b" * 64, "design_variables": ["condition"]},
+    "contrasts": {"file": "contrasts.csv", "sha256": "c" * 64, "definitions": []},
+    "organism": {"species": "Other"},
+    "design": {"type": "multi_group", "formula": "~ condition", "variables": {"condition": "categorical"}},
+    "planned_downstream": {"preset": "L2", "enrichment": []},
+    "thresholds": {"padj": 0.05, "abs_log2fc": 1.0},
+}
+_REUSE_SAMPLESHEET = "sample,fastq_1,fastq_2,strandedness\nS1,/data/S1_R1.fastq.gz,/data/S1_R2.fastq.gz,auto\n"
+
+
+def _reuse_pair(project_factory, *, source_manifest: dict[str, Any]):
+    """A current (post-`design`) run and a successful earlier run whose frozen manifest is ``source_manifest``."""
+
+    root, report, run = _frozen_run(project_factory)
+    current = run.run_dir / "frozen"
+    (current / "input_manifest.yaml").write_text(yaml.safe_dump(_UPSTREAM_MANIFEST), encoding="utf-8")
+    source = root / "runs" / "CASE-L1" / "20260828-090000+0800"
+    (source / "frozen").mkdir(parents=True)
+    (source / "upstream" / "nfcore_rnaseq").mkdir(parents=True)
+    (source / "handoff").mkdir()
+    (source / "handoff" / "upstream_manifest.yaml").write_text("pipeline: {}\n", encoding="utf-8")
+    (source / "run_state.json").write_text('{"status":"SUCCESS"}\n', encoding="utf-8")
+    for directory in (current, source / "frozen"):
+        (directory / "nfcore.params.json").write_text('{"skip_alignment": true}\n', encoding="utf-8")
+        (directory / "nfcore.local.config").write_text("executor { cpus = 4 }\n", encoding="utf-8")
+        (directory / "samplesheet.csv").write_text(_REUSE_SAMPLESHEET, encoding="utf-8")
+    (source / "frozen" / "input_manifest.yaml").write_text(yaml.safe_dump(source_manifest), encoding="utf-8")
+    frozen = FrozenInputs(current / "samplesheet.csv", current / "downstream_contract.json", current / "input_manifest.yaml", current / "nfcore.params.json", current / "nfcore.local.config", {})
+    return run, frozen, source
+
+
+def _edited(manifest: dict[str, Any], *path_and_value) -> dict[str, Any]:
+    *path, value = path_and_value
+    result = yaml.safe_load(yaml.safe_dump(manifest))
+    node = result
+    for key in path[:-1]:
+        node = node[key]
+    node[path[-1]] = value
+    return result
+
+
+def test_upstream_reuse_survives_the_l1_to_l2_design_change(project_factory):
+    """Regression: `rnaseq design` changes the scope, config hash, metadata/contrasts and design; none affects upstream outputs."""
+
+    l1 = yaml.safe_load(yaml.safe_dump(_UPSTREAM_MANIFEST))
+    l1["pipeline"]["preset"] = "L1"
+    l1["configuration"]["sha256"] = "0" * 64
+    l1["metadata"] = {"file": "metadata.csv", "sha256": "0" * 64, "design_variables": ["batch", "condition"]}
+    l1["contrasts"] = {"file": "contrasts.csv", "sha256": "1" * 64, "definitions": []}
+    l1["contrasts"]["definitions"] = []
+    l1["design"] = {"type": "two_group", "formula": "~ batch + condition", "variables": {"batch": "categorical", "condition": "categorical"}}
+    l1["planned_downstream"] = {"preset": "L1", "enrichment": []}
+    l1["thresholds"] = {"padj": 0.1, "abs_log2fc": 0.5}
+    l1["organism"] = {"species": "Mus musculus"}
+    run, frozen, _source = _reuse_pair(project_factory, source_manifest=l1)
+    assert reuse_upstream_if_compatible(run, frozen, _REUSE_SOURCE) == _REUSE_SOURCE
+    assert (run.run_dir / "upstream" / "nfcore_rnaseq").is_dir()
+
+
+@pytest.mark.parametrize(("label", "edit"), (
+    ("FASTQ content (sha256)", ("input", "files", 0, "sha256", "f" * 64)),
+    ("FASTQ file set", ("input", "files", [{"relative_path": "input/fastq/S1_R1.fastq.gz", "size_bytes": 10, "sha256": "1" * 64}])),
+    ("input route", ("input", "type", "raw_counts")),
+    ("read layout", ("upstream", "sequencing_layout", "single_end")),
+    ("preprocessing state", ("upstream", "preprocessing", "raw")),
+    ("skip_trimming flag", ("upstream", "skip_trimming", False)),
+    ("trimming arguments", ("upstream", "nfcore_preprocessing_arguments", [])),
+    ("nf-core runtime params", ("upstream", "nfcore_runtime_params", {"skip_alignment": True, "skip_trimming": False})),
+    ("strandedness", ("upstream", "strandedness", "reverse")),
+    ("quantification method", ("upstream", "quantification", {"method": "hisat2_featurecounts"})),
+    ("nf-core pipeline version", ("upstream", "pipeline_version", "3.25.0")),
+    ("upstream engine", ("upstream", "engine", "other")),
+    ("reference source", ("reference", "source", "igenomes")),
+    ("reference FASTA", ("reference", "fasta", "reference/fasta/other.fasta")),
+    ("reference GTF", ("reference", "gtf", "reference/gtf/other.gtf.gz")),
+    ("nf-rna pipeline version", ("pipeline", "version", "1.4.0")),
+    ("pipeline name", ("pipeline", "name", "other_pipeline")),
+))
+def test_upstream_reuse_refuses_anything_that_can_change_the_upstream_result(project_factory, label, edit):
+    changed = _edited(_UPSTREAM_MANIFEST, *edit)
+    # The earlier run differs only in the one upstream-relevant field; its scope differs too, as after `design`.
+    changed["pipeline"] = {**changed["pipeline"], "preset": "L1"}
+    run, frozen, _source = _reuse_pair(project_factory, source_manifest=changed)
+    with pytest.raises(ExecutionPreflightError, match="incompatible"):
+        reuse_upstream_if_compatible(run, frozen, _REUSE_SOURCE)
+
+
+@pytest.mark.parametrize("name", ("nfcore.params.json", "nfcore.local.config", "samplesheet.csv"))
+def test_upstream_reuse_still_requires_byte_identical_nfcore_inputs(project_factory, name):
+    run, frozen, source = _reuse_pair(project_factory, source_manifest=_UPSTREAM_MANIFEST)
+    (source / "frozen" / name).write_text("different\n", encoding="utf-8")
+    with pytest.raises(ExecutionPreflightError, match=f"incompatible: frozen {name} differs"):
+        reuse_upstream_if_compatible(run, frozen, _REUSE_SOURCE)
+    (source / "frozen" / name).unlink()  # missing is as incompatible as different
+    with pytest.raises(ExecutionPreflightError, match="incompatible"):
+        reuse_upstream_if_compatible(run, frozen, _REUSE_SOURCE)
+
+
+def test_upstream_reuse_refuses_an_unreadable_or_non_mapping_source_manifest(project_factory):
+    run, frozen, source = _reuse_pair(project_factory, source_manifest=_UPSTREAM_MANIFEST)
+    for content in ("{unterminated", "- just\n- a list\n"):
+        (source / "frozen" / "input_manifest.yaml").write_text(content, encoding="utf-8")
+        with pytest.raises(ExecutionPreflightError, match="incompatible"):
+            reuse_upstream_if_compatible(run, frozen, _REUSE_SOURCE)
+    (source / "frozen" / "input_manifest.yaml").unlink()
+    with pytest.raises(ExecutionPreflightError, match="incompatible"):
+        reuse_upstream_if_compatible(run, frozen, _REUSE_SOURCE)
+    # Two unreadable manifests must not compare equal to each other.
+    (source / "frozen" / "input_manifest.yaml").write_text("{unterminated", encoding="utf-8")
+    (run.run_dir / "frozen" / "input_manifest.yaml").write_text("{unterminated", encoding="utf-8")
+    with pytest.raises(ExecutionPreflightError, match="incompatible"):
+        reuse_upstream_if_compatible(run, frozen, _REUSE_SOURCE)
+
+
 def test_raw_counts_delivery_preserves_metadata_sample_order(project_factory):
     _root, _report, run = _frozen_run(project_factory)
 
