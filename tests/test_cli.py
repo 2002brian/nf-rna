@@ -281,6 +281,7 @@ def test_interactive_raw_count_new_is_scaffold_first_and_retries_bad_integer(mon
         "raw_counts\n"
         "L2\n"
         "two_group\n"
+        "\n"  # no known technical batch
         "sixteen\n"
         "16\n"  # a deliberate explicit CPU limit
         "\n"  # memory: accept auto
@@ -442,7 +443,7 @@ def test_new_uses_imported_metadata_fields_for_noninteractive_formula(tmp_path):
     contrasts.write_text("contrast_id,factor,numerator,denominator\nT_vs_C,condition,Treatment,Control\n", encoding="utf-8")
     result = runner.invoke(app, [
         "new", "--name", "paired", "--destination", str(tmp_path), "--species", "mouse", "--input-type", "raw_counts",
-        "--counts", str(counts), "--metadata", str(metadata), "--contrasts", str(contrasts), "--preset", "L2",
+        "--counts", str(counts), "--metadata", str(metadata), "--contrasts", str(contrasts), "--preset", "L1",
         "--design-type", "paired_two_group", "--condition-column", "condition", "--pair-id", "subject", "--covariate", "batch", "--yes",
     ])
     assert result.exit_code == 0, result.output

@@ -33,7 +33,7 @@ FASTQ: nf-core/rnaseq 3.26.0          raw counts: staged matrix
 
 ## Project contracts
 
-`project.yaml` is strict and versioned. It specifies an `L1` or `L2` preset, input route, design formula, thresholds, and optional GSEA selection. Unknown configuration fields are rejected. `metadata.csv` permits additional columns but requires `sample_id` and all formula variables. `contrasts.csv` has an exact four-column contract.
+`project.yaml` is strict and versioned. It specifies an `L1` or `L2` preset, input route, design formula, thresholds, and optional GSEA selection. Unknown configuration fields are rejected. `metadata.csv` permits additional columns but requires `sample_id` and all formula variables. `contrasts.csv` has an exact four-column contract; it is required (at least one row) only for L2. `rnaseq new` writes both files as header-only templates, and `rnaseq design` derives the contrasts from the completed metadata (later level vs earlier level, in first-appearance order, frozen as `design.condition_order`), so L1 runs without contrasts.
 
 The project preset is frozen as `analysis_level` in the downstream contract. That immutable field selects the workflow graph:
 

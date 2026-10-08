@@ -12,6 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Iterable
 
+from rnaseq.design_matrix import model_coefficient_count
 from rnaseq.errors import ProjectConfigError
 from rnaseq.models import (
     DesignType,
@@ -621,8 +622,13 @@ def validate_contrasts(
                 ContrastDefinition(contrast_id, factor, numerator, denominator)
             )
 
-    if not definitions:
-        report.error("missing_contrast_rows", "Contrasts file must contain at least one contrast row.")
+    # Contrasts are produced by `rnaseq design` after L1, so only L2 requires them.
+    if not definitions and report.config is not None and report.config.project.preset is Preset.L2:
+        report.error(
+            "missing_contrast_rows",
+            "Contrasts file must contain at least one contrast row for L2. "
+            "Run `rnaseq design PROJECT` to propose and confirm contrasts from the completed metadata.",
+        )
     return ContrastsSummary(path, tuple(definitions))
 
 
@@ -666,18 +672,50 @@ def _validate_fastq_sample_agreement(
         )
 
 
+def condition_factor(formula_variables: Iterable[str], variable_types: dict[str, str]) -> str | None:
+    """Return the design's contrast factor: ``condition`` if modelled, else the last term (if categorical)."""
+
+    variables = tuple(formula_variables)
+    candidate = "condition" if "condition" in variables else (variables[-1] if variables else None)
+    if candidate is None or variable_types.get(candidate) == MetadataVariableType.CONTINUOUS.value:
+        return None
+    return candidate
+
+
 def _build_groups_and_validate_design(report: ValidationReport) -> None:
     if report.metadata is None or report.contrasts is None or report.config is None:
         return
     metadata = report.metadata
     design_type = report.config.design.type
+    primary = condition_factor(report.formula_variables, report.design_variable_types)
+    # Contrasts, when present, name the factors under test (this keeps every
+    # existing project's behaviour).  Without contrasts (L1, or L2 before
+    # `rnaseq design`) the design's own condition factor is checked instead, so
+    # the design type is validated independently of any contrast file.
     factors = list(dict.fromkeys(contrast.factor for contrast in report.contrasts.contrasts))
+    if not factors and primary is not None:
+        factors = [primary]
+    declared_order = report.config.design.condition_order
 
     for factor in factors:
-        if factor not in metadata.columns:
+        if factor not in metadata.columns or not metadata.rows:
+            continue
+        if report.design_variable_types.get(factor) == MetadataVariableType.CONTINUOUS.value:
             continue
         counts = Counter(record[factor] for record in metadata.rows)
-        ordered = OrderedDict((level, counts[level]) for level in sorted(counts))
+        if declared_order is not None and factor == primary:
+            if set(declared_order) != set(counts):
+                report.error(
+                    "condition_order_mismatch",
+                    f"design.condition_order ({', '.join(declared_order)}) does not match the {factor!r} levels "
+                    f"in metadata ({', '.join(sorted(counts))}). Re-run `rnaseq design PROJECT`.",
+                )
+                levels_in_order = sorted(counts)
+            else:
+                levels_in_order = list(declared_order)
+        else:
+            levels_in_order = sorted(counts)
+        ordered = OrderedDict((level, counts[level]) for level in levels_in_order)
         report.groups[factor] = ordered
         for level, count in ordered.items():
             if count in (1, 2):
@@ -724,7 +762,14 @@ def _build_groups_and_validate_design(report: ValidationReport) -> None:
         )
 
     summaries: list[PairingContrastSummary] = []
-    for contrast in report.contrasts.contrasts:
+    pair_candidates = list(report.contrasts.contrasts)
+    declared_contrasts = bool(pair_candidates)
+    if not pair_candidates and primary in report.groups and len(report.groups[primary]) == 2:
+        # No contrast yet: check the pairing structure of the only comparison a
+        # two-level paired design can make, without recording it as a contrast.
+        lower, upper = list(report.groups[primary])
+        pair_candidates = [ContrastDefinition(f"{upper}_vs_{lower}", primary, upper, lower)]
+    for contrast in pair_candidates:
         if contrast.factor not in metadata.columns:
             continue
         if pairing_variable == contrast.factor:
@@ -796,6 +841,8 @@ def _build_groups_and_validate_design(report: ValidationReport) -> None:
                 f"Contrast {contrast.contrast_id} has {len(complete)} complete biological pair(s); "
                 "paired L2 inference requires at least 2.",
             )
+        if not declared_contrasts:
+            continue
         summaries.append(
             PairingContrastSummary(
                 contrast.contrast_id,
@@ -882,6 +929,8 @@ def _resolve_design_variable_types(report: ValidationReport) -> None:
 def _confounded_categorical_variables(
     metadata: MetadataSummary, variable_types: dict[str, str], formula_variables: tuple[str, ...]
 ) -> tuple[str, str] | None:
+    """Return a categorical pair that is one-to-one (completely confounded), if any."""
+
     categorical = [name for name in formula_variables if variable_types.get(name) == MetadataVariableType.CATEGORICAL.value]
     for index, left in enumerate(categorical):
         for right in categorical[index + 1:]:
@@ -893,6 +942,61 @@ def _confounded_categorical_variables(
             if all(len(values) == 1 for values in left_to_right.values()) and all(len(values) == 1 for values in right_to_left.values()):
                 return left, right
     return None
+
+
+def _nested_categorical_variables(
+    metadata: MetadataSummary, variable_types: dict[str, str], formula_variables: tuple[str, ...]
+) -> tuple[str, str] | None:
+    """Return ``(determining, determined)`` when one categorical term is a function of another.
+
+    If every level of ``determining`` occurs with exactly one level of
+    ``determined`` (which has at least two levels), the determined term's
+    indicator columns lie in the span of the determining term's, so it cannot
+    be estimated separately.  This is the rank-deficient shape produced by,
+    for example, a batch that is constant within each biological pair or a
+    condition observed in only one batch.
+    """
+
+    categorical = [name for name in formula_variables if variable_types.get(name) == MetadataVariableType.CATEGORICAL.value]
+    for determining in categorical:
+        for determined in categorical:
+            if determining == determined:
+                continue
+            mapping: dict[str, set[str]] = {}
+            for record in metadata.rows:
+                mapping.setdefault(record[determining], set()).add(record[determined])
+            if len({value for values in mapping.values() for value in values}) >= 2 and all(len(values) == 1 for values in mapping.values()):
+                return determining, determined
+    return None
+
+
+def _confounding_detail(report: ValidationReport) -> str:
+    """Explain a rank-deficient design in the user's own variable names."""
+
+    assert report.metadata is not None and report.config is not None
+    types, variables = dict(report.design_variable_types), report.formula_variables
+    confounded = _confounded_categorical_variables(report.metadata, types, variables)
+    if confounded is not None:
+        return f"Variables {confounded[0]!r} and {confounded[1]!r} are confounded in the supplied metadata."
+    nested = _nested_categorical_variables(report.metadata, types, variables)
+    if nested is not None:
+        determining, determined = nested
+        text = (
+            f"Variable {determined!r} is fully determined by {determining!r} (every {determining!r} value occurs "
+            f"with a single {determined!r} value), so the two are confounded and {determined!r} cannot be "
+            f"estimated separately."
+        )
+        if determined == "batch" and determining == report.config.design.pair_id:
+            text += (
+                " Batch is constant within each biological pair, so the pairing already absorbs it; "
+                "remove batch from the design."
+            )
+        elif determined == "batch" and determining == "condition":
+            text += " Each condition was run in a single batch, so batch effects and condition effects cannot be separated."
+        elif determining == "batch" and determined == "condition":
+            text += " Each batch contains a single condition, so batch effects and condition effects cannot be separated."
+        return text
+    return "Remove a confounded or redundant covariate, or correct the biological pairing/condition assignments."
 
 
 def _matrix_rank(matrix: list[list[float]], *, tolerance: float = 1e-10) -> int:
@@ -929,6 +1033,10 @@ def _validate_model_matrix(report: ValidationReport) -> None:
         return
     if any(variable not in report.metadata.columns for variable in report.formula_variables):
         return
+    if not report.metadata.rows:
+        # A header-only template has no design to estimate yet; metadata
+        # validation already reports the missing rows.
+        return
     variable_types = report.design_variable_types
     if set(variable_types) != set(report.formula_variables):
         return
@@ -963,19 +1071,94 @@ def _validate_model_matrix(report: ValidationReport) -> None:
             return
     matrix = [[column[row] for _name, column in columns] for row in range(len(report.metadata.rows))]
     rank = _matrix_rank(matrix)
+    samples = len(report.metadata.rows)
     if rank < len(columns):
-        confounded = _confounded_categorical_variables(report.metadata, variable_types, report.formula_variables)
-        detail = (
-            f"Variables {confounded[0]!r} and {confounded[1]!r} are confounded in the supplied metadata."
-            if confounded is not None
-            else "Remove a confounded or redundant covariate, or correct the biological pairing/condition assignments."
-        )
         report.error(
             "rank_deficient_design",
             "Design matrix is not full rank "
-            f"(rank {rank} for {len(columns)} columns). {detail} "
+            f"(rank {rank} for {len(columns)} columns). {_confounding_detail(report)} "
             "Remove a confounded or redundant covariate rather than attempting automatic repair.",
         )
+    elif samples <= len(columns):
+        # Residual degrees of freedom come from the expanded model matrix (one
+        # column per non-baseline categorical level, one per continuous slope,
+        # plus the intercept), not from the number of terms in the formula.
+        # Like limited replication, this is a warning so L1 QC (whose blind
+        # variance-stabilising transform never fits the design) stays available.
+        # L2 is refused where it is configured and launched: `rnaseq design`
+        # and the L2 launch guards.
+        report.warning(
+            "no_residual_degrees_of_freedom",
+            f"The design has no residual degrees of freedom: {samples} sample(s) for {len(columns)} model "
+            f"coefficient(s) ({', '.join(name for name, _column in columns)}). L1 QC can still run, but L2 "
+            "differential expression cannot estimate dispersion; add replicates or simplify the design.",
+        )
+
+
+def design_dimensions(report: ValidationReport) -> tuple[int, int] | None:
+    """Return ``(samples, model coefficients)`` after expanding categorical variables, if determinable."""
+
+    if report.metadata is None or not report.metadata.rows:
+        return None
+    coefficients = model_coefficient_count(report.metadata.rows, report.formula_variables, report.design_variable_types)
+    return None if coefficients is None else (len(report.metadata.rows), coefficients)
+
+
+def _warn_batch_structure(report: ValidationReport) -> None:
+    """Surface partial confounding and batch columns that the model does not use."""
+
+    assert report.metadata is not None
+    metadata = report.metadata
+    columns = set(metadata.columns)
+    for standard in ("condition", "batch"):
+        if standard not in columns:
+            lookalikes = sorted(column for column in columns if column != standard and column.lower() == standard)
+            for column in lookalikes:
+                report.warning(
+                    "nonstandard_column_name",
+                    f"Metadata column {column!r} is not the standardized name {standard!r}; it is "
+                    f"{'modelled only if the design formula names it' if column in report.formula_variables else 'not used by the design'}.",
+                )
+    if "batch" in columns and "batch" not in report.formula_variables:
+        report.warning(
+            "unused_batch_column",
+            "Metadata has a 'batch' column but the design formula does not use it: DESeq2 will not adjust for "
+            "batch (L1 plots still mark it, uncorrected). To adjust, add it to design.formula and design.variables "
+            "(`rnaseq new --batch` does this for new projects).",
+        )
+    primary = condition_factor(report.formula_variables, report.design_variable_types)
+    if (
+        any(issue.code in {"rank_deficient_design", "no_residual_degrees_of_freedom"} for issue in (*report.errors, *report.warnings))
+        or "batch" not in report.formula_variables
+        or primary is None
+        or primary == "batch"
+        or report.design_variable_types.get("batch") != MetadataVariableType.CATEGORICAL.value
+    ):
+        return
+    table = contingency_table(metadata, "batch", primary)
+    for level, counts in table.items():
+        if sum(counts.values()) == 1:
+            report.warning("batch_level_single_sample", f"Batch {level!r} contains a single sample; its effect is estimated from one observation.")
+    conditions = {condition for counts in table.values() for condition in counts}
+    for condition in sorted(conditions):
+        batches = [level for level, counts in table.items() if counts.get(condition, 0) > 0]
+        if len(batches) == 1 and len(table) > 1:
+            report.warning(
+                "partially_confounded_batch",
+                f"{primary.capitalize()} level {condition!r} occurs in only one batch ({batches[0]!r}); "
+                "the batch adjustment relies on the remaining levels to separate batch from condition.",
+            )
+
+
+def contingency_table(metadata: MetadataSummary, row_variable: str, column_variable: str) -> OrderedDict[str, OrderedDict[str, int]]:
+    """Count samples by ``row_variable`` × ``column_variable`` in first-appearance order."""
+
+    table: OrderedDict[str, OrderedDict[str, int]] = OrderedDict()
+    columns = list(dict.fromkeys(record[column_variable] for record in metadata.rows))
+    for record in metadata.rows:
+        row = table.setdefault(record[row_variable], OrderedDict((column, 0) for column in columns))
+        row[record[column_variable]] += 1
+    return table
 
 
 def _validate_production_reference(report: ValidationReport) -> None:
@@ -1071,4 +1254,6 @@ def validate_project(project_dir: Path | str) -> ValidationReport:
         _validate_fastq_sample_agreement(report.fastq, report.metadata, report)
     _validate_model_matrix(report)
     _build_groups_and_validate_design(report)
+    if report.metadata is not None:
+        _warn_batch_structure(report)
     return report

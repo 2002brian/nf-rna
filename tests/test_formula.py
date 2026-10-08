@@ -93,6 +93,8 @@ def test_paired_design_pairing_identity_is_independent_of_covariate_order(projec
     config["design"] = {
         "type": "paired_two_group", "formula": "~ batch + subject + condition", "pair_id": "subject",
     }
+    # Four samples leave no residual degrees of freedom for this model, which only L2's DESeq2 fit needs.
+    config["project"]["preset"] = "L1"
     counts = "gene_id,S1C,S1T,S2C,S2T\nGeneA,1,2,3,4\n"
     metadata = (
         "sample_id,batch,subject,condition\n"

@@ -36,7 +36,7 @@ L1 provides expression quality control and exploration. L2 is explicitly selecte
 
 - **FASTQ:** place reads in `input/fastq/`. FASTQ projects quantify with the selected Salmon/tximport or HISAT2 + featureCounts route and require an execution-ready reference compatible with that route.
 - **Count matrix:** place an imported gene-count matrix in `input/counts.csv` when quantification was completed elsewhere and nf-rna should perform the validated downstream analysis.
-- **Design files:** `metadata.csv` provides sample IDs and design variables; `contrasts.csv` declares the directional contrasts used by L2.
+- **Design files:** `metadata.csv` provides sample IDs and design variables; `contrasts.csv` declares the directional contrasts used by L2. `rnaseq new` writes both as templates (a header-only `metadata.csv` with standard column names, and a header-only `contrasts.csv`); `rnaseq design` fills in `contrasts.csv` from your completed metadata.
 - **References:** FASTQ projects declare the selected reference route explicitly. Reference identity and checksums are validated and frozen with the run rather than inferred from local files.
 
 ### Outputs
@@ -105,22 +105,68 @@ their publication workflows stopped before image build or push.
 
 ## Quick Start
 
+The normal journey is template-first: the wizard writes templates, you fill in `metadata.csv`, run L1 for QC, then let `rnaseq design` prepare L2.
+
+```text
+rnaseq new
+  -> fill metadata.csv
+  -> rnaseq validate
+  -> run L1
+  -> review QC
+  -> rnaseq design PROJECT
+  -> run L2
+```
+
 ```bash
 mkdir -p ~/projects/rnaseq-projects
 cd ~/projects/rnaseq-projects
-rnaseq new
+rnaseq new                 # choose the design and whether there is a known technical batch
 cd <new-project>
-# Add FASTQs to input/fastq/, or a count matrix to input/counts.csv.
-# Complete metadata.csv and contrasts.csv.
+# Add FASTQs to input/fastq/, or a count matrix to input/counts.csv, and complete metadata.csv.
 rnaseq validate .
 rnaseq plan .
 rnaseq doctor .
-rnaseq run . --case-id CASE-001 --profile local --yes
+rnaseq run . --case-id L1-001 --profile local --yes     # L1: QC and exploratory analysis
+# Review the L1 QC: sample boxplots, PCA, library sizes. Then set up differential expression:
+rnaseq design .            # reads metadata.csv, shows the model, proposes contrasts, asks for confirmation
+rnaseq run . --case-id L2-001 --profile local --yes     # L2: differential expression
 rnaseq status .            # execution dashboard of the latest run
 rnaseq status . --watch    # redraw until the run finishes (Ctrl-C stops watching only)
 rnaseq status . --all      # one line per recorded run
-rnaseq clean . --case-id CASE-001 --run <run-id>   # free a finished run's Nextflow work
+rnaseq clean . --case-id L1-001 --run <run-id>   # free a finished run's Nextflow work
 ```
+
+### What the wizard asks, and what the templates contain
+
+`rnaseq new` asks only what cannot be read from your metadata later: the design (two-group, paired two-group, or multi-group), the pairing column for paired designs, and one yes/no question: *is there a known technical batch?* It never asks for condition levels, batch levels, a reference level, or contrasts. The generated `metadata.csv` header depends on those answers:
+
+| Design | Known batch | `metadata.csv` header | Provisional model |
+|---|---|---|---|
+| two-group / multi-group | no | `sample_id,condition` | `~ condition` |
+| two-group / multi-group | yes | `sample_id,condition,batch` | `~ batch + condition` |
+| paired | no | `sample_id,<pair_id>,condition` | `~ <pair_id> + condition` |
+| paired | yes | `sample_id,<pair_id>,condition,batch` | `~ <pair_id> + batch + condition` |
+
+`contrasts.csv` starts as the header only: `contrast_id,factor,numerator,denominator`. Both files are ordinary CSV files you can open and edit. The same choices are available non-interactively as `--design-type`, `--pair-id`, and `--batch/--no-batch`.
+
+### L1: QC and exploratory analysis
+
+L1 needs no contrasts. It produces the raw-count and VST sample boxplots, PCA, sample correlations, and library-size QC. L1 is QC/exploratory only:
+
+- A `batch` term in the provisional model does **not** mean the plotted values are batch-corrected. No `removeBatchEffect` or corrected expression matrix is created; boxplots and PCA are always uncorrected, and a `batch` column is shown only as an annotation.
+- nf-rna never uses these plots to decide whether batch belongs in the model; you declare known batch at project creation.
+- Formal differential inference happens in L2.
+
+### `rnaseq design`: from L1 to L2
+
+After reviewing L1, `rnaseq design PROJECT` reads the completed `metadata.csv` and prepares L2:
+
+- It validates the design before anything is written: the model matrix must be full rank (no perfectly confounded batch and condition, and for a paired design batch must vary within pairs) and must leave residual degrees of freedom after categorical variables are expanded. Partial confounding and single-sample batches are reported as warnings, and the batch-by-condition sample counts are shown.
+- **Two-group:** it reads the two condition levels in the order they first appear in `metadata.csv` and proposes *later vs earlier*, for example `Treatment_vs_Control` (log2FC > 0 = higher in Treatment). Answer `y` to accept, `swap` to reverse the direction, or `n` to change nothing (`--yes`, `--swap` for non-interactive use). `swap` changes only the contrast in `contrasts.csv` (the authority on direction); `design.condition_order` stays the first-appearance (or `--condition-order`) order.
+- **Multi-group:** it generates every pairwise contrast, later level vs earlier level, in first-appearance order. For `Control, DrugA, DrugB` it writes `DrugA_vs_Control`, `DrugB_vs_Control`, `DrugB_vs_DrugA`. k levels give k(k-1)/2 contrasts. There is no per-comparison selection; edit `contrasts.csv` to remove comparisons. Per-contrast adjusted p-values are not corrected across contrasts.
+- Use `--condition-order Control,DrugA,DrugB` to set the order explicitly (reference level first).
+- Only after you confirm does it write `contrasts.csv`, freeze the order as `design.condition_order` in `project.yaml` (so re-sorting metadata rows later cannot flip a contrast), and set the scope to `L2`. The project's `project.yaml` formula stays as derived: `~ batch + condition`, or `~ <pair_id> + batch + condition` for paired designs.
+- An existing non-empty `contrasts.csv` is never overwritten unless you pass `--force`. QC-only projects and projects with invalid metadata/design are refused. A project already set to L2 with empty contrasts is accepted.
 
 Final results are delivered to `runs/<case-id>/<run-id>/delivery/`. Each run's disposable Nextflow work directory (often hundreds of GB for FASTQ runs) is kept until you remove it with `rnaseq clean`; see [Runtime](docs/runtime.md#nextflow-work-directories-and-rnaseq-clean). New projects use hardware-aware automatic CPU/memory limits (`execution.max_cpus: auto`, `execution.max_memory_gb: auto`); explicit integer limits in `project.yaml` are preserved.
 
@@ -142,7 +188,9 @@ design:
 
 Supported additive examples are `~ condition`, `~ age + condition`, `~ batch + condition`, and `~ batch + age + condition`. Contrasts remain categorical and directional—for example `Treatment_vs_Control,condition,Treatment,Control`; a continuous variable adjusts the estimate and cannot be used as a numerator/denominator contrast.
 
-When importing metadata with `rnaseq new`, use `--covariate batch` for categorical adjustments and `--continuous-covariate age` for numeric adjustments; the wizard asks for the same choice for each selected covariate.
+### Advanced: imported metadata, custom covariates, contrasts, and formulas
+
+The simple wizard covers `condition` and an optional `batch`. For anything else, import your own files with explicit flags (flags-only; the wizard never imports): `--metadata`, `--contrasts`, `--condition-column`, `--covariate batch` for categorical adjustments, `--continuous-covariate age` for numeric adjustments, and `--pair-id`. `--batch` with `--metadata` is shorthand for `--covariate batch`. These options are never ignored: without `--metadata` they are rejected with an explanation, and a metadata file with no `condition` column requires `--condition-column`. Imported contrasts are preserved, and `rnaseq design` will not replace them unless you pass `--force`; a formula that is not the standard derivation is kept as written.
 
 Known batch belongs in the DESeq2 design (`~ batch + condition`), not in a batch-corrected raw count matrix. nf-rna preserves original counts for inference, records the fitted typed design in provenance and reports, and adds batch metadata (plus a batch-colored PCA when `batch` is declared categorical) to exploratory VST QC. Continuous-effect hypothesis tests are outside this milestone.
 

@@ -110,6 +110,10 @@ class DesignConfig(StrictModel):
     formula: StrictStr
     variables: dict[StrictStr, MetadataVariableType] | None = None
     pair_id: StrictStr | None = None
+    # Written by `rnaseq design`: the condition levels in the order the user
+    # confirmed.  Absent means "not yet confirmed" (and, for projects that
+    # predate it, the historical alphabetical order).
+    condition_order: list[StrictStr] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -133,6 +137,11 @@ class DesignConfig(StrictModel):
             for name in self.variables:
                 if not name.strip():
                     raise ValueError("design.variables cannot contain a blank variable name.")
+        if self.condition_order is not None:
+            if len(self.condition_order) < 2 or any(not level.strip() for level in self.condition_order):
+                raise ValueError("design.condition_order must list at least two non-blank condition levels.")
+            if len(set(self.condition_order)) != len(self.condition_order):
+                raise ValueError("design.condition_order contains a duplicate level.")
         if self.type is DesignType.PAIRED_TWO_GROUP:
             if self.pair_id is None or not self.pair_id.strip():
                 raise ValueError(

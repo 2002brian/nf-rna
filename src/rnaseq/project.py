@@ -29,6 +29,9 @@ from rnaseq.models import (
 )
 
 FASTQ_SAMPLESHEET_HEADER = ("sample", "fastq_1", "fastq_2", "strandedness")
+# Standardised column names used by the template-first lifecycle.
+CONDITION_COLUMN = "condition"
+BATCH_COLUMN = "batch"
 FASTQ_NAME_PATTERN = re.compile(
     r"^(?P<sample>.+?)(?:_L(?P<lane>\d{3}))?_R(?P<read>[12])(?:_\d{3})?\.(?:fastq|fq)\.gz$"
 )
@@ -132,6 +135,31 @@ def _template_text(name: str) -> str:
     return resources.files("rnaseq.templates").joinpath(name).read_text(encoding="utf-8")
 
 
+def derive_design(
+    design_type: DesignType, pair_id: str | None = None, batch: bool = False
+) -> tuple[str, dict[str, str], tuple[str, ...]]:
+    """Mechanically derive the provisional design from the planning choices.
+
+    Returns ``(formula, variable types, metadata columns after sample_id)``.
+    The formula lists the pairing block first, then batch, with the contrast
+    factor ``condition`` last; the metadata header lists ``condition`` before
+    ``batch`` so it reads as the user's primary annotation first.  Nothing here
+    inspects data: levels are discovered later from the completed metadata.
+    """
+
+    paired = design_type is DesignType.PAIRED_TWO_GROUP
+    pair = (pair_id or "patient") if paired else None
+    formula_terms = [*([pair] if pair else []), *([BATCH_COLUMN] if batch else []), CONDITION_COLUMN]
+    columns = (*([pair] if pair else []), CONDITION_COLUMN, *([BATCH_COLUMN] if batch else []))
+    return "~ " + " + ".join(formula_terms), {term: "categorical" for term in formula_terms}, columns
+
+
+def metadata_template_header(design_type: DesignType, pair_id: str | None = None, batch: bool = False) -> str:
+    """Return the header-only metadata template for a design (with newline)."""
+
+    return ",".join(("sample_id", *derive_design(design_type, pair_id, batch)[2])) + "\n"
+
+
 def _project_yaml(
     project_id: str,
     species: Species,
@@ -147,11 +175,11 @@ def _project_yaml(
     formula: str | None = None,
     pair_id: str | None = None,
     design_variables: dict[str, str] | None = None,
+    batch: bool = False,
 ) -> str:
-    formula = formula or (
-        f"~ {pair_id or 'patient'} + condition"
-        if design_type is DesignType.PAIRED_TWO_GROUP else "~ condition"
-    )
+    if formula is None:
+        formula, derived_variables, _columns = derive_design(design_type, pair_id, batch)
+        design_variables = design_variables or derived_variables
     content = {
         "schema_version": SUPPORTED_SCHEMA_VERSION,
         "project": {
@@ -300,8 +328,21 @@ def create_project(
     pair_id: str | None = None,
     design_variables: dict[str, str] | None = None,
     execution: dict[str, object] | None = None,
+    batch: bool = False,
 ) -> Path:
-    """Create a new project atomically and return its final path."""
+    """Create a new project atomically and return its final path.
+
+    ``batch`` declares a known technical batch for template-first projects: the
+    metadata template gains a ``batch`` column and the provisional formula
+    adjusts for it.  It cannot be combined with an explicit ``formula`` (the
+    advanced path states its own model) or an imported metadata file.
+    """
+
+    if batch and (formula is not None or metadata_file is not None):
+        raise ProjectCreationError(
+            "A declared batch generates the template and formula; it cannot be combined with an explicit "
+            "formula or imported metadata (name 'batch' as a covariate for imported metadata instead)."
+        )
 
     if design_type is DesignType.PAIRED_TWO_GROUP and (pair_id is None or not pair_id.strip()):
         raise ProjectCreationError(
@@ -360,17 +401,12 @@ def create_project(
         if input_type is InputType.FASTQ:
             (staging / "input" / "fastq").mkdir()
         (staging / "planning").mkdir()
-        metadata_template = (
-            "metadata_paired.csv" if design_type is DesignType.PAIRED_TWO_GROUP else "metadata.csv"
-        )
         if source_metadata is not None:
             _copy_file(source_metadata, staging / "metadata.csv")
-        elif design_type is DesignType.PAIRED_TWO_GROUP:
-            (staging / "metadata.csv").write_text(
-                f"sample_id,{pair_id or 'patient'},condition\n", encoding="utf-8", newline="\n"
-            )
         else:
-            (staging / "metadata.csv").write_text(_template_text(metadata_template), encoding="utf-8", newline="\n")
+            (staging / "metadata.csv").write_text(
+                metadata_template_header(design_type, pair_id, batch), encoding="utf-8", newline="\n"
+            )
         if source_contrasts is not None:
             _copy_file(source_contrasts, staging / "contrasts.csv")
         else:
@@ -393,7 +429,7 @@ def create_project(
             _project_yaml(
                 project_name, species, preset, design_type, input_type, layout,
                 preprocessing, strandedness, quantification_method,
-                resolved_reference, execution, formula, pair_id, design_variables,
+                resolved_reference, execution, formula, pair_id, design_variables, batch,
             ),
             encoding="utf-8",
             newline="\n",

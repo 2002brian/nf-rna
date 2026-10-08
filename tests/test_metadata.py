@@ -24,7 +24,9 @@ T3,Treatment,M,B2,10
     report = validate_project(root)
     after = (root / "metadata.csv").read_bytes()
     assert report.is_valid
-    assert report.state == "PASS"
+    # Extra columns stay permitted; an unused 'batch' column is surfaced, not silently ignored.
+    assert report.state == "PASS WITH WARNINGS"
+    assert [issue.code for issue in report.warnings] == ["unused_batch_column"]
     assert not any("unused" in issue.message.lower() for issue in report.issues)
     assert report.metadata.columns == ("sample_id", "condition", "sex", "batch", "age")
     assert before == after

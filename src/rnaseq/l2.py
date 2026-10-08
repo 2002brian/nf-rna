@@ -14,6 +14,7 @@ from typing import Any
 import yaml
 
 from rnaseq.downstream import L1_FILTER, PreparedL1, _read_yaml, _require_r, _write, execute_l1, prepare_l1
+from rnaseq.design_matrix import residual_degrees_of_freedom_message
 from rnaseq.errors import DownstreamExecutionError
 from rnaseq.models import PIPELINE_VERSION, DesignType, InputType, MetadataVariableType, ProjectConfig
 from rnaseq.validators import CONTRAST_HEADER, ContrastDefinition, ValidationReport
@@ -146,6 +147,9 @@ def prepare_l2(report: ValidationReport, *, run_id: str | None) -> PreparedL2:
     )
     contrasts = _read_contrasts(contrasts_path, columns, metadata_rows, config.design.formula, variable_types)
     _guard_replicates(config, metadata_rows, contrasts)
+    no_df = residual_degrees_of_freedom_message(metadata_rows, config.design.formula, variable_types)
+    if no_df is not None:
+        raise DownstreamExecutionError(f"{no_df} L1 QC remains available; L2 inference was not executed.")
     return PreparedL2(l1, output, config, contrasts, metadata_rows)
 
 

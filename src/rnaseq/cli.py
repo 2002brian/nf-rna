@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import sys
 import time
 from collections.abc import Iterator
@@ -21,7 +22,9 @@ from rnaseq.service import RunTermination, execute_retry_service_run, execute_se
 from rnaseq.models import DesignType, FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, SequencingLayout, Species
 from rnaseq.planner import generate_plan
 from rnaseq.resource_policy import AUTO, GIB, DetectedResources, resolve_policy
-from rnaseq.project import create_project
+from rnaseq.design_matrix import residual_degrees_of_freedom_message
+from rnaseq.design_setup import DesignSetupError, build_proposal, rollback_design, write_design
+from rnaseq.project import create_project, derive_design
 from rnaseq.references import (
     LocalReferenceError,
     LocalReference,
@@ -34,7 +37,7 @@ from rnaseq.references import (
     reference_registry_path,
     register_local_reference,
 )
-from rnaseq.validators import ValidationReport, validate_project
+from rnaseq.validators import ValidationReport, contingency_table, design_dimensions, validate_project
 
 app = typer.Typer(
     name="rnaseq",
@@ -62,6 +65,22 @@ def main(
     ),
 ) -> None:
     """nf-rna command-line control plane."""
+
+
+def _render_batch_contingency(report: ValidationReport) -> list[str]:
+    """Show batch x condition sample counts when the design adjusts for a batch."""
+
+    if report.metadata is None or "batch" not in report.formula_variables or not report.metadata.rows:
+        return []
+    factor = next((name for name in report.groups if name != "batch"), None)
+    if factor is None or factor not in report.metadata.columns or "batch" not in report.metadata.columns:
+        return []
+    table = contingency_table(report.metadata, "batch", factor)
+    columns = list(report.groups[factor])
+    lines = ["Batch x condition (samples)", "---------------------------", f"{'batch':<20}" + "".join(f"{column:<14}" for column in columns)]
+    for batch_level, counts in table.items():
+        lines.append(f"{batch_level:<20}" + "".join(f"{counts.get(column, 0):<14}" for column in columns))
+    return lines
 
 
 def render_validation_report(report: ValidationReport) -> str:
@@ -125,6 +144,11 @@ def render_validation_report(report: ValidationReport) -> str:
         if config.design.pair_id is not None:
             lines.append(f"Pairing variable: {config.design.pair_id}")
         lines.append(f"DESeq2 formula: {config.design.formula}")
+        if config.design.condition_order:
+            lines.append(f"Condition order: {', '.join(config.design.condition_order)}")
+        if config.project.preset is not Preset.QC and report.contrasts is not None and not report.contrasts.contrasts:
+            lines.append("Contrasts: not yet defined (run `rnaseq design PROJECT` after reviewing L1)")
+    lines.extend(_render_batch_contingency(report))
     if report.pairing is not None:
         lines.extend(
             [
@@ -529,10 +553,11 @@ def new_project(
     reference_hisat2_index: Path | None = typer.Option(None, "--reference-hisat2-index", help="Optional prepared custom HISAT2 index."),
     preset: str | None = typer.Option(None, "--preset", help="qc, L1, or L2."),
     design_type: str | None = typer.Option(None, "--design-type", help="two_group, paired_two_group, or multi_group."),
-    condition_column: str | None = typer.Option(None, "--condition-column", help="Imported metadata factor used for contrasts and the design formula."),
-    covariate: list[str] | None = typer.Option(None, "--covariate", help="Additional imported metadata field; repeat as needed."),
-    continuous_covariate: list[str] | None = typer.Option(None, "--continuous-covariate", help="Imported numeric adjustment variable; repeat as needed."),
-    pair_id: str | None = typer.Option(None, "--pair-id", "--pairing-column", help="Imported metadata column identifying biological pairs."),
+    condition_column: str | None = typer.Option(None, "--condition-column", help="Advanced: imported metadata factor used for contrasts and the design formula (requires --metadata; default 'condition')."),
+    covariate: list[str] | None = typer.Option(None, "--covariate", help="Advanced: additional imported categorical metadata field (requires --metadata); repeat as needed."),
+    continuous_covariate: list[str] | None = typer.Option(None, "--continuous-covariate", help="Advanced: imported numeric adjustment variable (requires --metadata); repeat as needed."),
+    pair_id: str | None = typer.Option(None, "--pair-id", "--pairing-column", help="Biological pair column (paired_two_group only); with --metadata it must exist there."),
+    batch: bool | None = typer.Option(None, "--batch/--no-batch", help="Declare a known technical batch: the template gets a 'batch' column and the model adjusts for it. With --metadata, equivalent to --covariate batch."),
     execution_profile: str | None = typer.Option(None, "--execution-profile", help="Only local is supported."),
     cpus: int | None = typer.Option(None, "--cpus", help="Total local Nextflow CPU ceiling, not per-task CPUs."),
     memory_gb: int | None = typer.Option(None, "--memory-gb", help="Total local Nextflow memory ceiling in GiB, not per-task memory."),
@@ -541,7 +566,7 @@ def new_project(
 ) -> None:
     """Create a reviewed RNA-seq project interactively or from explicit flags."""
 
-    noninteractive = any(value is not None for value in (name, destination, species, input_type, fastq_samplesheet, counts, metadata, contrasts, layout, preprocessing, method, strandedness, reference_source, reference_root, reference_manifest, reference_fasta, reference_gtf, reference_transcript_fasta, reference_salmon_index, reference_hisat2_index, preset, design_type, condition_column, covariate, continuous_covariate, pair_id, execution_profile, cpus, memory_gb)) or scaffold or yes
+    noninteractive = any(value is not None for value in (name, destination, species, input_type, fastq_samplesheet, counts, metadata, contrasts, layout, preprocessing, method, strandedness, reference_source, reference_root, reference_manifest, reference_fasta, reference_gtf, reference_transcript_fasta, reference_salmon_index, reference_hisat2_index, preset, design_type, condition_column, covariate, continuous_covariate, pair_id, batch, execution_profile, cpus, memory_gb)) or scaffold or yes
     selected_managed_reference: LocalReference | None = None
     try:
         if not noninteractive and not _is_interactive_terminal():
@@ -584,28 +609,17 @@ def new_project(
                     if method == "hisat2_featurecounts":
                         reference_hisat2_index = Path(typer.prompt("Prepared HISAT2 index directory (blank if not built)", default="")) if typer.confirm("Is a HISAT2 index already prepared?", default=False) else None
             if input_type == "fastq":
-                preset = _wizard_choice("Analysis scope", [("qc", "Quantification + technical QC only"), ("L1", "Expression-level QC and exploratory analysis"), ("L2", "L1 plus differential expression (enrichment is opt-in: set analysis.enrichment in project.yaml)")], default="L1")
+                preset = _wizard_choice("Analysis scope", [("qc", "Quantification + technical QC only"), ("L1", "Expression-level QC and exploratory analysis (differential expression is set up later with `rnaseq design`)"), ("L2", "L1 plus differential expression (enrichment is opt-in: set analysis.enrichment in project.yaml)")], default="L1")
             else:
-                preset = _wizard_choice("Analysis scope", [("L1", "Expression-level QC and exploratory analysis"), ("L2", "L1 plus differential expression (enrichment is opt-in: set analysis.enrichment in project.yaml)")], default="L2")
+                preset = _wizard_choice("Analysis scope", [("L1", "Expression-level QC and exploratory analysis (differential expression is set up later with `rnaseq design`)"), ("L2", "L1 plus differential expression (enrichment is opt-in: set analysis.enrichment in project.yaml)")], default="L1")
             design_type = "two_group" if preset == "qc" else _wizard_choice("Experimental design", [("two_group", "Unpaired two-level condition"), ("paired_two_group", "Biologically paired two-level condition"), ("multi_group", "At least three condition levels")], default="two_group")
-            if design_type == "paired_two_group" and metadata is None:
+            if design_type == "paired_two_group":
                 pair_id = typer.prompt("Pairing metadata column", default="patient")
-            if preset != "qc" and metadata is not None:
-                fields_by_level, fields = _metadata_fields(metadata)
-                typer.echo("Imported metadata fields: " + "; ".join(f"{field}=[{', '.join(fields_by_level[field])}]" for field in fields))
-                condition_column = _wizard_choice("Condition/contrast field", [(field, f"levels: {', '.join(fields_by_level[field]) or 'none'}") for field in fields], default=fields[0])
-                remaining = [field for field in fields if field != condition_column]
-                covariate = []
-                continuous_covariate = []
-                if remaining and typer.confirm("Add a covariate to the design?", default=False):
-                    selected_covariate = _wizard_choice("Covariate", [(field, f"values: {', '.join(fields_by_level[field]) or 'none'}") for field in remaining], default=remaining[0])
-                    variable_type = _wizard_choice("Covariate type", [("categorical", "factor adjustment variable"), ("continuous", "finite numeric adjustment variable")], default="categorical")
-                    (continuous_covariate if variable_type == "continuous" else covariate).append(selected_covariate)
-                if design_type == "paired_two_group":
-                    candidates = [field for field in fields if field != condition_column]
-                    if not candidates:
-                        raise ProjectCreationError("Paired design needs a pairing field besides the condition field.")
-                    pair_id = _wizard_choice("Pairing metadata column", [(field, f"levels: {', '.join(fields_by_level[field]) or 'none'}") for field in candidates], default=candidates[0])
+            if preset != "qc":
+                # Only what cannot be read from the completed metadata is asked
+                # here: condition levels, batch levels and contrasts are
+                # discovered later by `rnaseq design`.
+                batch = typer.confirm("Is there a known technical batch (adds a 'batch' column and adjusts the model for it)?", default=False)
             capacity = detect_local_resource_capacity()
             preview = resolve_policy(AUTO, AUTO, DetectedResources(
                 capacity.logical_cpus,
@@ -638,29 +652,74 @@ def new_project(
             raise ProjectCreationError("paired_two_group requires an explicit --pair-id metadata column.")
         formula: str | None = None
         design_variables: dict[str, str] | None = None
-        if normalized_preset is not Preset.QC and metadata is not None and condition_column is not None:
+        template_batch = False
+        # No design option may be silently ignored: each one either takes
+        # effect or is rejected with the reason.
+        design_flags = [
+            flag for flag, value in (
+                ("--condition-column", condition_column), ("--covariate", covariate),
+                ("--continuous-covariate", continuous_covariate),
+            ) if value
+        ]
+        if normalized_preset is Preset.QC:
+            inapplicable = design_flags + (["--pair-id"] if pair_id else []) + (["--batch"] if batch else [])
+            if inapplicable:
+                raise ProjectCreationError(
+                    f"{', '.join(inapplicable)} {'does' if len(inapplicable) == 1 else 'do'} not apply to the qc preset, which has no statistical design."
+                )
+        if pair_id is not None and normalized_design is not DesignType.PAIRED_TWO_GROUP:
+            raise ProjectCreationError("--pair-id applies only to --design-type paired_two_group.")
+        if metadata is None and design_flags and normalized_preset is not Preset.QC:
+            hint = " For a technical batch use --batch (adds a 'batch' column to the template)." if "--covariate" in design_flags else ""
+            raise ProjectCreationError(
+                f"{', '.join(design_flags)} {'requires' if len(design_flags) == 1 else 'require'} --metadata "
+                f"(they describe an imported metadata file); the generated template always uses the standard 'condition' column.{hint}"
+            )
+        if normalized_preset is not Preset.QC and metadata is None:
+            template_batch = batch is True
+        if normalized_preset is not Preset.QC and metadata is not None:
             fields_by_level, available_fields = _metadata_fields(metadata)
-            categorical_covariates = covariate or []
-            continuous_covariates = continuous_covariate or []
+            selected_condition = condition_column
+            if selected_condition is None:
+                if "condition" not in available_fields:
+                    raise ProjectCreationError(
+                        "Imported metadata has no 'condition' column; name the contrast factor with --condition-column. "
+                        "Available fields: " + ", ".join(available_fields)
+                    )
+                selected_condition = "condition"
+            categorical_covariates = list(covariate or [])
+            continuous_covariates = list(continuous_covariate or [])
+            if batch is True and "batch" not in categorical_covariates:
+                categorical_covariates.append("batch")
+            if batch is False and "batch" in categorical_covariates:
+                raise ProjectCreationError("--no-batch conflicts with --covariate batch.")
             selected_covariates = [*categorical_covariates, *continuous_covariates]
-            required_fields = [*selected_covariates, condition_column]
-            if normalized_design is DesignType.PAIRED_TWO_GROUP:
-                if pair_id is None:
-                    raise ProjectCreationError("paired_two_group imported design requires --pair-id.")
+            if selected_condition in selected_covariates:
+                raise ProjectCreationError(f"{selected_condition!r} is the condition column and cannot also be a covariate.")
+            if selected_condition in continuous_covariates:
+                raise ProjectCreationError("--condition-column is a categorical contrast factor and cannot be continuous.")
+            if pair_id is not None and pair_id in selected_covariates:
+                raise ProjectCreationError(f"--pair-id {pair_id!r} is already part of the design and cannot also be a covariate.")
+            if pair_id is not None and pair_id == selected_condition:
+                raise ProjectCreationError("--pair-id cannot be the condition column.")
+            if normalized_design is DesignType.PAIRED_TWO_GROUP and pair_id is None:
+                raise ProjectCreationError("paired_two_group imported design requires --pair-id.")
+            required_fields = [*selected_covariates, selected_condition]
+            if pair_id is not None:
                 required_fields.insert(0, pair_id)
             missing_fields = [field for field in required_fields if field not in available_fields]
             if missing_fields:
-                raise ProjectCreationError("Selected design field(s) are not in imported metadata: " + ", ".join(missing_fields))
+                raise ProjectCreationError(
+                    "Selected design field(s) are not in imported metadata: " + ", ".join(missing_fields)
+                    + ". Available fields: " + ", ".join(available_fields)
+                )
             # Formula order is deterministic: pairing first, then covariates,
             # with the contrast factor last. Pairing identity itself is stored
             # explicitly and never inferred from this ordering.
             formula = "~ " + " + ".join(dict.fromkeys(required_fields))
-            if condition_column in continuous_covariates:
-                raise ProjectCreationError("--condition-column is a categorical contrast factor and cannot be continuous.")
-            if pair_id is not None and pair_id in continuous_covariates:
-                raise ProjectCreationError("--pair-id is categorical and cannot be listed as --continuous-covariate.")
             design_variables = {field: "categorical" for field in required_fields}
             design_variables.update({field: "continuous" for field in continuous_covariates})
+            typer.echo(f"Design from imported metadata: {formula}")
         normalized_layout = SequencingLayout(layout) if layout else (None if fastq_samplesheet else SequencingLayout.PAIRED_END)
         normalized_preprocessing = FastqPreprocessing(preprocessing or "raw")
         normalized_method = method or "salmon"
@@ -696,7 +755,7 @@ def new_project(
             if selected_managed_reference is not None
             else reference.get("source")
         )
-        review = {"Project": name, "Destination": destination, "Species": normalized_species.value, "Input": normalized_input.value, "Input handling": "scaffold — add data after project creation" if scaffold else "import supplied inputs", "Scope": normalized_preset.value, "Design": "not applicable for QC" if normalized_preset is Preset.QC else normalized_design.value, "Backend": normalized_method if normalized_input is InputType.FASTQ else "external raw counts", "Reference": review_reference, "Execution": f"local, {selected_cpus} CPUs / {selected_memory} GiB" if AUTO not in (selected_cpus, selected_memory) else f"local, CPUs={selected_cpus} / memory GiB={selected_memory} (auto = sized from the running machine)"}
+        review = {"Project": name, "Destination": destination, "Species": normalized_species.value, "Input": normalized_input.value, "Input handling": "scaffold — add data after project creation" if scaffold else "import supplied inputs", "Scope": normalized_preset.value, "Design": "not applicable for QC" if normalized_preset is Preset.QC else normalized_design.value, **({} if normalized_preset is Preset.QC else {"Technical batch": "yes (metadata template gets a 'batch' column)" if template_batch else ("yes (in model)" if formula is not None and "batch" in formula.replace("~", " ").replace("+", " ").split() else "no"), "Provisional model": formula or derive_design(normalized_design, pair_id, template_batch)[0], "Contrasts": "imported" if contrasts is not None else "set later by `rnaseq design`"}), "Backend": normalized_method if normalized_input is InputType.FASTQ else "external raw counts", "Reference": review_reference, "Execution": f"local, {selected_cpus} CPUs / {selected_memory} GiB" if AUTO not in (selected_cpus, selected_memory) else f"local, CPUs={selected_cpus} / memory GiB={selected_memory} (auto = sized from the running machine)"}
         _new_summary(review)
         if not yes and not typer.confirm("Create this project?", default=True):
             if not noninteractive and typer.confirm("Revise choices?", default=True):
@@ -709,13 +768,13 @@ def new_project(
                     reference_source=None, reference_root=None, reference_manifest=None,
                     reference_fasta=None, reference_gtf=None, reference_transcript_fasta=None,
                     reference_salmon_index=None, reference_hisat2_index=None, preset=None,
-                    design_type=None, condition_column=None, covariate=None, continuous_covariate=None, pair_id=None,
+                    design_type=None, condition_column=None, covariate=None, continuous_covariate=None, pair_id=None, batch=None,
                     execution_profile=None, cpus=None, memory_gb=None,
                     scaffold=False, yes=False,
                 )
             typer.echo("Project creation cancelled; no project was written.")
             return
-        target = create_project(project_name=name, destination=destination, species=normalized_species, preset=normalized_preset, design_type=normalized_design, input_type=normalized_input, layout=normalized_layout, preprocessing=normalized_preprocessing, strandedness=normalized_strand, quantification_method=normalized_method, reference=reference, fastq_samplesheet=fastq_samplesheet, counts_file=counts, metadata_file=metadata, contrasts_file=contrasts, scaffold=scaffold, formula=formula, pair_id=pair_id, design_variables=design_variables, execution=execution)
+        target = create_project(project_name=name, destination=destination, species=normalized_species, preset=normalized_preset, design_type=normalized_design, input_type=normalized_input, layout=normalized_layout, preprocessing=normalized_preprocessing, strandedness=normalized_strand, quantification_method=normalized_method, reference=reference, fastq_samplesheet=fastq_samplesheet, counts_file=counts, metadata_file=metadata, contrasts_file=contrasts, scaffold=scaffold, formula=formula, pair_id=pair_id, design_variables=design_variables, execution=execution, batch=template_batch)
     except (ValueError, ProjectCreationError) as exc:
         typer.echo(f"ERROR: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -725,7 +784,12 @@ def new_project(
 
     typer.echo(f"Created project: {target}")
     if scaffold:
-        typer.echo("This is an incomplete scaffold. Add valid inputs, metadata, and contrasts, then run: rnaseq validate PROJECT")
+        typer.echo("This is an incomplete scaffold. Add valid inputs and complete metadata.csv, then run: rnaseq validate PROJECT")
+        if normalized_preset is not Preset.QC:
+            header = ",".join(("sample_id", *derive_design(normalized_design, pair_id, template_batch)[2])) if metadata is None else "(imported)"
+            typer.echo(f"Next steps:\n  1. Fill {target / 'metadata.csv'} (columns: {header}).")
+            typer.echo("  2. rnaseq validate PROJECT, then run L1 for QC: rnaseq run PROJECT --case-id CASE-ID")
+            typer.echo("  3. After reviewing L1, set up differential expression: rnaseq design PROJECT, then run L2.")
     elif normalized_input is InputType.FASTQ:
         typer.echo("Imported FASTQs were copied into input/fastq; run rnaseq validate PROJECT to check readiness.")
     else:
@@ -744,6 +808,144 @@ def validate_command(project_dir: Path) -> None:
     typer.echo(render_validation_report(report))
     if not report.is_valid:
         raise typer.Exit(code=1)
+
+
+def _latest_successful_run(project: Path) -> str | None:
+    """Return ``CASE-ID/RUN-ID`` of the newest successful case run, if any."""
+
+    candidates: list[tuple[str, str]] = []
+    for state in (project / "runs").glob("*/*/run_state.json"):
+        try:
+            if json.loads(state.read_text(encoding="utf-8")).get("status") == "SUCCESS":
+                candidates.append((state.parent.name, state.parent.parent.name))
+        except (OSError, ValueError):
+            continue
+    if not candidates:
+        return None
+    run_id, case_id = max(candidates)
+    return f"{case_id}/{run_id}"
+
+
+def _show_design_summary(report: ValidationReport, proposal: Any) -> None:
+    config = report.config
+    assert config is not None and report.metadata is not None
+    typer.echo(f"Design setup for {config.project.id}")
+    typer.echo("-" * 24)
+    typer.echo(f"Design type: {config.design.type.value}")
+    origin = "derived from the design choices" if proposal.standard_formula else "custom formula kept as written"
+    typer.echo(f"Model: {proposal.formula}  ({origin})")
+    ordering = "frozen order" if config.design.condition_order else "order of first appearance in metadata.csv"
+    typer.echo(f"{proposal.factor.capitalize()} levels ({ordering}): " + ", ".join(f"{level} (n={proposal.counts[level]})" for level in proposal.levels))
+    for line in _render_batch_contingency(report):
+        typer.echo(line)
+    dimensions = design_dimensions(report)
+    if dimensions is not None:
+        samples, coefficients = dimensions
+        typer.echo(f"Residual degrees of freedom: {samples} samples - {coefficients} model coefficients = {samples - coefficients}")
+    for issue in report.warnings:
+        typer.echo(f"WARNING: {issue.message}")
+
+
+def _show_contrasts(proposal: Any) -> None:
+    for contrast in proposal.contrasts:
+        typer.echo(f"  {contrast.contrast_id}: {contrast.numerator} vs {contrast.denominator}")
+        typer.echo(f"      log2FC > 0 = higher in {contrast.numerator}; log2FC < 0 = higher in {contrast.denominator}")
+
+
+@app.command("design")
+def design_command(
+    project_dir: Path,
+    condition_order: str | None = typer.Option(None, "--condition-order", help="Comma-separated condition levels, reference (earliest) first. Default: order of first appearance in metadata.csv."),
+    swap: bool = typer.Option(False, "--swap", help="Two-level designs: reverse the proposed contrast direction."),
+    force: bool = typer.Option(False, "--force", help="Replace an existing non-empty contrasts.csv."),
+    yes: bool = typer.Option(False, "--yes", help="Accept the proposal without prompting."),
+) -> None:
+    """Propose and confirm L2 contrasts from the completed metadata, then prepare the project for L2."""
+
+    try:
+        report = validate_project(project_dir)
+        config = report.config
+        if config is None:
+            typer.echo(render_validation_report(report), err=True)
+            raise typer.Exit(code=1)
+        if config.project.preset is Preset.QC:
+            typer.echo("ERROR: This project's scope is QC-only; there is no statistical design to configure.", err=True)
+            raise typer.Exit(code=1)
+        # An L2 project whose contrasts are still empty is exactly what this
+        # command completes, so that one finding is expected here.
+        blocking = [issue for issue in report.errors if issue.code != "missing_contrast_rows"]
+        if blocking:
+            typer.echo("ERROR: The metadata/design is not valid yet; fix the following and re-run `rnaseq design`:", err=True)
+            for issue in blocking:
+                typer.echo(f"  - {issue.message}", err=True)
+            raise typer.Exit(code=1)
+        existing = report.contrasts.contrasts if report.contrasts is not None else ()
+        if existing and not force:
+            typer.echo(f"ERROR: contrasts.csv already defines {len(existing)} contrast(s); it was not changed:", err=True)
+            for contrast in existing:
+                typer.echo(f"  {contrast.contrast_id}: {contrast.numerator} vs {contrast.denominator}", err=True)
+            typer.echo("Edit it directly (advanced), or re-run with --force to replace it with the proposal.", err=True)
+            raise typer.Exit(code=1)
+        if not yes and not _is_interactive_terminal():
+            raise ProjectCreationError("rnaseq design needs an interactive terminal, or --yes to accept the proposal.")
+        order = tuple(level.strip() for level in condition_order.split(",")) if condition_order else None
+        proposal = build_proposal(report, condition_order=order, swap=swap)
+        _show_design_summary(report, proposal)
+        # The validator only warns (L1 QC stays available); L2 cannot run without residual degrees of freedom.
+        no_df = residual_degrees_of_freedom_message(report.metadata.rows, config.design.formula, dict(report.design_variable_types)) if report.metadata else None
+        if no_df is not None:
+            raise DesignSetupError(no_df + " Add replicates or simplify the design before configuring L2.")
+        if existing:
+            typer.echo("These existing contrasts will be replaced:")
+            for contrast in existing:
+                typer.echo(f"  {contrast.contrast_id}: {contrast.numerator} vs {contrast.denominator}")
+        two_level = len(proposal.levels) == 2
+        while True:
+            typer.echo("Proposed contrast:" if two_level else f"Proposed contrasts ({len(proposal.contrasts)}, every pair; later level vs earlier level):")
+            _show_contrasts(proposal)
+            if yes:
+                break
+            if two_level:
+                answer = typer.prompt("Accept? (y = write it, swap = reverse the direction, n = cancel)", default="y").strip().lower()
+                if answer in {"y", "yes"}:
+                    break
+                if answer in {"s", "swap"}:
+                    proposal = build_proposal(report, condition_order=proposal.levels, swap=not proposal.swapped)
+                    continue
+                if answer in {"n", "no"}:
+                    typer.echo("No changes were written.")
+                    return
+                typer.echo("Please answer y, n, or swap.")
+            else:
+                if typer.confirm(f"Write these {len(proposal.contrasts)} contrasts and prepare L2?", default=True):
+                    break
+                typer.echo("No changes were written. Use --condition-order to change the order, or edit contrasts.csv.")
+                return
+        loaded = report.loaded
+        assert loaded is not None
+        previous = write_design(loaded.root, loaded.config_path, loaded.contrasts_path, proposal)
+        after = validate_project(project_dir)
+        if not after.is_valid:
+            rollback_design(loaded.config_path, loaded.contrasts_path, previous)
+            typer.echo("ERROR: The resulting L2 project failed validation; nothing was changed:", err=True)
+            for issue in after.errors:
+                typer.echo(f"  - {issue.message}", err=True)
+            raise typer.Exit(code=1)
+    except typer.Exit:
+        raise
+    except (DesignSetupError, ProjectCreationError) as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except (OSError, UnicodeError) as exc:
+        typer.echo(f"SYSTEM ERROR: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"Wrote {len(proposal.contrasts)} contrast(s) to contrasts.csv, froze design.condition_order ({', '.join(proposal.levels)}), and set the scope to L2.")
+    typer.echo("L2 validation: " + after.state)
+    reuse = _latest_successful_run(Path(project_dir))
+    hint = f" --reuse-upstream {reuse}" if reuse else ""
+    typer.echo(f"Next: rnaseq run {project_dir} --case-id CASE-ID{hint}")
+    if reuse:
+        typer.echo("(--reuse-upstream is accepted only when the frozen upstream inputs match.)")
 
 
 @app.command("plan")

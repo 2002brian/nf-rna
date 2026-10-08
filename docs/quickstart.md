@@ -27,22 +27,56 @@ Releases `v1.1.2` through `v1.2.1` used a Docker execution image published as
 
 ## Create and run a project
 
+The normal journey is template-first:
+
+```text
+rnaseq new -> fill metadata.csv -> rnaseq validate -> run L1 -> review QC -> rnaseq design PROJECT -> run L2
+```
+
 ```bash
 mkdir -p ~/projects/rnaseq-projects
 cd ~/projects/rnaseq-projects
 rnaseq new
 cd <new-project>
-# Add FASTQs to input/fastq/, or a count matrix to input/counts.csv.
-# Complete metadata.csv and contrasts.csv.
+# Add FASTQs to input/fastq/, or a count matrix to input/counts.csv, and complete metadata.csv.
 rnaseq validate .
 rnaseq plan .
 rnaseq doctor .
-rnaseq run . --case-id CASE-001 --profile local --yes
+rnaseq run . --case-id L1-001 --profile local --yes   # L1: QC and exploratory analysis
 rnaseq status .          # add --watch to follow a running case
-rnaseq clean . --case-id CASE-001 --run <run-id>   # after SUCCESS: remove the disposable Nextflow work
+# Review the L1 QC (sample boxplots, PCA), then confirm the model and contrasts for L2:
+rnaseq design .
+rnaseq run . --case-id L2-001 --profile local --yes   # L2: differential expression
+rnaseq clean . --case-id L1-001 --run <run-id>   # after SUCCESS: remove the disposable Nextflow work
 ```
 
 The wizard writes `project.yaml`, `metadata.csv`, `contrasts.csv`, `input/`, and `planning/`; it does not import data unless explicit import flags are supplied. FASTQ projects require an execution-ready reference.
+
+### Metadata templates
+
+The wizard asks for the design (two-group, paired two-group, multi-group), the pairing column for paired designs, and one question: is there a known technical batch? It does not ask for condition levels, batch levels, reference levels, or contrasts; those are discovered from the completed metadata. The standard column names are `sample_id`, `condition`, and `batch`:
+
+| Design | Known batch | `metadata.csv` header |
+|---|---|---|
+| two-group / multi-group | no | `sample_id,condition` |
+| two-group / multi-group | yes | `sample_id,condition,batch` |
+| paired | no | `sample_id,<pair_id>,condition` |
+| paired | yes | `sample_id,<pair_id>,condition,batch` |
+
+`contrasts.csv` starts header-only (`contrast_id,factor,numerator,denominator`). The provisional model written to `project.yaml` is `~ condition`, `~ batch + condition`, `~ <pair_id> + condition`, or `~ <pair_id> + batch + condition`.
+
+### L1 is QC, not batch correction
+
+L1 runs without contrasts. It uses the provisional model only as the DESeq2 object its normalization and QC need. A `batch` term in that model does not mean the plotted values are batch-corrected: no `removeBatchEffect` and no corrected expression matrix is created, and the raw-count boxplot, VST boxplot and PCA are uncorrected. Formal differential inference happens in L2.
+
+### Confirming L2 with `rnaseq design`
+
+`rnaseq design .` validates the model (full rank, no perfect confounding of batch and condition, and residual degrees of freedom after categorical variables are expanded), prints the batch-by-condition sample counts, and proposes contrasts from the condition levels in the order they first appear in `metadata.csv`:
+
+- two-group: `Treatment_vs_Control` (later vs earlier; log2FC > 0 means higher in Treatment); answer `swap` to reverse it (only the contrast changes; `design.condition_order` keeps the first-appearance order);
+- multi-group: all pairwise contrasts, later vs earlier (`DrugA_vs_Control`, `DrugB_vs_Control`, `DrugB_vs_DrugA`).
+
+Nothing is written until you confirm. Confirmation writes `contrasts.csv`, freezes `design.condition_order` in `project.yaml`, and sets the scope to L2. An existing non-empty `contrasts.csv` is kept unless you pass `--force`; `--condition-order A,B,C` sets the order explicitly and `--yes` accepts non-interactively. For custom metadata, covariates, contrasts, or formulas use the explicit import flags (`--metadata`, `--contrasts`, `--condition-column`, `--covariate`, `--continuous-covariate`, `--pair-id`), which are never silently ignored.
 
 ## References and inputs
 

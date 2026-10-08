@@ -12,6 +12,7 @@ from typing import Any
 
 import yaml
 
+from rnaseq.design_matrix import residual_degrees_of_freedom_message
 from rnaseq.models import normalize_enrichment_selection
 
 
@@ -271,6 +272,21 @@ def _guard_l2_biological_replication(metadata_path: Path, contrasts: list[dict[s
             )
 
 
+def _guard_l2_residual_degrees_of_freedom(metadata_path: Path, formula: str, variable_types: dict[str, str]) -> None:
+    """Reject an L2 model with no residual degrees of freedom before DESeq2 would fail on it.
+
+    The count comes from the expanded model matrix (a three-level batch costs two
+    columns), not from the number of formula terms.  The validator only warns so
+    that L1 QC stays available.
+    """
+
+    with metadata_path.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    message = residual_degrees_of_freedom_message(rows, formula, variable_types)
+    if message is not None:
+        raise ValueError(f"{message} L1 QC remains available; L2 was not launched.")
+
+
 def _required_frozen_annotation(contract: dict[str, Any], kind: str) -> dict[str, Any]:
     """Read only the immutable annotation snapshot required by one backend."""
 
@@ -312,6 +328,7 @@ def l2_config(contract_path: Path, inputs: Path, l1: Path, output: Path) -> dict
     metadata = _staged_file(root, manifest.get("metadata"), "metadata")
     contrasts = _contrasts(_staged_file(root, manifest.get("contrasts"), "contrasts"))
     _guard_l2_biological_replication(metadata, contrasts)
+    _guard_l2_residual_degrees_of_freedom(metadata, project["design"]["formula"], _validated_design_variable_types(contract, project))
     return {
         **_source_config(contract, inputs),
         "metadata": str(metadata),

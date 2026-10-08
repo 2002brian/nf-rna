@@ -36,7 +36,7 @@ L1 提供表現品質控制與探索。L2 必須明確選擇：它會對已宣�
 
 - **FASTQ：** 將 reads 放入 `input/fastq/`。FASTQ 專案會使用所選的 Salmon/tximport 或 HISAT2 + featureCounts route 進行 quantification，並需要與該 route 相容且 execution-ready 的 reference。
 - **Count matrix：** 若 quantification 已在其他地方完成，且希望 nf-rna 執行已驗證的 downstream analysis，請將 imported gene-count matrix 放入 `input/counts.csv`。
-- **Design 檔案：** `metadata.csv` 提供 sample ID 與 design variable；`contrasts.csv` 宣告 L2 使用的 directional contrast。
+- **Design 檔案：** `metadata.csv` 提供 sample ID 與 design variable；`contrasts.csv` 宣告 L2 使用的 directional contrast。`rnaseq new` 只寫入範本（標準欄位名稱的 header-only `metadata.csv` 與 header-only `contrasts.csv`），`rnaseq design` 會依你填好的 metadata 產生 `contrasts.csv`。
 - **Reference：** FASTQ 專案明確宣告所選 reference route。reference identity 與 checksum 會在 run 中驗證並凍結，而不會從本機檔案推測。
 
 ### 輸出
@@ -103,22 +103,68 @@ release，但 publication workflow 在 image build 或 push 前停止，因此�
 
 ## 快速開始
 
+標準流程以範本為起點：wizard 只寫入範本，你填寫 `metadata.csv`，先執行 L1 做 QC，再由 `rnaseq design` 準備 L2。
+
+```text
+rnaseq new
+  -> 填寫 metadata.csv
+  -> rnaseq validate
+  -> 執行 L1
+  -> 檢視 QC
+  -> rnaseq design PROJECT
+  -> 執行 L2
+```
+
 ```bash
 mkdir -p ~/projects/rnaseq-projects
 cd ~/projects/rnaseq-projects
-rnaseq new
+rnaseq new                 # 選擇實驗設計，並回答是否有已知的技術性 batch
 cd <new-project>
-# 將 FASTQ 放入 input/fastq/，或將 count matrix 放入 input/counts.csv。
-# 完成 metadata.csv 與 contrasts.csv。
+# 將 FASTQ 放入 input/fastq/，或將 count matrix 放入 input/counts.csv，並完成 metadata.csv。
 rnaseq validate .
 rnaseq plan .
 rnaseq doctor .
-rnaseq run . --case-id CASE-001 --profile local --yes
+rnaseq run . --case-id L1-001 --profile local --yes     # L1：QC 與探索性分析
+# 檢視 L1 QC（sample boxplot、PCA、library size），再設定差異表現分析：
+rnaseq design .            # 讀取 metadata.csv、顯示 model、提出 contrast 並請你確認
+rnaseq run . --case-id L2-001 --profile local --yes     # L2：差異表現分析
 rnaseq status .            # 最新 run 的執行儀表板
 rnaseq status . --watch    # 持續更新直到 run 結束（Ctrl-C 只停止監看）
 rnaseq status . --all      # 每個 run 一行的歷史摘要
-rnaseq clean . --case-id CASE-001 --run <run-id>   # 釋放已完成 run 的 Nextflow work
+rnaseq clean . --case-id L1-001 --run <run-id>   # 釋放已完成 run 的 Nextflow work
 ```
+
+### wizard 詢問的內容與範本
+
+`rnaseq new` 只詢問之後無法從 metadata 讀取的資訊：實驗設計（two-group、paired two-group、multi-group）、paired 設計的配對欄位，以及一個是／否問題：*是否有已知的技術性 batch？* 它不會詢問 condition levels、batch levels、reference level 或 contrasts。`metadata.csv` 的 header 依回答產生：
+
+| 設計 | 已知 batch | `metadata.csv` header | 暫定 model |
+|---|---|---|---|
+| two-group／multi-group | 否 | `sample_id,condition` | `~ condition` |
+| two-group／multi-group | 是 | `sample_id,condition,batch` | `~ batch + condition` |
+| paired | 否 | `sample_id,<pair_id>,condition` | `~ <pair_id> + condition` |
+| paired | 是 | `sample_id,<pair_id>,condition,batch` | `~ <pair_id> + batch + condition` |
+
+`contrasts.csv` 一開始只有 header：`contrast_id,factor,numerator,denominator`。兩個檔案都是可直接開啟編輯的一般 CSV。非互動模式可用 `--design-type`、`--pair-id` 與 `--batch/--no-batch`。
+
+### L1：QC 與探索性分析
+
+L1 不需要 contrasts，會產生 raw-count 與 VST sample boxplot、PCA、sample correlation 與 library-size QC。L1 僅用於 QC／探索：
+
+- 暫定 model 含有 `batch` **不代表**圖中數值已做 batch correction。不會建立 `removeBatchEffect` 或校正後的表現矩陣；boxplot 與 PCA 一律是未校正的，`batch` 欄位只作為標註。
+- nf-rna 不會用這些圖決定 model 是否納入 batch；已知 batch 由你在建立專案時宣告。
+- 正式的差異推論在 L2 進行。
+
+### `rnaseq design`：從 L1 到 L2
+
+檢視 L1 之後，`rnaseq design PROJECT` 會讀取填好的 `metadata.csv` 並準備 L2：
+
+- 寫入任何檔案之前先驗證設計：model matrix 必須 full rank（batch 與 condition 不可完全 confounded；paired 設計中 batch 必須在配對內有變化），且 categorical variable 展開後仍須有 residual degrees of freedom。部分 confounding 與只有單一樣本的 batch 會以警告提示，並顯示 batch × condition 的樣本數。
+- **Two-group：** 依 condition levels 在 `metadata.csv` 中首次出現的順序，提出「後者 vs 前者」，例如 `Treatment_vs_Control`（log2FC > 0 代表 Treatment 較高）。輸入 `y` 確認、`swap` 反轉方向、`n` 不做任何變更（非互動可用 `--yes`、`--swap`）。`swap` 只改變 `contrasts.csv` 中的 contrast（方向以它為準）；`design.condition_order` 維持首次出現順序（或 `--condition-order` 指定的順序）。
+- **Multi-group：** 依首次出現順序產生所有成對 contrast（後者 vs 前者）。`Control, DrugA, DrugB` 會得到 `DrugA_vs_Control`、`DrugB_vs_Control`、`DrugB_vs_DrugA`；k 個 level 共 k(k-1)/2 個 contrast。沒有逐一挑選比較的介面，要移除比較請編輯 `contrasts.csv`。各 contrast 的 adjusted p-value 不會跨 contrast 校正。
+- 可用 `--condition-order Control,DrugA,DrugB` 明確指定順序（reference level 在前）。
+- 確認後才會寫入 `contrasts.csv`、將順序凍結為 `project.yaml` 的 `design.condition_order`（之後重新排序 metadata 列不會翻轉 contrast 方向），並把 scope 設為 `L2`。`project.yaml` 中的 formula 維持推導結果：`~ batch + condition`，paired 設計為 `~ <pair_id> + batch + condition`。
+- 既有的非空 `contrasts.csv` 不會被覆寫，除非加上 `--force`。QC-only 專案與 metadata／design 無效的專案會被拒絕；已設為 L2 但 contrasts 為空的專案可以使用。
 
 最終結果位於 `runs/<case-id>/<run-id>/delivery/`。每個 run 的 Nextflow work 目錄是可丟棄的中間資料（FASTQ run 常達數百 GB），會保留到你以 `rnaseq clean` 明確移除為止；見 [Runtime](docs/runtime.md#nextflow-work-directories-and-rnaseq-clean)。新專案預設依硬體自動設定 CPU／記憶體上限（`execution.max_cpus: auto`、`execution.max_memory_gb: auto`）；`project.yaml` 中明確指定的整數上限會被保留。
 
@@ -140,7 +186,9 @@ design:
 
 支援的 additive 範例包括 `~ condition`、`~ age + condition`、`~ batch + condition` 與 `~ batch + age + condition`。contrast 仍是 categorical 且有方向性，例如 `Treatment_vs_Control,condition,Treatment,Control`；continuous variable 只會調整估計值，不能作為 numerator/denominator contrast。
 
-使用 `rnaseq new` 匯入 metadata 時，categorical adjustment 用 `--covariate batch`，numeric adjustment 用 `--continuous-covariate age`；wizard 對每個選取的 covariate 也會詢問相同的型別。
+### 進階：匯入 metadata、自訂 covariate、contrast 與 formula
+
+簡易 wizard 只處理 `condition` 與可選的 `batch`。其他情況請以明確 flag 匯入自己的檔案（僅限 flag；wizard 不會匯入）：`--metadata`、`--contrasts`、`--condition-column`、categorical adjustment 用 `--covariate batch`、numeric adjustment 用 `--continuous-covariate age`，以及 `--pair-id`。搭配 `--metadata` 時，`--batch` 等同 `--covariate batch`。這些選項絕不會被默默忽略：沒有 `--metadata` 時會被拒絕並說明原因；metadata 沒有 `condition` 欄位時必須指定 `--condition-column`。匯入的 contrasts 會被保留，除非加上 `--force`，`rnaseq design` 不會取代它；非標準推導的 formula 會維持原樣。
 
 已知的 batch effect 應放入 DESeq2 design（`~ batch + condition`），而不是先修改 raw count matrix。nf-rna 會保留原始 counts 進行 inferential analysis、在 provenance 和 report 記錄 typed design，並在 VST exploratory QC 提供 batch metadata（若 `batch` 宣告為 categorical，另輸出 batch-colored PCA）。continuous effect 的 hypothesis test 不屬於本 milestone。
 
