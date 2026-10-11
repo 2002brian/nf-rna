@@ -4,6 +4,8 @@ This guide is for production users on Linux x86-64 or Windows WSL2. Install Pyth
 
 ## Install a released nf-rna version
 
+The latest stable release is `v1.3.0`. This guide describes the current development version on `main`: the template-first lifecycle, `rnaseq design`, upstream reuse across it, and L1 sample-distribution QC are not part of `v1.3.0` and will ship in the next release (see [Unreleased](../CHANGELOG.md#unreleased)). With `v1.3.0`, follow the documentation at that tag; to use the development version now, see [Development installation](development.md).
+
 nf-rna is installed from Git tags; it is not published to PyPI. Installing from
 Git lets pip record the exact source commit, which every run records; nf-rna
 refuses to run from an install without a commit. Replace `X.Y.Z` with the
@@ -47,6 +49,7 @@ rnaseq status .          # add --watch to follow a running case
 # Review the L1 QC (sample boxplots, PCA), then confirm the model and contrasts for L2:
 rnaseq design .
 rnaseq run . --case-id L2-001 --profile local --yes   # L2: differential expression
+# FASTQ projects: add --reuse-upstream L1-001/<run-id> to reuse the L1 quantification (see below)
 rnaseq clean . --case-id L1-001 --run <run-id>   # after SUCCESS: remove the disposable Nextflow work
 ```
 
@@ -54,7 +57,7 @@ The wizard writes `project.yaml`, `metadata.csv`, `contrasts.csv`, `input/`, and
 
 ### Metadata templates
 
-The wizard asks for the design (two-group, paired two-group, multi-group), the pairing column for paired designs, and one question: is there a known technical batch? It does not ask for condition levels, batch levels, reference levels, or contrasts; those are discovered from the completed metadata. The standard column names are `sample_id`, `condition`, and `batch`:
+The wizard asks for the analysis scope, defaulting to `L1` (FASTQ projects can also choose `qc`; non-interactively, `--preset`); `rnaseq design` later moves an L1 project to L2. It then asks for the design (two-group, paired two-group, multi-group), the pairing column for paired designs, and one question: is there a known technical batch? It does not ask for condition levels, batch levels, reference levels, or contrasts; those are discovered from the completed metadata. The standard column names are `sample_id`, `condition`, and `batch`:
 
 | Design | Known batch | `metadata.csv` header |
 |---|---|---|
@@ -69,6 +72,8 @@ The wizard asks for the design (two-group, paired two-group, multi-group), the p
 
 L1 runs without contrasts. It uses the provisional model only as the DESeq2 object its normalization and QC need. A `batch` term in that model does not mean the plotted values are batch-corrected: no `removeBatchEffect` and no corrected expression matrix is created, and the raw-count boxplot, VST boxplot and PCA are uncorrected. Formal differential inference happens in L2.
 
+The two L1 boxplots compare sample distributions: `boxplot_log2_raw_counts` shows log2(raw count + 1) before normalization (depth and composition differences), and `boxplot_vst` shows the blind VST values used by PCA and correlation (whether normalization aligned the samples). `sample_distribution_qc.tsv` records each sample's Tukey box statistics for both.
+
 ### Confirming L2 with `rnaseq design`
 
 `rnaseq design .` validates the model (full rank, no perfect confounding of batch and condition, and residual degrees of freedom after categorical variables are expanded), prints the batch-by-condition sample counts, and proposes contrasts from the condition levels in the order they first appear in `metadata.csv`:
@@ -77,6 +82,22 @@ L1 runs without contrasts. It uses the provisional model only as the DESeq2 obje
 - multi-group: all pairwise contrasts, later vs earlier (`DrugA_vs_Control`, `DrugB_vs_Control`, `DrugB_vs_DrugA`).
 
 Nothing is written until you confirm. Confirmation writes `contrasts.csv`, freezes `design.condition_order` in `project.yaml`, sets the scope to L2, and refreshes the planning artifacts (so `rnaseq run` does not report a stale plan; you do not need to re-run `rnaseq plan`). An existing non-empty `contrasts.csv` is kept unless you pass `--force`; `--condition-order A,B,C` sets the order explicitly and `--yes` accepts non-interactively. For custom metadata, covariates, contrasts, or formulas use the explicit import flags (`--metadata`, `--contrasts`, `--condition-column`, `--covariate`, `--continuous-covariate`, `--pair-id`), which are never silently ignored.
+
+### Reusing L1 upstream results (FASTQ projects)
+
+For a FASTQ project (Salmon/tximport or HISAT2 + featureCounts), the L2 run can reuse the upstream quantification of a successful L1 run instead of repeating it:
+
+```bash
+rnaseq run . --case-id L2-001 --reuse-upstream L1-001/<run-id> --yes
+```
+
+`<run-id>` is listed in the RUN column of `rnaseq status . --all`. Compatibility checks must pass:
+
+- the source must be a SUCCESS run of the same project with a validated upstream handoff;
+- its frozen nf-core parameters, Nextflow config, and samplesheet must match the new run;
+- its input, upstream, and reference identity must match the new run.
+
+Otherwise the new run fails with an incompatibility error and no upstream results are copied. Scope, design, metadata, and contrasts may differ, so the changes made by `rnaseq design` do not block reuse. Results are copied from the durable L1 run record, so `rnaseq clean` on the L1 run does not prevent reuse. Raw-count projects have no upstream stage and do not need this option.
 
 ## References and inputs
 

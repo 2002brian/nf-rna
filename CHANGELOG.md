@@ -2,6 +2,43 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+Changes on `main` since `v1.3.0`. Unless stated otherwise, DESeq2, tximport, nf-core/rnaseq 3.26.0, contrast semantics, enrichment methods, and scientific result tables are unchanged.
+
+### Template-first project lifecycle
+
+- `rnaseq new` now writes templates only: a `metadata.csv` header derived from the design choices (`sample_id,condition`, plus `batch` for a known technical batch and the pairing column for paired designs) and a header-only `contrasts.csv`. The provisional model is derived from the same choices. The wizard's analysis scope defaults to L1, and its L2 option states that enrichment is opt-in.
+- New `rnaseq design PROJECT` reads the completed metadata, validates the design, and proposes contrasts for confirmation: later-vs-earlier for two groups (with `swap`), and every pairwise contrast in first-appearance order for multi-group designs (`--condition-order` overrides the order). On confirmation it writes `contrasts.csv`, freezes `design.condition_order`, sets the scope to L2, and regenerates the planning artifacts in the same transaction, so `rnaseq run` does not report a stale plan. Existing non-empty contrasts need `--force`; QC-only and invalid projects are refused.
+- L1 validates and runs with an empty `contrasts.csv`; contrasts are required only for L2.
+- New design validation: residual degrees of freedom from the expanded model matrix (a warning at validation, refused by `rnaseq design` and the L2 launch), clearer explanations of confounded batch, and warnings for partially confounded or single-sample batches, unused batch columns, and wrong-case column names. `rnaseq validate` prints batch-by-condition counts.
+- Design flags are never silently ignored: `--covariate`, `--continuous-covariate`, and `--condition-column` without `--metadata`, `--pair-id` without a paired design, and design flags with the QC scope are errors.
+
+### L1-to-L2 upstream reuse
+
+- `rnaseq run --reuse-upstream CASE-ID/RUN-ID` now works across the L1 → `rnaseq design` → L2 change for FASTQ projects (Salmon/tximport and HISAT2 + featureCounts). The frozen input manifest is compared only on what determines the upstream result: input file identities, upstream configuration, reference, and pipeline name and version. Scope, design, metadata, and contrasts may differ. The frozen nf-core parameters and local config remain byte-compared, the frozen samplesheet is now byte-compared too, and an unreadable manifest is never treated as compatible.
+
+### L1 QC and figures
+
+- L1 adds per-sample distribution boxplots of log2(raw count + 1) (`boxplot_log2_raw_counts`) and of blind VST values (`boxplot_vst`), with Tukey box statistics in `sample_distribution_qc.tsv`. Boxes follow the L1/PCA sample order and are filled by condition; a complete `batch` column is shown as an annotation row, never as a correction. The figures are included in the figure manifest, the delivery package, and the L1 and combined HTML reports. The PCA panel no longer collapses for two-sample projects.
+- All R figures go through a central figure policy (fonts, typography, Okabe–Ito group colours, appropriate sequential/diverging scales) and are exported as PNG, 300 dpi TIFF, and PDF; delivery adds `figures/pdf` and per-module `figure_manifest.json`. Row z-scores keep undefined values as NA.
+- PCA sample labels are placed with ggrepel so tight clusters stay legible; ggrepel is now part of the downstream runtime package probe. DEG heatmap titles are compact and no longer run past the page edge.
+- GO and KEGG ORA dotplots carry a subtitle naming the comparison and the foreground gene set (significant, or higher in the numerator/denominator), and the report shows the correct KEGG ORA term counts.
+
+### Execution and operations
+
+- `rnaseq status` is an execution dashboard: route-specific pipeline stages, per-sample progress, running tasks with elapsed time, and the configured resource ceiling. `--watch` follows one run until it finishes, and `--all` lists one line per run. It remains read-only.
+- New `rnaseq clean PROJECT --case-id CASE --run RUN` removes one finished run's disposable Nextflow work directory, located only from the run's recorded provenance. SUCCESS runs are eligible; FAILED and INTERRUPTED runs need `--force`; running runs are always refused. `--dry-run` shows the target. Cleanup is never automatic.
+- `RNASEQ_WORK_ROOT` (an absolute path) relocates only the Nextflow task work directory to `<RNASEQ_WORK_ROOT>/<case>/<run>/work`; the launch directory and shared caches stay in place. `rnaseq doctor` reports the work root and its free space separately.
+
+### Runtime
+
+- Retired the remaining Docker runtime support: `rnaseq new` no longer writes `runtime.execution_image` (existing values still load and are ignored), macOS is reported as unsupported, retry of runs frozen for the Docker backend is refused, and `Dockerfile`, `environment.docker.yml`, and `.dockerignore` are removed from the tree (they remain at the `v1.2.1` tag). Linux Nextflow commands are unchanged.
+
+### Tests
+
+- Status timing tests are timezone-independent, and the publication figure delivery contract is enforced by tests.
+
 ## 1.3.0 — 2026-09-26
 
 Runtime release. The supported runtime is now **Linux x86-64 or Windows WSL2 with Nextflow and Conda**; Docker is no longer required or used. nf-core/rnaseq 3.26.0, DESeq2, tximport, contrast semantics, and the enrichment methods are unchanged apart from the ORA mapping-QC correction and the Salmon/tximport sample-identity fix below.

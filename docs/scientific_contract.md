@@ -18,7 +18,7 @@ This repository produces technical bulk RNA-seq analysis artifacts. It does not 
 
 ## L1
 
-L1 performs technical expression QC. It removes all-zero genes, then genes whose total count is below the configured L1 rule; records the retained gene universe; normalizes; produces blind VST, PCA, sample correlation, and QC tables/figures. It never automatically removes samples.
+L1 performs technical expression QC. It removes all-zero genes, then genes whose total count is below the configured L1 rule; records the retained gene universe; normalizes; produces blind VST, PCA, sample correlation, and QC tables/figures. Per-sample distribution boxplots of log2(raw count + 1) and of blind VST values are drawn in the L1/PCA sample order, with their Tukey box statistics written to `sample_distribution_qc.tsv`; a missing or duplicated sample stops the plot. A `batch` column is shown only as an annotation; plotted values are never batch-corrected. L1 never automatically removes samples.
 
 L1 does not perform differential-expression inference. An L1 preset never constructs the Nextflow L2 or enrichment graph.
 

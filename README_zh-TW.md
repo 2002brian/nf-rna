@@ -9,7 +9,7 @@
 ## 功能
 
 - FASTQ 專案可使用 nf-core/rnaseq 的 Salmon/tximport，或 first-party HISAT2 + featureCounts。
-- Raw-count 專案提供已驗證 metadata、明確 contrast、QC、differential expression 與選用的 preranked GSEA。
+- Raw-count 專案提供已驗證 metadata、明確 contrast、QC、differential expression，以及選用的 GO/KEGG ORA 與 preranked GSEA。
 - Immutable run 會凍結設定、精確的 nf-rna source commit、locked Conda runtime identity、workflow hash，並建立 curated delivery artifact。
 
 ## 架構
@@ -23,12 +23,12 @@ flowchart LR
     B --> D
     D --> E["L1<br/>表現 QC、PCA、<br/>sample correlation"]
     E --> F{是否選擇 L2？}
-    F -- 是 --> G["L2：DESeq2<br/>選用的 preranked<br/>GO/KEGG GSEA"]
+    F -- 是 --> G["L2：DESeq2<br/>選用的 GO/KEGG ORA<br/>與 preranked GSEA"]
     F -- 否 --> H["輸出<br/>圖表與表格<br/>technical report<br/>curated delivery<br/>frozen provenance"]
     G --> H
 ```
 
-L1 提供表現品質控制與探索。L2 必須明確選擇：它會對已宣告的 contrast 執行 DESeq2，之後可進行支援的 preranked GO/KEGG GSEA；不會從 metadata 或 contrast 推測是否應執行 L2。每條路徑都會產生圖表、表格、technical report、curated delivery artifact 與 frozen provenance。
+L1 提供表現品質控制與探索。L2 必須明確選擇：它會對已宣告的 contrast 執行 DESeq2，之後可各自獨立進行 GO ORA、KEGG ORA 與 preranked GO/KEGG GSEA；不會從 metadata 或 contrast 推測是否應執行 L2。每條路徑都會產生圖表、表格、technical report、curated delivery artifact 與 frozen provenance。
 
 ## 輸入與輸出
 
@@ -44,7 +44,7 @@ L1 提供表現品質控制與探索。L2 必須明確選擇：它會對已宣�
 每次授權執行都會在 `runs/<case-id>/<run-id>/` 建立 immutable run。run 會保留凍結的 inputs 與 configuration、nf-rna source commit、Conda runtime 與 workflow identity，以及 provenance 和分析 artifact。
 
 - **Upstream count data：** FASTQ 專案保留 upstream QC 與 Salmon/tximport 或 featureCounts 的 count handoff；count-matrix 專案保留已驗證的 imported count source。
-- **L1 QC：** filtering 與 normalization 記錄、用於 visualization 的 transformed expression、PCA、sample correlation，以及 QC table 與 figure。
+- **L1 QC：** filtering 與 normalization 記錄、用於 visualization 的 transformed expression、PCA、sample correlation，以及 QC table 與 figure。兩張逐樣本 boxplot 用來比較樣本分布：`boxplot_log2_raw_counts`（normalization 前的 log2(raw count + 1)，呈現定序深度與組成差異）與 `boxplot_vst`（PCA 與 correlation 使用的 blind VST 值，呈現 normalization 後樣本是否對齊）。每個樣本的 Tukey box 統計值記錄於 `sample_distribution_qc.tsv`。圖中數值一律未做 batch correction。
 - **L2 結果：** 選擇 L2 時，針對每個已宣告 contrast 的 DESeq2 result，以及相關 table 與 figure。
 - **Enrichment：** 在 L2 可獨立啟用 GO ORA、KEGG ORA 與 preranked GO（BP、MF、CC）/KEGG GSEA；ORA 使用每個 contrast 已成功 mapping 的 statistically tested-gene universe。
 - **Delivery：** technical HTML report，以及包含 figure、table、methods/version record、provenance 與 delivery manifest 的 curated delivery package。
@@ -61,6 +61,8 @@ L1 提供表現品質控制與探索。L2 必須明確選擇：它會對已宣�
 不需要 Docker。Java、Nextflow 與 Conda 在 host 執行。nf-core/rnaseq 3.26.0 以 `-profile conda` 執行；HISAT2/featureCounts 使用精確 pin 的 Conda environment；R、DESeq2、tximport 與 enrichment 套件在 nf-rna 首次使用時建立的 locked linux-64 Conda environment 中執行。一般使用者不需要手動安裝這些工具。請參考 [Nextflow 官方文件](https://docs.seqera.io/nextflow/install)。
 
 ## 安裝
+
+> **穩定 release 與開發版本。** 最新的穩定 release 是 `v1.3.0`。本 README 說明的是 `main` 上目前的開發版本。以範本為起點的 `rnaseq new` → L1 → `rnaseq design` → L2 流程、L1 到 L2 的 upstream reuse、L1 sample-distribution QC、`rnaseq clean`，以及重新設計的 `rnaseq status` **不**包含在 `v1.3.0` 中，將隨下一個 release 發布（見 [Unreleased](CHANGELOG.md#unreleased)）。若安裝 `v1.3.0`，請參考該 tag 的 README。若想現在使用開發版本，請依照 [Development installation](docs/development.md)。
 
 nf-rna 沒有 PyPI distribution。請從 Git tag 安裝已發布的 CLI。從 Git 安裝時，
 pip 會記錄精確的 source commit，而每次 run 都必須記錄它；若安裝方式沒有 commit
@@ -103,7 +105,7 @@ release，但 publication workflow 在 image build 或 push 前停止，因此�
 
 ## 快速開始
 
-標準流程以範本為起點：wizard 只寫入範本，你填寫 `metadata.csv`，先執行 L1 做 QC，再由 `rnaseq design` 準備 L2。
+標準流程以範本為起點：wizard 只寫入範本，你填寫 `metadata.csv`，先執行 L1 做 QC，再由 `rnaseq design` 準備 L2。此流程需要 `main` 上的開發版本（見[安裝](#安裝)）。
 
 ```text
 rnaseq new
@@ -128,6 +130,7 @@ rnaseq run . --case-id L1-001 --profile local --yes     # L1：QC 與探索性�
 # 檢視 L1 QC（sample boxplot、PCA、library size），再設定差異表現分析：
 rnaseq design .            # 讀取 metadata.csv、顯示 model、提出 contrast 並請你確認（同時更新 plan）
 rnaseq run . --case-id L2-001 --profile local --yes     # L2：差異表現分析
+# FASTQ 專案：加上 --reuse-upstream L1-001/<run-id> 以重複使用 L1 的 quantification（見下文）
 rnaseq status .            # 最新 run 的執行儀表板
 rnaseq status . --watch    # 持續更新直到 run 結束（Ctrl-C 只停止監看）
 rnaseq status . --all      # 每個 run 一行的歷史摘要
@@ -136,7 +139,7 @@ rnaseq clean . --case-id L1-001 --run <run-id>   # 釋放已完成 run 的 Nextf
 
 ### wizard 詢問的內容與範本
 
-`rnaseq new` 只詢問之後無法從 metadata 讀取的資訊：實驗設計（two-group、paired two-group、multi-group）、paired 設計的配對欄位，以及一個是／否問題：*是否有已知的技術性 batch？* 它不會詢問 condition levels、batch levels、reference level 或 contrasts。`metadata.csv` 的 header 依回答產生：
+除了物種、輸入與 reference 的選擇外，`rnaseq new` 會詢問 analysis scope。預設為 `L1`，也就是標準流程的起點；FASTQ 專案也可選擇 `qc`，之後由 `rnaseq design` 將 L1 專案轉為 L2。關於實驗設計，它只詢問之後無法從 metadata 讀取的資訊：實驗設計（two-group、paired two-group、multi-group）、paired 設計的配對欄位，以及一個是／否問題：*是否有已知的技術性 batch？* 它不會詢問 condition levels、batch levels、reference level 或 contrasts。`metadata.csv` 的 header 依回答產生：
 
 | 設計 | 已知 batch | `metadata.csv` header | 暫定 model |
 |---|---|---|---|
@@ -145,7 +148,7 @@ rnaseq clean . --case-id L1-001 --run <run-id>   # 釋放已完成 run 的 Nextf
 | paired | 否 | `sample_id,<pair_id>,condition` | `~ <pair_id> + condition` |
 | paired | 是 | `sample_id,<pair_id>,condition,batch` | `~ <pair_id> + batch + condition` |
 
-`contrasts.csv` 一開始只有 header：`contrast_id,factor,numerator,denominator`。兩個檔案都是可直接開啟編輯的一般 CSV。非互動模式可用 `--design-type`、`--pair-id` 與 `--batch/--no-batch`。
+`contrasts.csv` 一開始只有 header：`contrast_id,factor,numerator,denominator`。兩個檔案都是可直接開啟編輯的一般 CSV。非互動模式可用 `--preset`、`--design-type`、`--pair-id` 與 `--batch/--no-batch`。
 
 ### L1：QC 與探索性分析
 
@@ -165,6 +168,22 @@ L1 不需要 contrasts，會產生 raw-count 與 VST sample boxplot、PCA、samp
 - 可用 `--condition-order Control,DrugA,DrugB` 明確指定順序（reference level 在前）。
 - 確認後才會寫入 `contrasts.csv`、將順序凍結為 `project.yaml` 的 `design.condition_order`（之後重新排序 metadata 列不會翻轉 contrast 方向），並把 scope 設為 `L2`。`project.yaml` 中的 formula 維持推導結果：`~ batch + condition`，paired 設計為 `~ <pair_id> + batch + condition`。
 - 既有的非空 `contrasts.csv` 不會被覆寫，除非加上 `--force`。QC-only 專案與 metadata／design 無效的專案會被拒絕；已設為 L2 但 contrasts 為空的專案可以使用。
+
+### 在 L2 重複使用 L1 的 upstream 結果（FASTQ 專案）
+
+FASTQ 專案的 L2 run 可以重複使用先前成功 L1 run 的 upstream quantification，而不必重新執行：
+
+```bash
+rnaseq run . --case-id L2-001 --reuse-upstream L1-001/<run-id> --yes
+```
+
+`<run-id>` 是 `runs/L1-001/` 下 L1 run 的目錄名稱，可在 `rnaseq status . --all` 的 RUN 欄位查到。Salmon/tximport 與 HISAT2 + featureCounts 專案皆支援。必須通過相容性檢查：
+
+- 來源必須是同一專案中狀態為 SUCCESS、且具有已驗證 upstream handoff 的 run；
+- 其凍結的 nf-core parameters、Nextflow config 與 samplesheet 必須與新 run 相同；
+- 其 input、upstream 與 reference identity 必須與新 run 相同。
+
+否則新 run 會以 incompatibility error 失敗，且不會複製任何 upstream 結果。analysis scope、design、metadata 與 contrasts 可以不同，因此 `rnaseq design` 所做的變更不會妨礙 reuse。upstream 結果是從 L1 run 的永久紀錄複製，因此以 `rnaseq clean` 移除 L1 run 的 Nextflow work 不影響 reuse。Raw-count 專案沒有 upstream 階段，因此不需要此選項。
 
 最終結果位於 `runs/<case-id>/<run-id>/delivery/`。每個 run 的 Nextflow work 目錄是可丟棄的中間資料（FASTQ run 常達數百 GB），會保留到你以 `rnaseq clean` 明確移除為止；見 [Runtime](docs/runtime.md#nextflow-work-directories-and-rnaseq-clean)。新專案預設依硬體自動設定 CPU／記憶體上限（`execution.max_cpus: auto`、`execution.max_memory_gb: auto`）；`project.yaml` 中明確指定的整數上限會被保留。
 

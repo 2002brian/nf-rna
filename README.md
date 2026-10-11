@@ -44,7 +44,7 @@ L1 provides expression quality control and exploration. L2 is explicitly selecte
 Every authorized execution creates an immutable run under `runs/<case-id>/<run-id>/`. The run keeps frozen inputs and configuration, the nf-rna source commit, Conda runtime and workflow identity, and provenance alongside its analysis artifacts.
 
 - **Upstream count data:** FASTQ projects retain upstream QC and the Salmon/tximport or featureCounts count handoff; count-matrix projects retain their validated imported count source.
-- **L1 QC:** filtering and normalization records, transformed expression for visualization, PCA, sample correlation, and QC tables and figures.
+- **L1 QC:** filtering and normalization records, transformed expression for visualization, PCA, sample correlation, and QC tables and figures. Two per-sample boxplots compare sample distributions: `boxplot_log2_raw_counts` (log2(raw count + 1), before normalization, showing depth and composition differences) and `boxplot_vst` (the blind VST values used by PCA and correlation, showing whether normalization aligned the samples). Their Tukey box statistics per sample are in `sample_distribution_qc.tsv`. Plotted values are never batch-corrected.
 - **L2 results:** when selected, DESeq2 results for each declared contrast, with associated tables and figures.
 - **Enrichment:** independently enabled GO ORA, KEGG ORA, and preranked GO (BP, MF, CC)/KEGG GSEA results. ORA uses the mapped statistically tested-gene universe for each contrast.
 - **Delivery:** a technical HTML report and a curated delivery package of figures, tables, methods/version records, provenance, and a delivery manifest.
@@ -61,6 +61,8 @@ Use a Linux x86-64 workstation or Windows with WSL2 (native Windows and macOS ar
 Docker is not required. Java, Nextflow, and Conda run on the host. nf-core/rnaseq 3.26.0 runs with `-profile conda`; HISAT2/featureCounts use an exactly pinned Conda environment; R, DESeq2, tximport, and the enrichment packages run in a locked linux-64 Conda environment that nf-rna creates on first use. Normal users do not install these tools by hand. See the [Nextflow installation guide](https://docs.seqera.io/nextflow/install).
 
 ## Installation
+
+> **Stable release and development version.** The latest stable release is `v1.3.0`. This README describes the current development version on `main`. The template-first `rnaseq new` → L1 → `rnaseq design` → L2 lifecycle, L1-to-L2 upstream reuse, L1 sample-distribution QC, `rnaseq clean`, and the redesigned `rnaseq status` are **not** part of `v1.3.0`; they will ship in the next release (see [Unreleased](CHANGELOG.md#unreleased)). If you install `v1.3.0`, use the README at that tag. To use the development version now, follow [Development installation](docs/development.md).
 
 nf-rna has no PyPI distribution. Install the released CLI from its Git tag.
 Installing from Git lets pip record the exact source commit, which every run
@@ -105,7 +107,7 @@ their publication workflows stopped before image build or push.
 
 ## Quick Start
 
-The normal journey is template-first: the wizard writes templates, you fill in `metadata.csv`, run L1 for QC, then let `rnaseq design` prepare L2.
+The normal journey is template-first: the wizard writes templates, you fill in `metadata.csv`, run L1 for QC, then let `rnaseq design` prepare L2. This journey requires the development version on `main` (see [Installation](#installation)).
 
 ```text
 rnaseq new
@@ -130,6 +132,7 @@ rnaseq run . --case-id L1-001 --profile local --yes     # L1: QC and exploratory
 # Review the L1 QC: sample boxplots, PCA, library sizes. Then set up differential expression:
 rnaseq design .            # reads metadata.csv, shows the model, proposes contrasts, asks for confirmation (also refreshes the plan)
 rnaseq run . --case-id L2-001 --profile local --yes     # L2: differential expression
+# FASTQ projects: add --reuse-upstream L1-001/<run-id> to reuse the L1 quantification (see below)
 rnaseq status .            # execution dashboard of the latest run
 rnaseq status . --watch    # redraw until the run finishes (Ctrl-C stops watching only)
 rnaseq status . --all      # one line per recorded run
@@ -138,7 +141,7 @@ rnaseq clean . --case-id L1-001 --run <run-id>   # free a finished run's Nextflo
 
 ### What the wizard asks, and what the templates contain
 
-`rnaseq new` asks only what cannot be read from your metadata later: the design (two-group, paired two-group, or multi-group), the pairing column for paired designs, and one yes/no question: *is there a known technical batch?* It never asks for condition levels, batch levels, a reference level, or contrasts. The generated `metadata.csv` header depends on those answers:
+Besides the species, input, and reference choices, `rnaseq new` asks for the analysis scope. The default is `L1`, the start of the normal journey; FASTQ projects can also choose `qc`, and `rnaseq design` later moves an L1 project to L2. For the design, it asks only what cannot be read from your metadata later: the design (two-group, paired two-group, or multi-group), the pairing column for paired designs, and one yes/no question: *is there a known technical batch?* It never asks for condition levels, batch levels, a reference level, or contrasts. The generated `metadata.csv` header depends on those answers:
 
 | Design | Known batch | `metadata.csv` header | Provisional model |
 |---|---|---|---|
@@ -147,7 +150,7 @@ rnaseq clean . --case-id L1-001 --run <run-id>   # free a finished run's Nextflo
 | paired | no | `sample_id,<pair_id>,condition` | `~ <pair_id> + condition` |
 | paired | yes | `sample_id,<pair_id>,condition,batch` | `~ <pair_id> + batch + condition` |
 
-`contrasts.csv` starts as the header only: `contrast_id,factor,numerator,denominator`. Both files are ordinary CSV files you can open and edit. The same choices are available non-interactively as `--design-type`, `--pair-id`, and `--batch/--no-batch`.
+`contrasts.csv` starts as the header only: `contrast_id,factor,numerator,denominator`. Both files are ordinary CSV files you can open and edit. The same choices are available non-interactively as `--preset`, `--design-type`, `--pair-id`, and `--batch/--no-batch`.
 
 ### L1: QC and exploratory analysis
 
@@ -167,6 +170,22 @@ After reviewing L1, `rnaseq design PROJECT` reads the completed `metadata.csv` a
 - Use `--condition-order Control,DrugA,DrugB` to set the order explicitly (reference level first).
 - Only after you confirm does it write `contrasts.csv`, freeze the order as `design.condition_order` in `project.yaml` (so re-sorting metadata rows later cannot flip a contrast), and set the scope to `L2`. The project's `project.yaml` formula stays as derived: `~ batch + condition`, or `~ <pair_id> + batch + condition` for paired designs.
 - An existing non-empty `contrasts.csv` is never overwritten unless you pass `--force`. QC-only projects and projects with invalid metadata/design are refused. A project already set to L2 with empty contrasts is accepted.
+
+### Reusing L1 upstream results in L2 (FASTQ projects)
+
+For a FASTQ project, the L2 run can reuse the upstream quantification of a successful L1 run instead of repeating it:
+
+```bash
+rnaseq run . --case-id L2-001 --reuse-upstream L1-001/<run-id> --yes
+```
+
+`<run-id>` is the L1 run's directory name under `runs/L1-001/`, listed in the RUN column of `rnaseq status . --all`. Both Salmon/tximport and HISAT2 + featureCounts projects are supported. Compatibility checks must pass:
+
+- the source must be a SUCCESS run of the same project with a validated upstream handoff;
+- its frozen nf-core parameters, Nextflow config, and samplesheet must match the new run;
+- its input, upstream, and reference identity must match the new run.
+
+Otherwise the new run fails with an incompatibility error and no upstream results are copied. The analysis scope, design, metadata, and contrasts may differ, so the changes made by `rnaseq design` do not block reuse. The upstream results are copied from the durable L1 run record, so removing the L1 run's Nextflow work with `rnaseq clean` does not prevent reuse. Raw-count projects have no upstream stage, so they do not need this option.
 
 Final results are delivered to `runs/<case-id>/<run-id>/delivery/`. Each run's disposable Nextflow work directory (often hundreds of GB for FASTQ runs) is kept until you remove it with `rnaseq clean`; see [Runtime](docs/runtime.md#nextflow-work-directories-and-rnaseq-clean). New projects use hardware-aware automatic CPU/memory limits (`execution.max_cpus: auto`, `execution.max_memory_gb: auto`); explicit integer limits in `project.yaml` are preserved.
 
