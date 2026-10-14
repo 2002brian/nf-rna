@@ -20,9 +20,12 @@ CONTRAST_HEADER = "contrast_id,factor,numerator,denominator\n"
 
 
 def _new(tmp_path: Path, name: str, *extra: str, preset: str = "L1", design: str = "two_group", input_type: str = "raw_counts"):
+    # Declare the annotation contract up front, as the wizard asks, so that
+    # `rnaseq design` can apply the default L2 enrichment selection.
+    annotation = [] if preset == "qc" or any(flag in extra for flag in ("--gene-id-type", "--no-enrichment")) else ["--gene-id-type", "ENSEMBL"]
     return runner.invoke(app, [
         "new", "--name", name, "--destination", str(tmp_path), "--species", "mouse", "--input-type", input_type,
-        "--scaffold", "--preset", preset, "--design-type", design, "--yes", *extra,
+        "--scaffold", "--preset", preset, "--design-type", design, "--yes", *annotation, *extra,
     ])
 
 
@@ -82,6 +85,7 @@ def test_interactive_wizard_asks_about_batch_and_writes_the_template(monkeypatch
     result = runner.invoke(app, ["new"], input=(
         "wizard\n" f"{tmp_path}\n" "human\n" "raw_counts\n" "\n"  # scope: default L1
         "paired_two_group\n" "patient\n" "y\n"  # design, pair column, known batch
+        "\n"  # gene identifier type: default ENSEMBL
         "\n" "\n" "y\n"
     ))
     assert result.exit_code == 0, result.output
@@ -91,6 +95,9 @@ def test_interactive_wizard_asks_about_batch_and_writes_the_template(monkeypatch
     assert (root / "metadata.csv").read_text(encoding="utf-8") == "sample_id,patient,condition,batch\n"
     assert _config(root)["project"]["preset"] == "L1"
     assert _config(root)["design"]["formula"] == "~ patient + batch + condition"
+    assert _config(root)["annotation"] == {"organism": "Homo sapiens", "input_id_type": "ENSEMBL"}
+    assert _config(root)["analysis"] == {"enrichment": []}  # L1: selected when `rnaseq design` moves to L2
+    assert "Annotation database for Homo sapiens: org.Hs.eg.db" in result.output
     # The wizard never asks for levels, a reference level, covariates, or contrasts.
     for forbidden in ("level", "Covariate", "Condition/contrast field", "Reference level"):
         assert forbidden not in result.output.split("Is there a known technical batch")[1].split("Local execution")[0]

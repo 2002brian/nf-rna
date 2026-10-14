@@ -45,7 +45,9 @@ member_table <- function(terms, mapping, path) {
   if (!nrow(terms)) { write_table(data.frame(GO_ID=character(), GO_term=character(), entrez_id=character(), symbol=character(), original_gene_id=character()), path); return() }
   rows <- list()
   for (i in seq_len(nrow(terms))) for (id in strsplit(terms$geneID[[i]], "/", fixed=TRUE)[[1]]) {
-    related <- mapping[mapping$mapped_entrez_id == id, c("mapped_symbol", "original_gene_id"), drop=FALSE]
+    # which() drops the NA comparisons of unmapped genes; logical indexing would
+    # emit one all-NA row per unmapped gene for every term-gene pair.
+    related <- mapping[which(mapping$mapped_entrez_id == id), c("mapped_symbol", "original_gene_id"), drop=FALSE]
     if (!nrow(related)) related <- data.frame(mapped_symbol=NA_character_, original_gene_id=NA_character_)
     rows[[length(rows)+1]] <- data.frame(GO_ID=terms$ID[[i]], GO_term=terms$Description[[i]], entrez_id=id, symbol=related$mapped_symbol, original_gene_id=related$original_gene_id, stringsAsFactors=FALSE)
   }

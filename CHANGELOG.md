@@ -8,11 +8,22 @@ Changes on `main` since `v1.3.0`. Unless stated otherwise, DESeq2, tximport, nf-
 
 ### Template-first project lifecycle
 
-- `rnaseq new` now writes templates only: a `metadata.csv` header derived from the design choices (`sample_id,condition`, plus `batch` for a known technical batch and the pairing column for paired designs) and a header-only `contrasts.csv`. The provisional model is derived from the same choices. The wizard's analysis scope defaults to L1, and its L2 option states that enrichment is opt-in.
+- `rnaseq new` now writes templates only: a `metadata.csv` header derived from the design choices (`sample_id,condition`, plus `batch` for a known technical batch and the pairing column for paired designs) and a header-only `contrasts.csv`. The provisional model is derived from the same choices. The wizard's analysis scope defaults to L1.
 - New `rnaseq design PROJECT` reads the completed metadata, validates the design, and proposes contrasts for confirmation: later-vs-earlier for two groups (with `swap`), and every pairwise contrast in first-appearance order for multi-group designs (`--condition-order` overrides the order). On confirmation it writes `contrasts.csv`, freezes `design.condition_order`, sets the scope to L2, and regenerates the planning artifacts in the same transaction, so `rnaseq run` does not report a stale plan. Existing non-empty contrasts need `--force`; QC-only and invalid projects are refused.
 - L1 validates and runs with an empty `contrasts.csv`; contrasts are required only for L2.
 - New design validation: residual degrees of freedom from the expanded model matrix (a warning at validation, refused by `rnaseq design` and the L2 launch), clearer explanations of confounded batch, and warnings for partially confounded or single-sample batches, unused batch columns, and wrong-case column names. `rnaseq validate` prints batch-by-condition counts.
 - Design flags are never silently ignored: `--covariate`, `--continuous-covariate`, and `--condition-column` without `--metadata`, `--pair-id` without a paired design, and design flags with the QC scope are errors.
+
+### Functional enrichment by default for L2
+
+- Configuring a project for L2 (`rnaseq new --preset L2`, or `rnaseq design` moving an L1 project to L2) now selects every supported method: `analysis.enrichment: [go, kegg, gsea]`, i.e. GO ORA, KEGG ORA, GO GSEA, and KEGG GSEA. This applies equally to batch-adjusted and multi-group designs. `--no-enrichment` records an explicit opt-out (`[]`); a project already at L2 keeps its recorded selection. Statistical methods, thresholds, and the GSEA ranking are unchanged.
+- The required annotation contract is collected at creation: the wizard asks for the count-matrix gene ID type (ENSEMBL, ENTREZID, SYMBOL) and shows the OrgDb; non-interactive L2 creation and `rnaseq design --yes` require `--gene-id-type` unless enrichment is opted out. Organisms without a supported OrgDb are refused with the opt-out as the remedy; enrichment is never dropped silently.
+- `rnaseq run` and `rnaseq retry` check that the online KEGG REST resource is reachable before any run exists when KEGG ORA or GSEA is selected.
+- The technical report lists an explicit status for every method and contrast (`SUCCESS`, `NO_SIGNIFICANT_TERMS`, `NOT_APPLICABLE`, `BLOCKED`, `FAILED`, `NETWORK_UNAVAILABLE`, `NOT_REQUESTED`), also delivered as `tables/report/enrichment_status.tsv` and summarized in the delivery README. Methods text describes GSEA only when it was selected. Design warnings from validation (e.g. partial batch confounding) are frozen into the downstream contract and stated in the report and README.
+
+### GO ORA gene-member tables
+
+- Fixed `GO_{BP,MF,CC}_gene_members.tsv` padding: an unmapped tested gene (NA Entrez ID) added one all-NA row for every term-gene pair, inflating member tables by orders of magnitude (11 GB per table and 43 GB of GO output for a 14-sample mouse project) and GO ORA runtime/memory. Members are now exactly the mapped source genes of each significant term's `geneID`. GO term tables, statistics, mapping tables, and figures are unchanged.
 
 ### L1-to-L2 upstream reuse
 

@@ -141,7 +141,42 @@ def _indent_block(text: str, spaces: int = 2) -> str:
     return "".join(" " * spaces + line + "\n" for line in text.splitlines())
 
 
-def updated_project_yaml(text: str, levels: tuple[str, ...]) -> str:
+def _set_top_level_block(text: str, key: str, value: object, *, before: str | None = None) -> str:
+    """Replace (or insert) one top-level YAML mapping entry, leaving other text intact."""
+
+    block = yaml.safe_dump({key: value}, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    lines = text.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    start = next((i for i, line in enumerate(lines) if re.match(rf"{re.escape(key)}:(\s|$)", line)), None)
+    if start is None:
+        anchor = next((i for i, line in enumerate(lines) if before and re.match(rf"{re.escape(before)}:(\s|$)", line)), len(lines))
+        lines[anchor:anchor] = [block]
+    else:
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].strip() and not lines[i][0].isspace()), len(lines))
+        lines[start:end] = [block]
+    return "".join(lines)
+
+
+def updated_project_yaml(
+    text: str, levels: tuple[str, ...], *,
+    enrichment: tuple[str, ...] | None = None, annotation: dict[str, str] | None = None,
+) -> str:
+    """Return L2 ``project.yaml`` text, optionally with an enrichment selection and annotation.
+
+    ``enrichment`` ``None`` leaves ``analysis`` untouched; ``annotation`` is
+    written only when given (the caller never replaces an existing contract).
+    """
+
+    edited = _updated_design_yaml(text, levels)
+    if annotation is not None:
+        edited = _set_top_level_block(edited, "annotation", dict(annotation), before="analysis")
+    if enrichment is not None:
+        edited = _set_top_level_block(edited, "analysis", {"enrichment": list(enrichment)})
+    return edited
+
+
+def _updated_design_yaml(text: str, levels: tuple[str, ...]) -> str:
     """Return ``project.yaml`` text with ``preset: L2`` and the frozen condition order.
 
     Edits only those two entries so the user's other content, ordering and
@@ -201,12 +236,15 @@ def _atomic_write(path: Path, content: str) -> None:
         raise
 
 
-def write_design(project_dir: Path, config_path: Path, contrasts_path: Path, proposal: DesignProposal) -> tuple[str, bytes]:
+def write_design(
+    project_dir: Path, config_path: Path, contrasts_path: Path, proposal: DesignProposal, *,
+    enrichment: tuple[str, ...] | None = None, annotation: dict[str, str] | None = None,
+) -> tuple[str, bytes]:
     """Write contrasts and the frozen design; return the prior ``(project.yaml, contrasts.csv)`` for rollback."""
 
     previous_yaml = config_path.read_text(encoding="utf-8")
     previous_contrasts = contrasts_path.read_bytes()
-    new_yaml = updated_project_yaml(previous_yaml, proposal.levels)
+    new_yaml = updated_project_yaml(previous_yaml, proposal.levels, enrichment=enrichment, annotation=annotation)
     # Validate the model before touching anything on disk.
     ProjectConfig.model_validate(yaml.safe_load(new_yaml))
     _atomic_write(contrasts_path, contrasts_csv_text(proposal.contrasts))

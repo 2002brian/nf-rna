@@ -226,3 +226,73 @@ def test_go_ora_dotplots_identify_comparison_and_foreground_from_contrast_metada
         assert {entry["format"] for entry in record["files"]} == {"png", "tiff", "pdf"}
         for entry in record["files"]:
             assert (output / entry["path"]).stat().st_size > 0
+
+
+def test_go_ora_gene_members_have_no_na_padding_for_unmapped_ensembl_ids(tmp_path):
+    """Unmapped tested genes must not add an all-NA member row per term gene.
+
+    Regression: logical indexing on an NA ``mapped_entrez_id`` returned one NA
+    row per unmapped gene for every term-gene pair, inflating the member tables
+    by orders of magnitude while the term tables stayed correct.
+    """
+
+    import csv
+    import subprocess
+
+    require_r_packages("AnnotationDbi", "clusterProfiler", "org.Mm.eg.db", "ggplot2", "ggrepel", "pheatmap", "systemfonts", "jsonlite")
+    all_genes, significant, empty = tmp_path / "all_genes.tsv", tmp_path / "significant.tsv", tmp_path / "empty.tsv"
+    prepare = subprocess.run(["Rscript", "-e", (
+        'suppressMessages(library(org.Mm.eg.db));'
+        'immune <- unique(AnnotationDbi::select(org.Mm.eg.db, keys="GO:0006955", keytype="GOALL", columns="ENTREZID")$ENTREZID);'
+        'immune <- head(sort(immune), 150);'
+        'background <- head(setdiff(sort(AnnotationDbi::keys(org.Mm.eg.db, "ENTREZID")), immune), 2500);'
+        'ens <- suppressMessages(AnnotationDbi::select(org.Mm.eg.db, keys=c(immune, background), keytype="ENTREZID", columns="ENSEMBL"));'
+        'ens <- ens[!is.na(ens$ENSEMBL) & !duplicated(ens$ENTREZID) & !duplicated(ens$ENSEMBL), ];'
+        'mapped_fg <- ens$ENSEMBL[ens$ENTREZID %in% immune]; mapped_bg <- ens$ENSEMBL[!(ens$ENTREZID %in% immune)];'
+        'unmapped <- sprintf("ENSMUSG9%010d", seq_len(300));'
+        'genes <- c(paste0(mapped_fg, ".3"), mapped_bg, unmapped);'
+        f'write.table(data.frame(gene_id=genes, pvalue=0.5, padj=0.9), "{all_genes}", sep="\t", quote=FALSE, row.names=FALSE);'
+        f'write.table(data.frame(gene_id=c(paste0(mapped_fg, ".3"), head(unmapped, 20))), "{significant}", sep="\t", quote=FALSE, row.names=FALSE)')],
+        capture_output=True, text=True, check=False)
+    assert prepare.returncode == 0, prepare.stderr
+    empty.write_text("gene_id\n", encoding="utf-8")
+    output = tmp_path / "go"
+    config = {
+        "output_dir": str(output), "orgdb_package": "org.Mm.eg.db",
+        "annotation": {"organism": "Mus musculus", "input_id_type": "ENSEMBL", "target_id_type": "ENTREZID", "mapping_warning_rate": 0, "minimum_mapping_rate": 0, "minimum_mapped_foreground": 5, "enrichment": {"go": {"pvalue_cutoff": 0.05, "qvalue_cutoff": 0.2, "p_adjust_method": "BH"}}},
+        "contrasts": [{"contrast_id": "fixture", "numerator": "T", "denominator": "C", "all_genes": str(all_genes), "significant": str(significant), "up": str(empty), "down": str(empty)}],
+        "runtime": {"script": "go_analysis.R", "source_revision": "fixture", "container_image": "fixture", "output_schema": "nf-rna.scientific-provenance.v1"},
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    script = Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "go_analysis.R"
+    result = subprocess.run(["Rscript", str(script), "--config", str(config_path)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+    def rows(path: Path) -> list[dict[str, str]]:
+        with path.open(encoding="utf-8", newline="") as handle:
+            return list(csv.DictReader(handle, delimiter="\t"))
+
+    mapping = rows(output / "fixture" / "gene_mapping.tsv")
+    unmapped = {row["original_gene_id"] for row in mapping if row["mapping_status"] == "UNMAPPED"}
+    assert len(unmapped) == 300, "the fixture must exercise unmapped tested genes"
+    sources_by_entrez: dict[str, set[str]] = {}
+    for row in mapping:
+        if row["mapped_entrez_id"] != "NA":
+            sources_by_entrez.setdefault(row["mapped_entrez_id"], set()).add(row["original_gene_id"])
+
+    checked = 0
+    for ontology in ("BP", "MF", "CC"):
+        terms = rows(output / "fixture" / "significant" / f"GO_{ontology}.tsv")
+        members = rows(output / "fixture" / "significant" / f"GO_{ontology}_gene_members.tsv")
+        assert all(row["original_gene_id"] != "NA" and row["symbol"] != "NA" for row in members)
+        assert not {row["original_gene_id"] for row in members} & unmapped
+        assert len(members) == len({tuple(row.values()) for row in members}), "member rows must be unique"
+        expected = {
+            (term["ID"], entrez, source)
+            for term in terms for entrez in term["geneID"].split("/") for source in sources_by_entrez[entrez]
+        }
+        assert {(row["GO_ID"], row["entrez_id"], row["original_gene_id"]) for row in members} == expected
+        assert len(members) == len(expected)
+        checked += len(members)
+    assert checked, "the immune foreground must produce significant GO terms with members"

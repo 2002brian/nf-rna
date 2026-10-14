@@ -117,12 +117,14 @@ def digest(path: Path) -> str:
 def test_new_creates_versioned_project_without_placeholder_counts(tmp_path):
     result = runner.invoke(
         app,
-        ["new", "--name", "created_project", "--destination", str(tmp_path), "--species", "mouse", "--input-type", "raw_counts", "--preset", "L2", "--design-type", "two_group", "--scaffold", "--yes"],
+        ["new", "--name", "created_project", "--destination", str(tmp_path), "--species", "mouse", "--input-type", "raw_counts", "--preset", "L2", "--design-type", "two_group", "--gene-id-type", "ENSEMBL", "--scaffold", "--yes"],
     )
     assert result.exit_code == 0, result.output
     root = tmp_path / "created_project"
     config = yaml.safe_load((root / "project.yaml").read_text(encoding="utf-8"))
     assert config["schema_version"] == "1.3"
+    assert config["analysis"] == {"enrichment": ["go", "kegg", "gsea"]}
+    assert config["annotation"] == {"organism": "Mus musculus", "input_id_type": "ENSEMBL"}
     # v1.3.0+ projects carry no Docker/GHCR execution image configuration.
     assert "runtime" not in config
     assert isinstance(config["schema_version"], str)
@@ -137,7 +139,7 @@ def test_new_records_explicit_total_execution_budget(monkeypatch, tmp_path):
     monkeypatch.setattr("rnaseq.cli.detect_local_resource_capacity", lambda: LocalResourceCapacity(20, 64, 62))
     result = runner.invoke(
         app,
-        ["new", "--name", "resourced", "--destination", str(tmp_path), "--species", "mouse", "--input-type", "raw_counts", "--preset", "L2", "--design-type", "two_group", "--execution-profile", "local", "--cpus", "16", "--memory-gb", "48", "--scaffold", "--yes"],
+        ["new", "--name", "resourced", "--destination", str(tmp_path), "--species", "mouse", "--input-type", "raw_counts", "--preset", "L2", "--design-type", "two_group", "--execution-profile", "local", "--cpus", "16", "--memory-gb", "48", "--no-enrichment", "--scaffold", "--yes"],
     )
     assert result.exit_code == 0, result.output
     config = yaml.safe_load((tmp_path / "resourced" / "project.yaml").read_text(encoding="utf-8"))
@@ -282,6 +284,8 @@ def test_interactive_raw_count_new_is_scaffold_first_and_retries_bad_integer(mon
         "L2\n"
         "two_group\n"
         "\n"  # no known technical batch
+        "\n"  # accept the default L2 enrichment
+        "\n"  # gene identifier type: default ENSEMBL
         "sixteen\n"
         "16\n"  # a deliberate explicit CPU limit
         "\n"  # memory: accept auto
@@ -292,6 +296,10 @@ def test_interactive_raw_count_new_is_scaffold_first_and_retries_bad_integer(mon
     assert "Invalid value 'sixteen'. Please enter a positive integer or 'auto'." in result.output
     config = yaml.safe_load((tmp_path / "count_scaffold" / "project.yaml").read_text(encoding="utf-8"))
     assert config["execution"] == {"profile": "local", "max_cpus": 16, "max_memory_gb": "auto"}
+    assert config["analysis"] == {"enrichment": ["go", "kegg", "gsea"]}
+    assert config["annotation"] == {"organism": "Homo sapiens", "input_id_type": "ENSEMBL"}
+    assert "Enrichment: GO ORA, KEGG ORA, GO GSEA, KEGG GSEA" in result.output
+    assert "Annotation: Homo sapiens; ENSEMBL -> ENTREZID via org.Hs.eg.db" in result.output
     assert "Import existing inputs now?" not in result.output
     root = tmp_path / "count_scaffold"
     assert (root / "input").is_dir()

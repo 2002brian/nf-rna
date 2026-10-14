@@ -36,6 +36,18 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "real_conda_channels: use the real Conda channel check instead of an nf-core-compatible test result",
     )
+    config.addinivalue_line(
+        "markers", "real_kegg_preflight: use the real KEGG REST reachability check instead of a reachable test result",
+    )
+
+
+@pytest.fixture(autouse=True)
+def reachable_kegg_rest(request, monkeypatch):
+    """Keep run preflight off the network; KEGG preflight tests opt out with the marker."""
+
+    if request.node.get_closest_marker("real_kegg_preflight"):
+        return
+    monkeypatch.setattr("rnaseq.service.kegg_rest_preflight", lambda organism_code, **_: None)
 
 
 @pytest.fixture(autouse=True)
