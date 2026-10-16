@@ -32,7 +32,7 @@ Significance is `padj < thresholds.padj` and `abs(log2FoldChange) >= thresholds.
 
 ## Preranked GSEA
 
-`analysis.enrichment` accepts an explicit list containing any of `go`, `kegg`, and `gsea`. `gsea` expands to GO preranked GSEA (BP, MF, CC) and KEGG preranked GSEA; GO and KEGG ORA are independent production modules. Public selections are deduplicated and stored in canonical `go`, `kegg`, `gsea` order, so each backend runs at most once. The historical complete four-backend spelling is normalized to this full public selection.
+`analysis.enrichment` accepts an explicit list containing any of `go`, `kegg`, and `gsea`. `gsea` expands to GO preranked GSEA (BP, MF, CC) and KEGG preranked GSEA; GO and KEGG ORA are independent production modules. Public selections are deduplicated and stored in canonical `go`, `kegg`, `gsea` order, so each backend runs at most once. The historical complete four-backend spelling is normalized to this full public selection. Configuring a project for L2 (`rnaseq new --preset L2` or `rnaseq design`) selects all three by default; `[]` is the explicit opt-out (`--no-enrichment`), and any selection requires an `annotation` block with `organism` and `input_id_type`. The final report gives every method and contrast an explicit status, with `NOT_REQUESTED` for unselected methods.
 
 ## Over-representation analysis
 

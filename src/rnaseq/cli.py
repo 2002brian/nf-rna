@@ -19,12 +19,12 @@ from rnaseq.execution import (
     validate_local_execution_budget,
 )
 from rnaseq.service import RunTermination, execute_retry_service_run, execute_service_run, prepare_service_run, sanitize_completed_delivery, validate_case_id
-from rnaseq.models import DesignType, FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, SequencingLayout, Species
+from rnaseq.models import ANNOTATION_DATABASES, DEFAULT_L2_ENRICHMENT, GENE_ID_TYPES, DesignType, FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, SequencingLayout, Species, default_annotation, describe_enrichment
 from rnaseq.planner import generate_plan
 from rnaseq.resource_policy import AUTO, GIB, DetectedResources, resolve_policy
 from rnaseq.design_matrix import residual_degrees_of_freedom_message
 from rnaseq.design_setup import DesignSetupError, build_proposal, rollback_design, write_design
-from rnaseq.project import create_project, derive_design
+from rnaseq.project import create_project, derive_design, resolve_enrichment_defaults
 from rnaseq.references import (
     LocalReferenceError,
     LocalReference,
@@ -529,6 +529,26 @@ def _metadata_fields(path: Path) -> tuple[dict[str, list[str]], list[str]]:
     return values, fields
 
 
+GENE_ID_TYPE_CHOICES = [
+    ("ENSEMBL", "Ensembl gene IDs, e.g. ENSMUSG00000000001 (Ensembl GTF / managed references)"),
+    ("ENTREZID", "NCBI Entrez gene IDs (numeric)"),
+    ("SYMBOL", "Official gene symbols"),
+]
+
+
+def _enrichment_selection(enabled: bool | None) -> tuple[str, ...] | None:
+    """Map --enrichment/--no-enrichment onto the project-level selection."""
+
+    return None if enabled is None else (DEFAULT_L2_ENRICHMENT if enabled else ())
+
+
+def _annotation_review(species: Species, gene_id_type: str | None) -> str:
+    if gene_id_type is None:
+        return "not configured"
+    database = ANNOTATION_DATABASES.get(species.value, "unsupported organism")
+    return f"{species.value}; {gene_id_type} -> ENTREZID via {database}"
+
+
 @app.command("new")
 def new_project(
     name: str | None = typer.Option(None, "--name", help="Project identifier (enables non-interactive creation)."),
@@ -558,6 +578,8 @@ def new_project(
     continuous_covariate: list[str] | None = typer.Option(None, "--continuous-covariate", help="Advanced: imported numeric adjustment variable (requires --metadata); repeat as needed."),
     pair_id: str | None = typer.Option(None, "--pair-id", "--pairing-column", help="Biological pair column (paired_two_group only); with --metadata it must exist there."),
     batch: bool | None = typer.Option(None, "--batch/--no-batch", help="Declare a known technical batch: the template gets a 'batch' column and the model adjusts for it. With --metadata, equivalent to --covariate batch."),
+    gene_id_type: str | None = typer.Option(None, "--gene-id-type", help="Gene identifier type of the count matrix for enrichment annotation: ENSEMBL, ENTREZID, or SYMBOL. Required for L2 unless --no-enrichment."),
+    enrichment: bool | None = typer.Option(None, "--enrichment/--no-enrichment", help="L2 only. Default: GO ORA, KEGG ORA, and preranked GO + KEGG GSEA (analysis.enrichment lists go, kegg, gsea). --no-enrichment records an explicit opt-out."),
     execution_profile: str | None = typer.Option(None, "--execution-profile", help="Only local is supported."),
     cpus: int | None = typer.Option(None, "--cpus", help="Total local Nextflow CPU ceiling, not per-task CPUs."),
     memory_gb: int | None = typer.Option(None, "--memory-gb", help="Total local Nextflow memory ceiling in GiB, not per-task memory."),
@@ -566,7 +588,7 @@ def new_project(
 ) -> None:
     """Create a reviewed RNA-seq project interactively or from explicit flags."""
 
-    noninteractive = any(value is not None for value in (name, destination, species, input_type, fastq_samplesheet, counts, metadata, contrasts, layout, preprocessing, method, strandedness, reference_source, reference_root, reference_manifest, reference_fasta, reference_gtf, reference_transcript_fasta, reference_salmon_index, reference_hisat2_index, preset, design_type, condition_column, covariate, continuous_covariate, pair_id, batch, execution_profile, cpus, memory_gb)) or scaffold or yes
+    noninteractive = any(value is not None for value in (name, destination, species, input_type, fastq_samplesheet, counts, metadata, contrasts, layout, preprocessing, method, strandedness, reference_source, reference_root, reference_manifest, reference_fasta, reference_gtf, reference_transcript_fasta, reference_salmon_index, reference_hisat2_index, preset, design_type, condition_column, covariate, continuous_covariate, pair_id, batch, gene_id_type, enrichment, execution_profile, cpus, memory_gb)) or scaffold or yes
     selected_managed_reference: LocalReference | None = None
     try:
         if not noninteractive and not _is_interactive_terminal():
@@ -609,9 +631,9 @@ def new_project(
                     if method == "hisat2_featurecounts":
                         reference_hisat2_index = Path(typer.prompt("Prepared HISAT2 index directory (blank if not built)", default="")) if typer.confirm("Is a HISAT2 index already prepared?", default=False) else None
             if input_type == "fastq":
-                preset = _wizard_choice("Analysis scope", [("qc", "Quantification + technical QC only"), ("L1", "Expression-level QC and exploratory analysis (differential expression is set up later with `rnaseq design`)"), ("L2", "L1 plus differential expression (enrichment is opt-in: set analysis.enrichment in project.yaml)")], default="L1")
+                preset = _wizard_choice("Analysis scope", [("qc", "Quantification + technical QC only"), ("L1", "Expression-level QC and exploratory analysis (differential expression is set up later with `rnaseq design`)"), ("L2", "L1 plus differential expression and functional enrichment (GO ORA, KEGG ORA, GO + KEGG GSEA)")], default="L1")
             else:
-                preset = _wizard_choice("Analysis scope", [("L1", "Expression-level QC and exploratory analysis (differential expression is set up later with `rnaseq design`)"), ("L2", "L1 plus differential expression (enrichment is opt-in: set analysis.enrichment in project.yaml)")], default="L1")
+                preset = _wizard_choice("Analysis scope", [("L1", "Expression-level QC and exploratory analysis (differential expression is set up later with `rnaseq design`)"), ("L2", "L1 plus differential expression and functional enrichment (GO ORA, KEGG ORA, GO + KEGG GSEA)")], default="L1")
             design_type = "two_group" if preset == "qc" else _wizard_choice("Experimental design", [("two_group", "Unpaired two-level condition"), ("paired_two_group", "Biologically paired two-level condition"), ("multi_group", "At least three condition levels")], default="two_group")
             if design_type == "paired_two_group":
                 pair_id = typer.prompt("Pairing metadata column", default="patient")
@@ -620,6 +642,15 @@ def new_project(
                 # here: condition levels, batch levels and contrasts are
                 # discovered later by `rnaseq design`.
                 batch = typer.confirm("Is there a known technical batch (adds a 'batch' column and adjusts the model for it)?", default=False)
+                if preset == "L2":
+                    typer.echo(f"Functional enrichment (default for L2): {describe_enrichment(DEFAULT_L2_ENRICHMENT)}")
+                    enrichment = typer.confirm("Run these enrichment analyses?", default=True)
+                if preset == "L1" or enrichment:
+                    # Asked, never assumed: the annotation contract maps these
+                    # identifiers to Entrez IDs for GO/KEGG.
+                    organism = (Species.HUMAN if species == "human" else Species.MOUSE).value
+                    typer.echo(f"Annotation database for {organism}: {ANNOTATION_DATABASES[organism]}")
+                    gene_id_type = _wizard_choice("Gene identifier type in the count matrix", GENE_ID_TYPE_CHOICES, default="ENSEMBL")
             capacity = detect_local_resource_capacity()
             preview = resolve_policy(AUTO, AUTO, DetectedResources(
                 capacity.logical_cpus,
@@ -750,12 +781,16 @@ def new_project(
         selected_cpus, selected_memory = cpus or AUTO, memory_gb or AUTO
         validate_local_execution_budget(selected_cpus, selected_memory, detect_local_resource_capacity())
         execution = {"profile": "local", "max_cpus": selected_cpus, "max_memory_gb": selected_memory}
+        normalized_gene_id_type = gene_id_type.upper() if gene_id_type else None
+        selected_enrichment, _annotation = resolve_enrichment_defaults(
+            normalized_preset, normalized_species, _enrichment_selection(enrichment), normalized_gene_id_type
+        )
         review_reference = (
             _managed_reference_identity(selected_managed_reference)
             if selected_managed_reference is not None
             else reference.get("source")
         )
-        review = {"Project": name, "Destination": destination, "Species": normalized_species.value, "Input": normalized_input.value, "Input handling": "scaffold — add data after project creation" if scaffold else "import supplied inputs", "Scope": normalized_preset.value, "Design": "not applicable for QC" if normalized_preset is Preset.QC else normalized_design.value, **({} if normalized_preset is Preset.QC else {"Technical batch": "yes (metadata template gets a 'batch' column)" if template_batch else ("yes (in model)" if formula is not None and "batch" in formula.replace("~", " ").replace("+", " ").split() else "no"), "Provisional model": formula or derive_design(normalized_design, pair_id, template_batch)[0], "Contrasts": "imported" if contrasts is not None else "set later by `rnaseq design`"}), "Backend": normalized_method if normalized_input is InputType.FASTQ else "external raw counts", "Reference": review_reference, "Execution": f"local, {selected_cpus} CPUs / {selected_memory} GiB" if AUTO not in (selected_cpus, selected_memory) else f"local, CPUs={selected_cpus} / memory GiB={selected_memory} (auto = sized from the running machine)"}
+        review = {"Project": name, "Destination": destination, "Species": normalized_species.value, "Input": normalized_input.value, "Input handling": "scaffold — add data after project creation" if scaffold else "import supplied inputs", "Scope": normalized_preset.value, "Design": "not applicable for QC" if normalized_preset is Preset.QC else normalized_design.value, **({} if normalized_preset is Preset.QC else {"Technical batch": "yes (metadata template gets a 'batch' column)" if template_batch else ("yes (in model)" if formula is not None and "batch" in formula.replace("~", " ").replace("+", " ").split() else "no"), "Provisional model": formula or derive_design(normalized_design, pair_id, template_batch)[0], "Contrasts": "imported" if contrasts is not None else "set later by `rnaseq design`", "Enrichment": describe_enrichment(selected_enrichment) if normalized_preset is Preset.L2 else "selected when L2 is configured by `rnaseq design`", "Annotation": _annotation_review(normalized_species, normalized_gene_id_type)}), "Backend": normalized_method if normalized_input is InputType.FASTQ else "external raw counts", "Reference": review_reference, "Execution": f"local, {selected_cpus} CPUs / {selected_memory} GiB" if AUTO not in (selected_cpus, selected_memory) else f"local, CPUs={selected_cpus} / memory GiB={selected_memory} (auto = sized from the running machine)"}
         _new_summary(review)
         if not yes and not typer.confirm("Create this project?", default=True):
             if not noninteractive and typer.confirm("Revise choices?", default=True):
@@ -769,12 +804,12 @@ def new_project(
                     reference_fasta=None, reference_gtf=None, reference_transcript_fasta=None,
                     reference_salmon_index=None, reference_hisat2_index=None, preset=None,
                     design_type=None, condition_column=None, covariate=None, continuous_covariate=None, pair_id=None, batch=None,
-                    execution_profile=None, cpus=None, memory_gb=None,
+                    gene_id_type=None, enrichment=None, execution_profile=None, cpus=None, memory_gb=None,
                     scaffold=False, yes=False,
                 )
             typer.echo("Project creation cancelled; no project was written.")
             return
-        target = create_project(project_name=name, destination=destination, species=normalized_species, preset=normalized_preset, design_type=normalized_design, input_type=normalized_input, layout=normalized_layout, preprocessing=normalized_preprocessing, strandedness=normalized_strand, quantification_method=normalized_method, reference=reference, fastq_samplesheet=fastq_samplesheet, counts_file=counts, metadata_file=metadata, contrasts_file=contrasts, scaffold=scaffold, formula=formula, pair_id=pair_id, design_variables=design_variables, execution=execution, batch=template_batch)
+        target = create_project(project_name=name, destination=destination, species=normalized_species, preset=normalized_preset, design_type=normalized_design, input_type=normalized_input, layout=normalized_layout, preprocessing=normalized_preprocessing, strandedness=normalized_strand, quantification_method=normalized_method, reference=reference, fastq_samplesheet=fastq_samplesheet, counts_file=counts, metadata_file=metadata, contrasts_file=contrasts, scaffold=scaffold, formula=formula, pair_id=pair_id, design_variables=design_variables, execution=execution, batch=template_batch, enrichment=_enrichment_selection(enrichment), gene_id_type=normalized_gene_id_type)
     except (ValueError, ProjectCreationError) as exc:
         typer.echo(f"ERROR: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -852,6 +887,56 @@ def _show_contrasts(proposal: Any) -> None:
         typer.echo(f"      log2FC > 0 = higher in {contrast.numerator}; log2FC < 0 = higher in {contrast.denominator}")
 
 
+def _design_enrichment(
+    config: Any, enabled: bool | None, gene_id_type: str | None, *, interactive: bool,
+) -> tuple[tuple[str, ...] | None, dict[str, str] | None]:
+    """Decide the enrichment selection and annotation written by `rnaseq design`.
+
+    Moving to L2 selects every supported method; a project already at L2 keeps
+    its recorded selection unless a flag says otherwise.  ``None`` means
+    "leave project.yaml unchanged".
+    """
+
+    if enabled is not None:
+        selection: tuple[str, ...] | None = DEFAULT_L2_ENRICHMENT if enabled else ()
+    elif config.project.preset is Preset.L2:
+        selection = None
+    else:
+        selection = DEFAULT_L2_ENRICHMENT
+    normalized = gene_id_type.upper() if gene_id_type else None
+    existing = config.annotation
+    if existing is not None and normalized is not None and existing.input_id_type != normalized:
+        raise DesignSetupError(
+            f"project.yaml already declares annotation.input_id_type {existing.input_id_type}; "
+            "edit project.yaml to change it."
+        )
+    needs_annotation = bool(selection) and existing is None
+    if needs_annotation and config.organism.species.value not in ANNOTATION_DATABASES:
+        raise DesignSetupError(
+            f"Functional enrichment supports only {', '.join(ANNOTATION_DATABASES)} "
+            f"(organism.species is {config.organism.species.value!r}); re-run with --no-enrichment."
+        )
+    if needs_annotation and normalized is None:
+        if not interactive:
+            raise DesignSetupError(
+                "L2 enables GO ORA, KEGG ORA, and preranked GSEA (GO and KEGG) by default, which need the gene "
+                "identifier type used by the count matrix. Re-run with --gene-id-type ENSEMBL, ENTREZID, or SYMBOL "
+                "(Ensembl GTF/managed references use ENSEMBL), or opt out with --no-enrichment."
+            )
+        typer.echo(f"Functional enrichment (default for L2): {describe_enrichment(DEFAULT_L2_ENRICHMENT)}")
+        database = ANNOTATION_DATABASES.get(config.organism.species.value)
+        if database is not None:
+            typer.echo(f"Annotation database for {config.organism.species.value}: {database}")
+        normalized = _wizard_choice("Gene identifier type in the count matrix", GENE_ID_TYPE_CHOICES, default="ENSEMBL")
+    annotation = None
+    if existing is None and normalized is not None:
+        try:
+            annotation = default_annotation(config.organism.species, normalized)
+        except ValueError as exc:
+            raise DesignSetupError(str(exc)) from exc
+    return selection, annotation
+
+
 @app.command("design")
 def design_command(
     project_dir: Path,
@@ -859,6 +944,8 @@ def design_command(
     swap: bool = typer.Option(False, "--swap", help="Two-level designs: reverse the proposed contrast direction."),
     force: bool = typer.Option(False, "--force", help="Replace an existing non-empty contrasts.csv."),
     yes: bool = typer.Option(False, "--yes", help="Accept the proposal without prompting."),
+    gene_id_type: str | None = typer.Option(None, "--gene-id-type", help="Gene identifier type of the count matrix (ENSEMBL, ENTREZID, or SYMBOL); needed when the project has no annotation contract yet."),
+    enrichment: bool | None = typer.Option(None, "--enrichment/--no-enrichment", help="Default when moving to L2: GO ORA, KEGG ORA, and preranked GO + KEGG GSEA. --no-enrichment records an explicit opt-out; an existing L2 selection is otherwise kept."),
 ) -> None:
     """Propose and confirm L2 contrasts from the completed metadata, then prepare the project for L2."""
 
@@ -890,6 +977,7 @@ def design_command(
             raise ProjectCreationError("rnaseq design needs an interactive terminal, or --yes to accept the proposal.")
         order = tuple(level.strip() for level in condition_order.split(",")) if condition_order else None
         proposal = build_proposal(report, condition_order=order, swap=swap)
+        selected_enrichment, new_annotation = _design_enrichment(config, enrichment, gene_id_type, interactive=not yes)
         _show_design_summary(report, proposal)
         # The validator only warns (L1 QC stays available); L2 cannot run without residual degrees of freedom.
         no_df = residual_degrees_of_freedom_message(report.metadata.rows, config.design.formula, dict(report.design_variable_types)) if report.metadata else None
@@ -923,7 +1011,7 @@ def design_command(
                 return
         loaded = report.loaded
         assert loaded is not None
-        previous = write_design(loaded.root, loaded.config_path, loaded.contrasts_path, proposal)
+        previous = write_design(loaded.root, loaded.config_path, loaded.contrasts_path, proposal, enrichment=selected_enrichment, annotation=new_annotation)
         after = validate_project(project_dir)
         if not after.is_valid:
             rollback_design(loaded.config_path, loaded.contrasts_path, previous)
@@ -948,6 +1036,8 @@ def design_command(
         typer.echo(f"SYSTEM ERROR: {exc}", err=True)
         raise typer.Exit(code=2) from exc
     typer.echo(f"Wrote {len(proposal.contrasts)} contrast(s) to contrasts.csv, froze design.condition_order ({', '.join(proposal.levels)}), and set the scope to L2.")
+    final_enrichment = after.config.analysis.enrichment if after.config and after.config.analysis else ()
+    typer.echo(f"Functional enrichment: {describe_enrichment(tuple(final_enrichment))}")
     typer.echo("L2 validation: " + after.state)
     typer.echo("Planning artifacts refreshed for the new configuration (equivalent to `rnaseq plan`).")
     reuse = _latest_successful_run(Path(project_dir))

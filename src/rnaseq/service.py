@@ -78,6 +78,10 @@ from rnaseq.validators import FastqRecord, FastqSummary, ValidationReport
 from rnaseq.resource_policy import describe_policy, render_process_tuning_config, salmon_quant_tuning
 from rnaseq.workflow_assets import workflow_asset_path
 
+DESIGN_WARNING_CODES = frozenset({
+    "partially_confounded_batch", "batch_level_single_sample", "limited_replication",
+    "no_residual_degrees_of_freedom", "unused_batch_column", "inferred_continuous_design_variable",
+})
 CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 RUN_ID_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}\+[0-9]{4}(?:-[0-9]{2,3})?$")
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -896,6 +900,12 @@ def freeze_case_inputs(
         # This is the immutable, normalized enrichment input for downstream
         # tasks.  Do not make those tasks re-read mutable project.yaml.
         "annotation": report.config.annotation.model_dump(mode="json") if report.config.annotation else None,
+        # Validation warnings about the statistical design, frozen so the
+        # final report states them (e.g. partial batch confounding).
+        "design_warnings": [
+            {"code": issue.code, "message": issue.message}
+            for issue in report.warnings if issue.code in DESIGN_WARNING_CODES
+        ],
         "output_dir": str((run.run_dir / "downstream").resolve()),
     }
     contract_path = frozen / "downstream_contract.json"
@@ -1647,7 +1657,8 @@ def assemble_delivery(run: CaseRun) -> Path:
             )
     write_declared(
         delivery / delivery_filename("README.md", run.run_id),
-        f"# RNA-seq delivery package\n\nCase: `{run.case_id}`  \nRun: `{run.run_id}`  \nTimezone: `Asia/Taipei`\n\nThis directory contains only curated client deliverables. Internal logs, work directories, caches and temporary artifacts remain outside this package.\n",
+        f"# RNA-seq delivery package\n\nCase: `{run.case_id}`  \nRun: `{run.run_id}`  \nTimezone: `Asia/Taipei`\n\nThis directory contains only curated client deliverables. Internal logs, work directories, caches and temporary artifacts remain outside this package.\n"
+        + _delivery_readme_analysis_summary(run),
     )
     # This is deliberately the last mutation of delivery.  SUCCESS is recorded
     # only after this hard check confirms there are no AppleDouble entries.
@@ -1656,6 +1667,31 @@ def assemble_delivery(run: CaseRun) -> Path:
     write_delivery_manifest(delivery, declared_files=declared_files)
     _assert_delivery_appledouble_free(delivery)
     return delivery
+
+
+def _delivery_readme_analysis_summary(run: CaseRun) -> str:
+    """Summarize design warnings and per-method enrichment status for the client."""
+
+    contract_path = run.run_dir / "frozen" / "downstream_contract.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8")) if contract_path.is_file() else {}
+    if contract.get("analysis_level") != "L2":
+        return ""
+    lines = ["", "## Design warnings", ""]
+    warnings = [item.get("message") for item in contract.get("design_warnings") or [] if isinstance(item, dict)]
+    lines.extend(f"- {message}" for message in warnings if message)
+    if not any(warnings):
+        lines.append("- None reported by validation.")
+    lines.extend(["", "## Functional enrichment status", ""])
+    status_path = run.run_dir / "downstream" / "report" / "enrichment_status.tsv"
+    if not status_path.is_file():
+        lines.append("- Not available: the final report recorded no enrichment status table.")
+        return "\n".join(lines) + "\n"
+    with status_path.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle, delimiter="\t"))
+    lines.extend(["| Method | Contrast | Status |", "|---|---|---|"])
+    lines.extend(f"| {row['method']} | {row['contrast_id']} | {row['status']} |" for row in rows)
+    lines.extend(["", "Details and reasons: `tables/report/enrichment_status.tsv` and the HTML report."])
+    return "\n".join(lines) + "\n"
 
 
 def sanitize_completed_delivery(run_dir: Path) -> Path:
@@ -1670,6 +1706,43 @@ def sanitize_completed_delivery(run_dir: Path) -> Path:
     _sanitize_delivery_appledouble(delivery)
     _assert_delivery_appledouble_free(delivery)
     return delivery
+
+
+KEGG_ORGANISM_CODES = {"Homo sapiens": "hsa", "Mus musculus": "mmu"}
+
+
+def kegg_rest_preflight(organism_code: str, *, timeout: float = 15.0) -> None:
+    """Fail before any run exists when the online-only KEGG resource is unreachable."""
+
+    from urllib.error import URLError
+    from urllib.request import urlopen
+
+    endpoint = f"https://rest.kegg.jp/list/pathway/{organism_code}"
+    try:
+        with urlopen(endpoint, timeout=timeout) as response:
+            first = response.readline()
+    except (URLError, OSError, ValueError) as exc:
+        first, error = b"", str(exc)
+    else:
+        error = "no pathway records returned"
+    if not first.strip():
+        raise ExecutionPreflightError(
+            f"KEGG REST ({endpoint}) is unreachable: {error}. KEGG ORA and KEGG GSEA (part of 'gsea') use the "
+            "online KEGG resource. Restore network access before running, or remove 'kegg' and 'gsea' from "
+            "analysis.enrichment (removing 'gsea' also removes GO GSEA)."
+        )
+
+
+def _enrichment_preflight(config: ProjectConfig) -> None:
+    """Check enrichment prerequisites that project validation cannot see."""
+
+    backends = production_enrichment_backends(config.analysis.enrichment if config.analysis else ())
+    if not backends:
+        return
+    if config.annotation is None:  # also rejected by the project model
+        raise ExecutionPreflightError("analysis.enrichment requires an explicit annotation contract in project.yaml.")
+    if {"kegg", "gsea-kegg"} & set(backends):
+        kegg_rest_preflight(KEGG_ORGANISM_CODES[config.annotation.organism])
 
 
 def _backend_preflight(report: ValidationReport) -> None:
@@ -1689,6 +1762,7 @@ def _backend_preflight(report: ValidationReport) -> None:
                 raise ExecutionPreflightError("nf-core/rnaseq -profile conda needs a compatible Conda channel configuration: " + channels.detail)
         prepare_upstream_conda_cache()
     downstream_runtime_preflight()
+    _enrichment_preflight(report.config)
 
 
 def prepare_service_run(report: ValidationReport, *, profile: str) -> EffectiveResourceBudget:

@@ -296,7 +296,7 @@ def test_new_cli_writes_declared_continuous_covariates(tmp_path: Path):
         "new", "--name", "typed", "--destination", str(tmp_path), "--species", "mouse",
         "--input-type", "raw_counts", "--preset", "L2", "--design-type", "two_group",
         "--counts", str(counts), "--metadata", str(metadata), "--contrasts", str(contrasts),
-        "--condition-column", "condition", "--covariate", "batch", "--continuous-covariate", "age", "--yes",
+        "--condition-column", "condition", "--covariate", "batch", "--continuous-covariate", "age", "--gene-id-type", "SYMBOL", "--yes",
     ])
     assert result.exit_code == 0, result.output
     report = validate_project(tmp_path / "typed")

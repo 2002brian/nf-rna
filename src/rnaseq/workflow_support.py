@@ -13,7 +13,7 @@ from typing import Any
 import yaml
 
 from rnaseq.design_matrix import residual_degrees_of_freedom_message
-from rnaseq.models import normalize_enrichment_selection
+from rnaseq.models import ANNOTATION_DATABASES, describe_enrichment, normalize_enrichment_selection
 
 
 FILTER = {"rule": "remove genes with total count < 10 after all-zero removal", "minimum_total_count": 10}
@@ -172,7 +172,24 @@ def _experimental_design_html(
         rows.append(f"<p>Differential expression: {escape(contrast['numerator'])} vs {escape(contrast['denominator'])}{escape(adjustment_text)}.</p>")
     if variables.get("batch") == "categorical":
         rows.append("<p>Known batch was included as a categorical DESeq2 adjustment covariate; raw counts were not batch-corrected before inference.</p>")
+    rows.extend(_design_warnings_html(contract))
     return rows
+
+
+def _design_warnings_html(contract: dict[str, Any]) -> list[str]:
+    """State the frozen validation warnings about the statistical design."""
+
+    warnings = contract.get("design_warnings")
+    if not isinstance(warnings, list):
+        return ["<p>Design warnings: not recorded in this run's frozen contract.</p>"]
+    messages = [str(item.get("message")) for item in warnings if isinstance(item, dict) and item.get("message")]
+    if not messages:
+        return ["<p>Design warnings: none reported by validation.</p>"]
+    return [
+        "<h3>Design warnings</h3><ul>",
+        *(f"<li><strong>WARNING:</strong> {escape(message)}</li>" for message in messages),
+        "</ul>",
+    ]
 
 
 def _samples(inputs: Path) -> list[str]:
@@ -497,6 +514,93 @@ def _evaluated_terms(summary: dict[str, Any]) -> str:
     return _value(summary, "evaluated_terms") if "evaluated_terms" in summary else _value(summary, "all_terms")
 
 
+# (public method, backend directory, backend summary file, label)
+ENRICHMENT_STATUS_BACKENDS = (
+    ("go", "go", "go_backend_summary.json", "GO ORA"),
+    ("kegg", "kegg", "kegg_backend_summary.json", "KEGG ORA"),
+    ("gsea", "gsea_go", "gsea_backend_summary.json", "GO GSEA"),
+    ("gsea", "gsea_kegg", "gsea_kegg_backend_summary.json", "KEGG GSEA"),
+)
+ENRICHMENT_STATUS_COLUMNS = ("method", "selection", "contrast_id", "status", "reason")
+
+
+def _aggregate_status(statuses: list[str]) -> str:
+    """Contrast-level status with the same precedence as the R backends' overall status."""
+
+    for severe in ("FAILED", "NETWORK_UNAVAILABLE", "BLOCKED"):
+        if severe in statuses:
+            return severe
+    if statuses and all(status == "NOT_APPLICABLE" for status in statuses):
+        return "NOT_APPLICABLE"
+    if "SUCCESS" in statuses:
+        return "SUCCESS"
+    return "NO_SIGNIFICANT_TERMS" if statuses else "NOT_AVAILABLE"
+
+
+def _contrast_enrichment_status(item: dict[str, Any] | None, summary: dict[str, Any], module: str) -> tuple[str, str]:
+    if not isinstance(item, dict):
+        # A backend that stopped before per-contrast work (e.g. KEGG offline).
+        return str(summary.get("status", "NOT_AVAILABLE")), str(summary.get("reason") or "")
+    if module in {"go", "kegg"}:
+        outcomes = [value for value in (item.get("foregrounds") or {}).values() if isinstance(value, dict)]
+        reasons = "; ".join(str(value["reason"]) for value in outcomes if value.get("reason"))
+        return _aggregate_status([str(value.get("status")) for value in outcomes]), reasons
+    if "status" in item:
+        return str(item["status"]), str(item.get("reason") or "")
+    ontologies = [value for value in (item.get("ontologies") or {}).values() if isinstance(value, dict)]
+    return _aggregate_status([str(value.get("status")) for value in ontologies]), ""
+
+
+def enrichment_status_rows(
+    selected: tuple[str, ...], indexed: dict[str, Path], contrasts: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """One explicit status per enrichment method and contrast, NOT_REQUESTED included."""
+
+    rows: list[dict[str, str]] = []
+    for method, directory, summary_name, label in ENRICHMENT_STATUS_BACKENDS:
+        summary: dict[str, Any] = {}
+        if method in selected:
+            root = indexed.get(directory)
+            if root is None or not (root / summary_name).is_file():
+                raise ValueError(f"final report requires enabled {label} backend summary")
+            summary = _read_json_artifact(root / summary_name, f"{label} backend summary")
+        by_contrast = {str(item.get("contrast_id")): item for item in summary.get("contrasts", []) if isinstance(item, dict)}
+        for contrast in contrasts:
+            if method not in selected:
+                status, reason = "NOT_REQUESTED", f"'{method}' is not in analysis.enrichment"
+            else:
+                status, reason = _contrast_enrichment_status(by_contrast.get(contrast["contrast_id"]), summary, directory if method == "gsea" else method)
+            rows.append({
+                "method": label, "selection": method, "contrast_id": contrast["contrast_id"],
+                "status": status, "reason": reason,
+            })
+    return rows
+
+
+def _write_enrichment_status(rows: list[dict[str, str]], output: Path) -> None:
+    with (output / "enrichment_status.tsv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=ENRICHMENT_STATUS_COLUMNS, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        writer.writerows({key: row[key].replace("\t", " ").replace("\n", " ") for key in ENRICHMENT_STATUS_COLUMNS} for row in rows)
+
+
+def _enrichment_status_html(rows: list[dict[str, str]]) -> list[str]:
+    return [
+        "<h2>L2 — functional enrichment status</h2>",
+        "<p>Every supported method is listed for every contrast. NOT_REQUESTED means the method is not selected in "
+        "analysis.enrichment; NOT_APPLICABLE means too few mapped genes; NO_SIGNIFICANT_TERMS means the method ran and "
+        "no term passed the configured cutoffs.</p>",
+        "<table><thead><tr><th>Method</th><th>Contrast</th><th>Status</th><th>Reason</th></tr></thead><tbody>",
+        *(
+            f"<tr><td>{escape(row['method'])}</td><td>{escape(row['contrast_id'])}</td>"
+            f"<td><strong>{escape(row['status'])}</strong></td><td>{escape(row['reason'])}</td></tr>"
+            for row in rows
+        ),
+        "</tbody></table>",
+        "<p>Client table: <code>tables/report/enrichment_status.tsv</code></p>",
+    ]
+
+
 def _report_l1_only(
     contract: dict[str, Any], inputs_root: Path, manifest: dict[str, Any], project: dict[str, Any],
     l1: Path, output: Path,
@@ -652,6 +756,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
         ])
 
     indexed = {path.name: path for path in enrichment_dirs}
+    status_index = len(sections)
     if "go" in selected or "kegg" in selected:
         sections.extend([
             "<h2>L2 — over-representation analysis</h2>",
@@ -783,8 +888,15 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
                 _image_html(kegg_root / contrast_id / "dotplot.png", f"KEGG GSEA dotplot: {contrast_id}"),
                 _top_table_html(kegg_terms, ("ID", "Description", "NES", "pvalue", "p.adjust")),
             ])
-    else:
-        sections.append("<h2>L2 — GSEA</h2><p>No enrichment module was enabled for this project.</p>")
+    if not selected:
+        sections.append("<p>No functional enrichment method was selected for this project (analysis.enrichment: []).</p>")
+    elif "gsea" not in selected:
+        sections.append("<h2>L2 — preranked GSEA</h2><p>Not requested (gsea is not in analysis.enrichment).</p>")
+    # Built after the detailed sections so their specific missing-artifact
+    # errors are raised first; rendered ahead of them.
+    status_rows = enrichment_status_rows(selected, indexed, contrasts)
+    sections[status_index:status_index] = _enrichment_status_html(status_rows)
+    _write_enrichment_status(status_rows, output)
 
     execution_path = inputs_root / "execution_manifest.yaml"
     execution = yaml.safe_load(execution_path.read_text(encoding="utf-8")) if execution_path.is_file() else {}
@@ -801,8 +913,9 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
         f"<li>R: {escape(str(package_versions.get('R', 'not available')))}; DESeq2: {escape(str(package_versions.get('DESeq2', 'not available')))}.</li>"
         f"<li>{_pipeline_provenance_line(execution, project.get('project', {}).get('pipeline') if isinstance(project.get('project'), dict) else None)}</li>"
         f"<li>{_source_revision_line(execution)}</li>"
-        "<li>GO GSEA evaluates BP, MF, and CC; KEGG GSEA uses the configured KEGG provider.</li>"
-        "</ul>",
+        f"<li>Functional enrichment selected: {escape(describe_enrichment(selected))}.</li>"
+        + ("<li>GO GSEA evaluates BP, MF, and CC; KEGG GSEA uses the configured KEGG provider.</li>" if "gsea" in selected else "")
+        + "</ul>",
         "<p>This automated report contains technical/statistical results only and no biological interpretation.</p>",
         "</body></html>",
     ])
@@ -816,7 +929,7 @@ def enrichment_config(contract_path: Path, inputs: Path, l2: Path, kind: str, ou
     inputs_root, manifest = _read_execution_inputs(inputs)
     annotation = _required_frozen_annotation(contract, kind)
     organism = annotation["organism"]
-    orgdb = {"Homo sapiens": "org.Hs.eg.db", "Mus musculus": "org.Mm.eg.db"}.get(organism)
+    orgdb = ANNOTATION_DATABASES.get(organism)
     if orgdb is None:
         raise ValueError(f"unsupported enrichment organism: {organism}")
     contrasts = []

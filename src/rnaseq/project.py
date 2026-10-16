@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from rnaseq.errors import ProjectConfigError, ProjectCreationError
 from rnaseq.models import (
+    DEFAULT_L2_ENRICHMENT,
     DesignType,
     FastqPreprocessing,
     InputType,
@@ -26,6 +27,7 @@ from rnaseq.models import (
     SequencingLayout,
     Species,
     SUPPORTED_SCHEMA_VERSION,
+    default_annotation,
 )
 
 FASTQ_SAMPLESHEET_HEADER = ("sample", "fastq_1", "fastq_2", "strandedness")
@@ -160,6 +162,37 @@ def metadata_template_header(design_type: DesignType, pair_id: str | None = None
     return ",".join(("sample_id", *derive_design(design_type, pair_id, batch)[2])) + "\n"
 
 
+def resolve_enrichment_defaults(
+    preset: Preset, species: Species, enrichment: tuple[str, ...] | None, gene_id_type: str | None,
+) -> tuple[tuple[str, ...], dict[str, str] | None]:
+    """Return ``(analysis.enrichment, annotation)`` for a new project.
+
+    L2 selects every supported method unless the caller opts out with ``()``.
+    Enrichment is never dropped to make creation succeed: a missing gene ID
+    type or an unsupported organism is an error naming the remedy.
+    """
+
+    if preset is Preset.QC and (enrichment or gene_id_type):
+        raise ProjectCreationError("Enrichment and --gene-id-type do not apply to the qc preset.")
+    if preset is Preset.L1 and enrichment is not None:
+        raise ProjectCreationError(
+            "Enrichment is selected when the project is configured for L2 (rnaseq new --preset L2, "
+            "or rnaseq design after L1); --enrichment/--no-enrichment does not apply to L1."
+        )
+    selected = (DEFAULT_L2_ENRICHMENT if enrichment is None else tuple(enrichment)) if preset is Preset.L2 else ()
+    if selected and gene_id_type is None:
+        raise ProjectCreationError(
+            "L2 enables GO ORA, KEGG ORA, and preranked GSEA (GO and KEGG) by default, which need the "
+            "gene identifier type used by the count matrix. Pass --gene-id-type ENSEMBL, ENTREZID, or SYMBOL "
+            "(Ensembl GTF/managed references use ENSEMBL), or opt out with --no-enrichment."
+        )
+    try:
+        annotation = default_annotation(species, gene_id_type) if gene_id_type is not None else None
+    except ValueError as exc:
+        raise ProjectCreationError(str(exc)) from exc
+    return selected, annotation
+
+
 def _project_yaml(
     project_id: str,
     species: Species,
@@ -176,6 +209,8 @@ def _project_yaml(
     pair_id: str | None = None,
     design_variables: dict[str, str] | None = None,
     batch: bool = False,
+    enrichment: tuple[str, ...] = (),
+    annotation: dict[str, str] | None = None,
 ) -> str:
     if formula is None:
         formula, derived_variables, _columns = derive_design(design_type, pair_id, batch)
@@ -221,7 +256,8 @@ def _project_yaml(
         "reference": reference or {"source": "igenomes", "genome": None},
         "execution": execution or {"profile": "local", "max_cpus": "auto", "max_memory_gb": "auto"},
         "thresholds": {"padj": 0.05, "abs_log2fc": 1.0},
-        "analysis": {"enrichment": []},
+        **({"annotation": dict(annotation)} if annotation else {}),
+        "analysis": {"enrichment": list(enrichment)},
     }
     if input_type is InputType.FASTQ:
         content["input"]["layout"] = (layout or SequencingLayout.PAIRED_END).value
@@ -329,6 +365,8 @@ def create_project(
     design_variables: dict[str, str] | None = None,
     execution: dict[str, object] | None = None,
     batch: bool = False,
+    enrichment: tuple[str, ...] | None = None,
+    gene_id_type: str | None = None,
 ) -> Path:
     """Create a new project atomically and return its final path.
 
@@ -336,7 +374,13 @@ def create_project(
     metadata template gains a ``batch`` column and the provisional formula
     adjusts for it.  It cannot be combined with an explicit ``formula`` (the
     advanced path states its own model) or an imported metadata file.
+
+    ``enrichment`` ``None`` selects the preset default: every supported method
+    for L2 and none otherwise; ``()`` is an explicit opt-out.  ``gene_id_type``
+    records the annotation contract that enrichment requires.
     """
+
+    selected_enrichment, annotation = resolve_enrichment_defaults(preset, species, enrichment, gene_id_type)
 
     if batch and (formula is not None or metadata_file is not None):
         raise ProjectCreationError(
@@ -430,6 +474,7 @@ def create_project(
                 project_name, species, preset, design_type, input_type, layout,
                 preprocessing, strandedness, quantification_method,
                 resolved_reference, execution, formula, pair_id, design_variables, batch,
+                selected_enrichment, annotation,
             ),
             encoding="utf-8",
             newline="\n",

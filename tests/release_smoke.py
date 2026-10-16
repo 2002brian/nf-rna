@@ -49,7 +49,7 @@ def main() -> None:
         project_result = _run([
             str(executable), "new", "--name", "installed-project", "--destination", str(temporary),
             "--species", "mouse", "--input-type", "raw_counts", "--preset", "L2",
-            "--design-type", "two_group", "--scaffold", "--yes",
+            "--design-type", "two_group", "--gene-id-type", "SYMBOL", "--scaffold", "--yes",
         ], cwd=temporary)
         if project_result.returncode != 0:
             raise SystemExit(project_result.stderr or project_result.stdout)

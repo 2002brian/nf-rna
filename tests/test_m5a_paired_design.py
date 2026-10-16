@@ -234,7 +234,7 @@ def test_new_scaffolds_explicit_paired_contract_without_biological_data(tmp_path
     result = runner.invoke(app, [
         "new", "--name", "paired-scaffold", "--destination", str(tmp_path),
         "--species", "human", "--input-type", "raw_counts", "--preset", "L2",
-        "--design-type", "paired_two_group", "--pair-id", "donor",
+        "--design-type", "paired_two_group", "--pair-id", "donor", "--gene-id-type", "ENSEMBL",
         "--scaffold", "--yes",
     ])
     assert result.exit_code == 0, result.output

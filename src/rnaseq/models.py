@@ -292,6 +292,41 @@ INTERNAL_ENRICHMENT_BACKENDS = {
     "kegg": ("kegg",),
     "gsea": ("gsea-go", "gsea-kegg"),
 }
+# Every supported method is selected by default whenever a project is
+# configured for L2; opting out is an explicit, recorded ``[]``.
+DEFAULT_L2_ENRICHMENT = PUBLIC_ENRICHMENT_METHODS
+ENRICHMENT_METHOD_LABELS = {
+    "go": ("GO ORA",),
+    "kegg": ("KEGG ORA",),
+    "gsea": ("GO GSEA", "KEGG GSEA"),
+}
+# The only organisms with a locked OrgDb in the downstream runtime.
+ANNOTATION_DATABASES = {"Homo sapiens": "org.Hs.eg.db", "Mus musculus": "org.Mm.eg.db"}
+GENE_ID_TYPES = ("ENSEMBL", "ENTREZID", "SYMBOL")
+
+
+def default_annotation(species: "Species", input_id_type: str) -> dict[str, str]:
+    """Return the minimal annotation contract for a new enrichment-ready project.
+
+    Raises ``ValueError`` with the remedy when the organism has no supported
+    annotation database or the identifier type is unknown.
+    """
+
+    if species.value not in ANNOTATION_DATABASES:
+        raise ValueError(
+            f"Functional enrichment supports only {', '.join(ANNOTATION_DATABASES)} "
+            f"(organism.species is {species.value!r}); opt out with --no-enrichment."
+        )
+    if input_id_type not in GENE_ID_TYPES:
+        raise ValueError(f"Gene ID type must be one of {', '.join(GENE_ID_TYPES)} (got {input_id_type!r}).")
+    return {"organism": species.value, "input_id_type": input_id_type}
+
+
+def describe_enrichment(selected: tuple[str, ...]) -> str:
+    """Human-readable list of the backend methods a selection launches."""
+
+    labels = [label for method in selected for label in ENRICHMENT_METHOD_LABELS[method]]
+    return ", ".join(labels) if labels else "none (analysis.enrichment: [])"
 
 
 def normalize_enrichment_selection(value: object) -> tuple[str, ...]:
@@ -516,7 +551,11 @@ class ProjectConfig(StrictModel):
             raise ValueError(f"schema_version {self.schema_version} requires an explicit analysis.enrichment list (it may be empty).")
         selected = self.analysis.enrichment if self.analysis is not None else ()
         if selected and self.annotation is None:
-            raise ValueError("analysis.enrichment requires an explicit annotation contract.")
+            raise ValueError(
+                "analysis.enrichment requires an explicit annotation contract: add annotation.organism "
+                f"(matching organism.species) and annotation.input_id_type ({', '.join(GENE_ID_TYPES)}) "
+                "to project.yaml, or opt out with analysis.enrichment: []."
+            )
         if selected and self.project.preset is not Preset.L2:
             raise ValueError("analysis.enrichment is only supported by L2 projects.")
         return self
