@@ -2,9 +2,9 @@
 
 All notable changes to this project are documented here.
 
-## Unreleased
+## 1.4.0 — Unreleased
 
-Changes on `main` since `v1.3.0`. Unless stated otherwise, DESeq2, tximport, nf-core/rnaseq 3.26.0, contrast semantics, enrichment methods, and scientific result tables are unchanged.
+The release date is set when the release is finalized. Changes since `v1.3.0`. Unless stated otherwise, DESeq2, tximport, nf-core/rnaseq 3.26.0, contrast semantics, enrichment methods, and scientific result tables are unchanged.
 
 ### Template-first project lifecycle
 
@@ -24,6 +24,19 @@ Changes on `main` since `v1.3.0`. Unless stated otherwise, DESeq2, tximport, nf-
 - All R figures go through a central figure policy (fonts, typography, Okabe–Ito group colours, appropriate sequential/diverging scales) and are exported as PNG, 300 dpi TIFF, and PDF; delivery adds `figures/pdf` and per-module `figure_manifest.json`. Row z-scores keep undefined values as NA.
 - PCA sample labels are placed with ggrepel so tight clusters stay legible; ggrepel is now part of the downstream runtime package probe. DEG heatmap titles are compact and no longer run past the page edge.
 - GO and KEGG ORA dotplots carry a subtitle naming the comparison and the foreground gene set (significant, or higher in the numerator/denominator), and the report shows the correct KEGG ORA term counts.
+
+### Figure standard
+
+- New project option `figures: {preset, profile}` selects the figure style. `preset` is `standard` (canonical), `bioinfo` (a backward-compatible alias, resolved to `standard` everywhere) or `legacy`; `profile` is `general` (default), `nature`, `plos` or `elsevier`. The selection is validated, frozen with the run, and recorded in the figure manifests.
+- **New projects** created by `rnaseq new` now write `figures: {preset: standard, profile: general}`, so they render with the standard preset. **Projects without a `figures` section keep the `legacy` preset on the `general` profile** and render exactly as before; the legacy preset is unchanged and every legacy figure, source-data table and manifest key reproduces the 1.3.0 output. Existing projects change style only if `figures:` is added.
+- The `standard` preset covers every figure type: volcano, PCA (including the batch PCA), sample boxplots, sample correlation heatmap, DEG heatmaps, and the GO, KEGG and GSEA dotplots. It draws with the bundled Arimo font (SIL OFL 1.1, verified by hash before the first figure; never substituted by Arial, Helvetica or DejaVu Sans and never downloaded) and sizes figures to their content within the selected profile's limits (columns, maximum size, minimum text size, raster dpi). PLOS, which defines no single column, uses an 85 mm compact width for volcano and PCA.
+- Approved colours of the standard preset: group colours 1-8 (more than eight levels keep slots 1-8 and add deterministic, colour-vision-aware extension colours), `nf-rna Standard Batch Palette v1` for batch annotations and batch PCA, volcano up/down colours, a diverging heatmap scale, and `nf-rna Standard Enrichment Scale v1` for adjusted P in GSEA dotplots (the ORA mark colour is its first stop). Scales, limits, transformations and all scientific mappings are unchanged. Colour-vision limitations are documented in `docs/figure-standard.md`.
+- Figure manifests (`nf-rna.figure-manifest.v1`, schema unchanged) describe the applied standard preset: the font actually used and its SHA-256, the profile, and the palette names; additive keys only. Legacy manifests keep their original keys.
+- `docs/figure-standard.md` is the authoritative description of presets, profiles, typography, the output contract and verification. Review tools for figure comparison, palette and profile audits and package checks are shipped under `tools/figure_review/`, and the sdist now includes `tools/` and `.claude/skills`.
+
+### Fixed: stale text metrics across graphics devices
+
+- R can reuse the text metric it last computed for a font when the next graphics device has a different resolution (PDF 72 dpi, PNG 150 dpi, TIFF 300/500 dpi). The first measurement on the new device then occasionally returned the previous device's units, mis-sizing axis and legend rows by a few points; in a controlled stress test about 3% of outputs were affected in the legacy drawing order. Every output device is now primed with a throwaway measurement before drawing, which draws nothing and changes no correct output. In whole-pipeline stress runs 0 of 6,120 figure files deviated with the fix and 3 of 6,120 without it. The cause was reproduced in plain R and grid; details and evidence are in `docs/figure-standard.md`.
 
 ### Execution and operations
 
