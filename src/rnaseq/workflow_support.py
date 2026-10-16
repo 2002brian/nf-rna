@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 
 from rnaseq.design_matrix import residual_degrees_of_freedom_message
+from rnaseq.figure_settings import resolve_run_figure_settings
 from rnaseq.models import ANNOTATION_DATABASES, describe_enrichment, normalize_enrichment_selection
 
 
@@ -334,6 +335,7 @@ def l1_config(contract_path: Path, inputs: Path, output: Path) -> dict[str, Any]
         "samples": _samples(inputs),
         "output_dir": str(output),
         "filter": FILTER,
+        "figure_style": resolve_run_figure_settings(contract, project),
         "runtime": _runtime_provenance(contract, "l1_analysis.R", "L1"),
     }
 
@@ -359,6 +361,7 @@ def l2_config(contract_path: Path, inputs: Path, l1: Path, output: Path) -> dict
         "contrasts": contrasts,
         "l1_vst": str(l1 / "vst.tsv"),
         "heatmap_top_n": 50,
+        "figure_style": resolve_run_figure_settings(contract, project),
         "runtime": _runtime_provenance(contract, "l2_analysis.R", "L2"),
     }
 
@@ -950,6 +953,7 @@ def enrichment_config(contract_path: Path, inputs: Path, l2: Path, kind: str, ou
     cfg: dict[str, Any] = {
         "output_dir": str(output / "enrichment" / names[kind]), "annotation": annotation,
         "orgdb_package": orgdb, "contrasts": contrasts,
+        "figure_style": resolve_run_figure_settings(contract, _project(inputs)),
         "runtime": _runtime_provenance(contract, script, kind),
     }
     if kind in {"kegg", "gsea-kegg"}:

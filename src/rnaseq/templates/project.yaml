@@ -32,3 +32,6 @@ thresholds:
   abs_log2fc: 1.0
 analysis:
   enrichment: []
+figures:
+  preset: standard
+  profile: general

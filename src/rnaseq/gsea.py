@@ -123,6 +123,7 @@ def execute_gsea(prepared: PreparedGsea) -> GseaResult:
         "annotation": prepared.annotation.model_dump(),
         "orgdb_package": ORGDB[prepared.annotation.organism],
         "contrasts": contrasts,
+        "figure_style": dict(prepared.l2.l1.figures),
     }
     _write(output / "backend_config.json", json.dumps(cfg, indent=2, sort_keys=True) + "\n")
     script = resources.files("rnaseq.r").joinpath("gsea_analysis.R")

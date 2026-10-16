@@ -70,6 +70,7 @@ from rnaseq.execution import (
 from rnaseq.downstream_runtime import (
     DownstreamRuntime, downstream_runtime_preflight, ensure_downstream_runtime, native_platform, runtime_source_revision,
 )
+from rnaseq.figure_settings import resolve_figure_settings, resolve_run_figure_settings
 from rnaseq.models import FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, ProjectConfig, production_enrichment_backends
 from rnaseq.project import LoadedProject
 from rnaseq.hisat2_featurecounts import FASTP_VERSION, FASTQC_VERSION, HISAT2_VERSION, MULTIQC_VERSION, SAMTOOLS_VERSION, SUBREAD_VERSION
@@ -890,6 +891,8 @@ def freeze_case_inputs(
         # Downstream tasks must never infer L2 from contrasts or metadata.
         "analysis_level": report.config.project.preset.value,
         "analysis": report.config.analysis.model_dump(mode="json") if report.config.analysis else {"enrichment": []},
+        # Resolved once here; downstream tasks read this, never mutable project.yaml defaults.
+        "figures": resolve_figure_settings(report.config.figures),
         "execution": dict(backend_execution),
         "design": {
             "type": report.config.design.type.value,
@@ -2010,6 +2013,12 @@ def _clone_retry_contract(source: RetrySource, run: CaseRun, command: list[str])
     if config.get("input", {}).get("type") == "fastq" and execution_backend() == BACKEND_CONDA:
         _write_text(frozen / "nfcore.conda.config", render_upstream_conda_config(upstream_conda_cache()))
     contract = _read_json_mapping(frozen / "downstream_contract.json", "cloned retry downstream contract")
+    # A retry keeps the source run's frozen figure setting byte-for-byte (an old contract
+    # without ``figures`` stays legacy); it is only checked, never re-resolved or rewritten.
+    try:
+        resolve_run_figure_settings(contract, config)
+    except ValueError as exc:
+        raise ExecutionPreflightError(f"Retry source figure settings are inconsistent: {exc}") from exc
     contract["case"] = {"id": run.case_id, "run_id": run.run_id, "timezone": "Asia/Taipei"}
     for key, name in (("project_config", "project.yaml"), ("metadata", "metadata.csv"), ("contrasts", "contrasts.csv"), ("input_manifest", "input_manifest.yaml")):
         contract[key] = str((frozen / name).resolve())

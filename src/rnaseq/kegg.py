@@ -146,6 +146,7 @@ def execute_kegg(prepared: PreparedKegg) -> KeggResult:
         "orgdb_package": ORGDB[prepared.annotation.organism],
         "kegg": {"organism_code": prepared.adapter.organism_code, "provider": prepared.adapter.provider, "probe_endpoint": prepared.adapter.probe_endpoint},
         "contrasts": contrasts,
+        "figure_style": dict(prepared.l2.l1.figures),
     }
     _write(output / "backend_config.json", json.dumps(cfg, indent=2, sort_keys=True) + "\n")
     script = resources.files("rnaseq.r").joinpath("kegg_analysis.R")

@@ -300,6 +300,8 @@ def execute_l2(prepared: PreparedL2) -> L2Result:
         "thresholds": {"padj": prepared.config.thresholds.padj, "abs_log2fc": prepared.config.thresholds.abs_log2fc},
         "contrasts": [{"contrast_id": item.contrast_id, "factor": item.factor, "numerator": item.numerator, "denominator": item.denominator} for item in prepared.contrasts],
         "l1_vst": str(prepared.l1.output_dir / "vst.tsv"), "heatmap_top_n": HEATMAP_TOP_N,
+        # One setting per run: L2 reuses the figure settings resolved for its own L1.
+        "figure_style": dict(prepared.l1.figures),
     }
     _write(output / "backend_config.json", json.dumps(config, indent=2, sort_keys=True) + "\n")
     provenance = _provenance(prepared, l1_result.summary)

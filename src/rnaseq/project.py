@@ -258,6 +258,9 @@ def _project_yaml(
         "thresholds": {"padj": 0.05, "abs_log2fc": 1.0},
         **({"annotation": dict(annotation)} if annotation else {}),
         "analysis": {"enrichment": list(enrichment)},
+        # New projects select the current figure style explicitly; projects without
+        # this section keep rendering the legacy style.
+        "figures": {"preset": "standard", "profile": "general"},
     }
     if input_type is InputType.FASTQ:
         content["input"]["layout"] = (layout or SequencingLayout.PAIRED_END).value

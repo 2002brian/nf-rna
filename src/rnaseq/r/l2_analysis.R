@@ -96,6 +96,8 @@ rownames(vst_table) <- vst_table[[1]]
 vst_matrix <- as.matrix(vst_table[, samples, drop = FALSE])
 write_results <- function(df, path) write.table(df, path, sep = "\t", quote = FALSE, row.names = FALSE, na = "NA")
 fig <- nf_rna_figure_context(cfg)
+hfig <- nf_rna_figure_scope(fig, "heatmap")  # the context DEG heatmaps are drawn with (standard preset when requested)
+vfig <- nf_rna_figure_scope(fig, "volcano")  # the context volcano plots are drawn with (standard preset when requested)
 for (item in cfg$contrasts) {
   contrast_id <- item$contrast_id; factor <- item$factor; numerator <- item$numerator; denominator <- item$denominator
   if (!(factor %in% names(metadata))) stop(paste("contrast factor absent from metadata:", factor))
@@ -119,24 +121,28 @@ for (item in cfg$contrasts) {
                         capped = !is.na(result_df$padj) & result_df$padj < padj_floor)
   plot_df <- plot_df[order(plot_df$group != "Not significant"), , drop = FALSE]  # significant points drawn on top, no transparency
   drawable <- is.finite(result_df$log2FoldChange) & !is.na(result_df$padj)
-  counts <- table(factor(direction[drawable], levels = names(NF_RNA_DIRECTION_COLOURS)))
+  counts <- table(factor(direction[drawable], levels = names(nf_rna_direction_colours(vfig))))
   direction_labels <- c(Up = sprintf("Higher in %s (%d)", numerator, counts[["Up"]]), Down = sprintf("Higher in %s (%d)", denominator, counts[["Down"]]), "Not significant" = sprintf("Not significant (%d)", counts[["Not significant"]]))
   x_extent <- max(c(abs(plot_df$lfc[is.finite(plot_df$lfc)]), cfg$thresholds$abs_log2fc, 1), na.rm = TRUE) * 1.05
   line <- nf_rna_linewidth(0.5)
+  volcano_width_mm <- nf_rna_layout_width_mm(vfig, "volcano", fig$profile$double_col_mm)
+  volcano_height_mm <- if (is.na(nf_rna_layout_aspect(vfig, "volcano"))) 120 else min(vfig$profile$max_height_mm, volcano_width_mm * nf_rna_layout_aspect(vfig, "volcano"))
   p <- ggplot(plot_df, aes(x = lfc, y = -log10(plot_padj), color = group, shape = capped)) +
     geom_hline(yintercept = -log10(cfg$thresholds$padj), linetype = "dashed", linewidth = line, colour = "grey40") +
     (if (cfg$thresholds$abs_log2fc > 0) geom_vline(xintercept = c(-1, 1) * cfg$thresholds$abs_log2fc, linetype = "dashed", linewidth = line, colour = "grey40")) +
-    geom_point(na.rm = TRUE, size = 0.8) +
-    scale_color_manual(values = NF_RNA_DIRECTION_COLOURS, labels = direction_labels, breaks = names(NF_RNA_DIRECTION_COLOURS), name = NULL) +
+    geom_point(na.rm = TRUE, size = 0.8, alpha = nf_rna_point_alpha(vfig)) +
+    scale_color_manual(values = nf_rna_direction_colours(vfig), labels = direction_labels, breaks = names(nf_rna_direction_colours(vfig)), name = NULL) +
     scale_shape_manual(values = c("FALSE" = 16, "TRUE" = 17), breaks = "TRUE", labels = "padj = 0, drawn at display floor", name = NULL, guide = if (any(plot_df$capped)) "legend" else "none") +
     scale_x_continuous(limits = c(-x_extent, x_extent)) +
-    labs(x = paste0("log2 fold change (", numerator, " / ", denominator, ")"), y = "-log10(adjusted P, BH)") + nf_rna_theme(fig) + theme(legend.position = "bottom")
-  nf_rna_save_figure(fig, p, file.path(directory, "volcano"), fig$profile$double_col_mm, 120, cfg$output_dir, list(
+    labs(x = paste0("log2 fold change (", numerator, " / ", denominator, ")"), y = "-log10(adjusted P, BH)") + nf_rna_theme(vfig) + theme(legend.position = "bottom") +
+    (if (!is.null(nf_rna_layout_value(vfig, "volcano", "legend_ncol"))) theme(legend.key.height = grid::unit(3, "mm"), legend.key.spacing.y = grid::unit(0.5, "mm"))) +
+    (if (!is.null(nf_rna_layout_value(vfig, "volcano", "legend_ncol"))) guides(color = guide_legend(ncol = nf_rna_layout_value(vfig, "volcano", "legend_ncol"), order = 1), shape = guide_legend(order = 2)))
+  nf_rna_save_figure(vfig, p, file.path(directory, "volcano"), volcano_width_mm, volcano_height_mm, cfg$output_dir, list(
     kind = "volcano", contrast = list(contrast_id = contrast_id, factor = factor, numerator = numerator, denominator = denominator, direction = "log2FC > 0: higher in numerator"),
     statistics = list(fold_change = "DESeq2 unshrunken log2FoldChange", adjusted_p = "DESeq2 padj (Benjamini-Hochberg, independent filtering)"),
     thresholds = list(padj_below = cfg$thresholds$padj, abs_log2fc_at_least = cfg$thresholds$abs_log2fc, lines = "dashed lines at the significance thresholds"),
     display = list(padj_zero_floor = padj_floor, capped_points = sum(plot_df$capped), x_axis = "symmetric about 0", genes_without_padj = "not drawn", labels = "none; no genes are labelled", legend_counts = "drawn genes only (finite log2FC and non-NA padj)", genes_not_drawn = sum(!drawable)),
-    counts = as.list(counts), colours = as.list(NF_RNA_DIRECTION_COLOURS),
+    counts = as.list(counts), colours = as.list(nf_rna_direction_colours(vfig)),
     source_data = list(nf_rna_source_data(file.path(directory, "all_genes.tsv"), cfg$output_dir, "all DESeq2 results for this contrast"))
   ))
   heatmap_status <- "NOT_APPLICABLE"; heatmap_reason <- "no significant genes"
@@ -157,7 +163,7 @@ for (item in cfg$contrasts) {
       z_limit <- 2
       display <- nf_rna_saturate(drawn, z_limit)
       row_tree <- nf_rna_cluster(drawn); column_tree <- nf_rna_cluster(t(drawn))
-      group_colours <- nf_rna_categorical_colors(levels(metadata[[factor]]))  # same levels and order as the L1 PCA
+      group_colours <- nf_rna_group_colours(levels(metadata[[factor]]), context = hfig)  # the same colour per group as the L1 PCA and boxplots
       annotation <- data.frame(metadata[heatmap_samples, factor], row.names = heatmap_samples, check.names = FALSE); names(annotation) <- factor
       annotation_colours <- setNames(list(group_colours[intersect(names(group_colours), unique(annotation[[factor]]))]), factor)
       profile <- fig$profile
@@ -168,32 +174,43 @@ for (item in cfg$contrasts) {
       show_rows <- fits(row_pt)
       height_mm <- if (show_rows) max(80, overhead_mm + nrow(display) * nf_rna_pt_to_mm(row_pt) * 1.25) else profile$max_height_mm
       legend_at <- seq(-z_limit, z_limit, by = 1)
-      # Compact two-line title; the selection rule and transformations are in the manifest.
-      heat_title <- nf_rna_heatmap_title(fig, numerator, denominator, width_mm = profile$double_col_mm,
+      standard_heatmap <- identical(hfig$preset, "standard")
+      heat_title <- nf_rna_heatmap_title(hfig, numerator, denominator, width_mm = if (standard_heatmap) nf_rna_single_column_mm(hfig) else profile$double_col_mm,
         detail = if (nrow(display) == nrow(selected)) sprintf("Top %d DEGs \u00b7 row z-score of VST", nrow(selected)) else sprintf("Top %d DEGs (%d drawn) \u00b7 row z-score of VST", nrow(selected), nrow(display)))
-      heat <- pheatmap(display, color = nf_rna_diverging_palette(100), breaks = seq(-z_limit, z_limit, length.out = 101), na_col = NF_RNA_NA_COLOUR,
+      heat_args <- list(mat = display, color = nf_rna_diverging_palette(100, hfig), breaks = seq(-z_limit, z_limit, length.out = 101), na_col = nf_rna_na_colour(hfig),
         cluster_rows = if (is.null(row_tree)) FALSE else row_tree, cluster_cols = if (is.null(column_tree)) FALSE else column_tree,
-        annotation_col = annotation, annotation_colors = annotation_colours, border_color = NA, show_rownames = show_rows,
+        annotation_col = annotation, annotation_colors = annotation_colours, border_color = NA,
         legend_breaks = legend_at, legend_labels = c(paste0("\u2264", -z_limit), legend_at[-c(1, length(legend_at))], paste0("\u2265", z_limit)),
-        main = heat_title, fontsize = profile$base_pt, fontsize_row = row_pt, fontsize_col = profile$small_pt, silent = TRUE)
-      heat <- nf_rna_span_pheatmap_title(heat)
-      nf_rna_save_figure(fig, heat, file.path(directory, "heatmap"), profile$double_col_mm, height_mm, cfg$output_dir, list(
+        main = heat_title, fontsize = profile$base_pt, fontsize_col = profile$small_pt, silent = TRUE)
+      if (!standard_heatmap) {
+        heat <- do.call(pheatmap, c(heat_args, list(show_rownames = show_rows, fontsize_row = row_pt)))
+      } else {
+        # Content-aware size: absolute cells, measured labels/trees/legend, never above the profile maximum.
+        fit <- nf_rna_deg_heatmap(hfig, display, annotation, annotation_colours, row_tree, column_tree, heat_title, z_limit)
+        heat <- fit$heat; show_rows <- fit$show_rows; row_pt <- fit$row_pt; height_mm <- fit$height_mm
+      }
+      if (!standard_heatmap) heat <- nf_rna_span_pheatmap_title(heat)
+      heat_width_mm <- if (standard_heatmap) fit$width_mm else profile$double_col_mm
+      nf_rna_save_figure(hfig, heat, file.path(directory, "heatmap"), heat_width_mm, height_mm, cfg$output_dir, c(list(
         kind = "DEG heatmap", title = heat_title, title_layout = "contrast line(s) over a detail line, centred across the full figure width",
         contrast = list(contrast_id = contrast_id, factor = factor, numerator = numerator, denominator = denominator),
         display_subset = list(rule = sprintf("top %d significant genes by padj, ties by gene_id", cfg$heatmap_top_n), selected = nrow(selected), drawn = nrow(display), significant_total = nrow(significant_df),
                               samples = "samples in the numerator and denominator groups"),
         transformation = list(values = "blind VST from L1", row_zscore = "per gene across the drawn samples: (x - mean) / sd (n - 1)",
                               undefined_policy = "missing values and rows with <2 finite values or zero variance stay NA; rows with no defined z-score are not drawn",
-                              undefined_rows = as.list(undefined), missing_cells_drawn = sum(is.na(drawn)), na_colour = NF_RNA_NA_COLOUR,
+                              undefined_rows = as.list(undefined), missing_cells_drawn = sum(is.na(drawn)), na_colour = nf_rna_na_colour(fig),
                               colour_saturation = sprintf("visual only: colours saturate at |z| >= %d (legend \u2264-%d / \u2265%d); heatmap_zscores.tsv keeps the unclipped values", z_limit, z_limit, z_limit)),
         clustering = list(rows = if (is.null(row_tree)) "off (undefined distances or <2 rows)" else "complete linkage, Euclidean distance on unclipped z-scores",
                           columns = if (is.null(column_tree)) "off (undefined distances or <2 samples)" else "complete linkage, Euclidean distance on unclipped z-scores"),
-        colour_scale = list(kind = "diverging, midpoint 0", limits = c(-z_limit, z_limit), colours = as.list(NF_RNA_DIVERGING_ENDS)), group_colours = as.list(group_colours),
+        colour_scale = list(kind = "diverging, midpoint 0", limits = c(-z_limit, z_limit), colours = as.list(nf_rna_diverging_ends(fig))), group_colours = as.list(group_colours),
         row_labels = if (show_rows) sprintf("%.1f pt gene IDs", row_pt) else "hidden: too many rows to label legibly at this height",
         source_data = list(nf_rna_source_data(file.path(directory, "heatmap_zscores.tsv"), cfg$output_dir, "z-scores (unclipped, NA preserved)"),
                            nf_rna_source_data(file.path(directory, "heatmap_genes.tsv"), cfg$output_dir, "selected genes"),
                            nf_rna_source_data(file.path(directory, "significant.tsv"), cfg$output_dir, "complete significant result set"))
-      ))
+      ), if (standard_heatmap) list(
+        layout = list(cell_width_mm = fit$cw, cell_height_mm = fit$ch, sample_labels = if (fit$show_cols) "shown" else "hidden: too many samples to label legibly within the profile maximum"),
+        display_order = list(rows = if (is.null(row_tree)) rownames(display) else rownames(display)[heat$tree_row$order],
+                             columns = if (is.null(column_tree)) colnames(display) else colnames(display)[heat$tree_col$order]))))
       heatmap_status <- "AVAILABLE"; heatmap_reason <- NULL
     } else heatmap_reason <- "no selected gene has a defined row z-score"
   }
