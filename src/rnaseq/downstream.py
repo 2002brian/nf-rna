@@ -21,6 +21,7 @@ import yaml
 
 from rnaseq.errors import DownstreamExecutionError
 from rnaseq.execution import RuntimeCheck
+from rnaseq.figure_settings import resolve_figure_settings
 from rnaseq.models import InputType, ProjectConfig
 from rnaseq.references import sha256_file
 from rnaseq.validators import ValidationReport
@@ -43,6 +44,8 @@ class PreparedL1:
     metadata_path: Path
     formula: str
     config: dict[str, Any]
+    # Resolved figure settings; kept out of ``config`` so provenance YAML is unchanged.
+    figures: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -166,6 +169,7 @@ def prepare_l1(report: ValidationReport, *, run_id: str | None) -> PreparedL1:
                 "pair_id": config.design.pair_id,
                 "design_variable_types": dict(report.design_variable_types),
             },
+            resolve_figure_settings(config.figures),
         )
     if not run_id:
         raise DownstreamExecutionError("FASTQ L1 analysis requires explicit --run-id; a latest run is never selected implicitly.")
@@ -245,6 +249,8 @@ def prepare_l1(report: ValidationReport, *, run_id: str | None) -> PreparedL1:
                 or dict(report.design_variable_types)
             ),
         },
+        # The run is immutable: its frozen project decides the figure style.
+        resolve_figure_settings(frozen_config.figures),
     )
 
 
@@ -299,6 +305,7 @@ def execute_l1(prepared: PreparedL1) -> L1Result:
     backend_config = {
         **prepared.config, "metadata": str(prepared.metadata_path.resolve()), "formula": prepared.formula,
         "samples": list(prepared.sample_ids), "output_dir": str(output.resolve()), "filter": L1_FILTER,
+        "figure_style": dict(prepared.figures),
     }
     config_path = output / "backend_config.json"
     _write(config_path, json.dumps(backend_config, indent=2, sort_keys=True) + "\n")

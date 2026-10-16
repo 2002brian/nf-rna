@@ -137,6 +137,7 @@ def execute_go(prepared: PreparedGo) -> GoResult:
     cfg = {
         "output_dir": str(output.resolve()), "annotation": prepared.annotation.model_dump(),
         "orgdb_package": ORGDB[prepared.annotation.organism], "contrasts": contrasts,
+        "figure_style": dict(prepared.l2.l1.figures),
     }
     _write(output / "backend_config.json", json.dumps(cfg, indent=2, sort_keys=True) + "\n")
     script = resources.files("rnaseq.r").joinpath("go_analysis.R")

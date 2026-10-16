@@ -17,6 +17,10 @@ NFCORE_RNASEQ_VERSION = "3.26.0"
 PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
+# Figure preset names: ``standard`` is canonical, ``bioinfo`` its backward-compatible alias.
+PRESET_ALIASES = {"bioinfo": "standard"}
+
+
 class StrictModel(BaseModel):
     """Base model that rejects unrecognized configuration fields."""
 
@@ -437,6 +441,25 @@ class ExecutionConfig(StrictModel):
     max_memory_gb: Annotated[int, Field(ge=1)] | Literal["auto"] = "auto"
 
 
+class FiguresConfig(StrictModel):
+    """Explicit figure-style selection for the project's downstream figures.
+
+    ``preset`` is required whenever the section is present so a style is never
+    chosen implicitly; an absent section resolves to ``legacy`` (see
+    ``rnaseq.figure_settings``).  ``standard`` is the canonical publication
+    preset; ``bioinfo`` is its backward-compatible alias and is normalised to
+    ``standard`` on parsing.
+    """
+
+    preset: Literal["standard", "bioinfo", "legacy"]
+    profile: Literal["general", "nature", "plos", "elsevier"] = "general"
+
+    @field_validator("preset")
+    @classmethod
+    def _canonical_preset(cls, value: str) -> str:
+        return PRESET_ALIASES.get(value, value)
+
+
 class ProjectConfig(StrictModel):
     schema_version: StrictStr
     project: ProjectInfo
@@ -454,6 +477,7 @@ class ProjectConfig(StrictModel):
     thresholds: ThresholdsConfig
     annotation: AnnotationConfig | None = None
     analysis: AnalysisConfig | None = None
+    figures: FiguresConfig | None = None
 
     @field_validator("schema_version")
     @classmethod

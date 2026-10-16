@@ -222,6 +222,9 @@ def _project_yaml(
         "execution": execution or {"profile": "local", "max_cpus": "auto", "max_memory_gb": "auto"},
         "thresholds": {"padj": 0.05, "abs_log2fc": 1.0},
         "analysis": {"enrichment": []},
+        # New projects select the current figure style explicitly; projects without
+        # this section keep rendering the legacy style.
+        "figures": {"preset": "standard", "profile": "general"},
     }
     if input_type is InputType.FASTQ:
         content["input"]["layout"] = (layout or SequencingLayout.PAIRED_END).value
