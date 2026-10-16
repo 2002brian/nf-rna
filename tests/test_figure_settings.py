@@ -171,10 +171,10 @@ def test_malformed_contract_figures_fail_loudly(bad):
 
 @pytest.mark.parametrize(("input_type", "preset"), [("raw_counts", "L2"), ("fastq", "L1")])
 def test_rnaseq_new_writes_an_explicit_standard_selection(tmp_path, input_type, preset):
-    result = runner.invoke(
-        app,
-        ["new", "--name", "created_project", "--destination", str(tmp_path), "--species", "mouse", "--input-type", input_type, "--preset", preset, "--design-type", "two_group", "--scaffold", "--yes"],
-    )
+    arguments = ["new", "--name", "created_project", "--destination", str(tmp_path), "--species", "mouse", "--input-type", input_type, "--preset", preset, "--design-type", "two_group", "--scaffold", "--yes"]
+    if preset == "L2" and input_type == "raw_counts":
+        arguments += ["--gene-id-type", "ENSEMBL"]  # L2 enables enrichment by default, which needs the count matrix gene ID type
+    result = runner.invoke(app, arguments)
     assert result.exit_code == 0, result.output
     raw = yaml.safe_load((tmp_path / "created_project" / "project.yaml").read_text(encoding="utf-8"))
     assert raw["figures"] == {"preset": "standard", "profile": "general"}
@@ -590,3 +590,19 @@ def test_retry_of_a_run_frozen_with_bioinfo_keeps_its_bytes_and_stays_consistent
     assert cloned["figures"]["preset"] == "bioinfo"  # retained verbatim
     assert "preset: bioinfo" in (retry.run_dir / "frozen" / "project.yaml").read_text()
     assert figure_settings_from_contract(cloned) == _explicit("standard", "nature")
+
+
+def test_new_l2_project_combines_the_standard_figure_default_with_the_enrichment_defaults(tmp_path):
+    base = ["new", "--destination", str(tmp_path), "--species", "mouse", "--input-type", "raw_counts", "--preset", "L2", "--design-type", "two_group", "--scaffold", "--yes"]
+    default = runner.invoke(app, [*base, "--name", "with_enrichment", "--gene-id-type", "ENSEMBL"])
+    assert default.exit_code == 0, default.output
+    raw = yaml.safe_load((tmp_path / "with_enrichment" / "project.yaml").read_text(encoding="utf-8"))
+    assert raw["figures"] == {"preset": "standard", "profile": "general"}
+    assert raw["analysis"]["enrichment"] == ["go", "kegg", "gsea"] and raw["annotation"]
+    opted_out = runner.invoke(app, [*base, "--name", "without_enrichment", "--no-enrichment"])
+    assert opted_out.exit_code == 0, opted_out.output
+    raw = yaml.safe_load((tmp_path / "without_enrichment" / "project.yaml").read_text(encoding="utf-8"))
+    assert raw["figures"] == {"preset": "standard", "profile": "general"} and raw["analysis"]["enrichment"] == []
+    # An existing project without the section keeps the legacy style on the general profile.
+    del raw["figures"]
+    assert ProjectConfig.model_validate(raw).figures is None
