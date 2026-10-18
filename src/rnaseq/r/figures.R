@@ -522,6 +522,21 @@ nf_rna_pca_label_pt <- function(context) {
   value <- nf_rna_style(context)$pca_label_pt
   if (is.na(value)) context$profile$min_pt else max(value, context$profile$min_pt)  # never below the profile's smallest allowed text
 }
+# PCA y axis under equal axis scaling; the scores themselves are never changed.  PC2 is constant when it has
+# no variance (two samples, or samples on one line); prcomp centres the scores, so that constant is 0 up to
+# rounding.  A constant PC2 gets a fixed extent of +/-20% of the PC1 span and a single break at the constant:
+# the former +/-1% sliver left room for none of its default breaks.  A varying PC2 keeps at least +/-1% of the
+# PC1 span so the panel never has zero height.  `extent` is the y span the figure height is sized for.
+nf_rna_pca_y_axis <- function(pc1, pc2) {
+  x_range <- max(diff(range(pc1)), 1e-9)
+  centre <- mean(range(pc2))
+  tolerance <- sqrt(.Machine$double.eps) * x_range
+  if (diff(range(pc2)) > tolerance) {
+    return(list(constant = FALSE, limits = centre + c(-1, 1) * 0.01 * x_range, breaks = waiver(), extent = max(diff(range(pc2)), x_range * 0.02)))
+  }
+  if (abs(centre) <= tolerance) centre <- 0
+  list(constant = TRUE, limits = centre + c(-1, 1) * 0.2 * x_range, breaks = centre, extent = 0.4 * x_range)
+}
 
 # Stable group/batch colours.  The colour of a level is decided by its position in the
 # `universe` (the complete, ordered set of levels of the design variable, for example

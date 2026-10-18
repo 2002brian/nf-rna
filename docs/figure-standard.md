@@ -136,9 +136,20 @@ describes them and must be updated together with the code.
 | Enrichment colours | ORA marks use the primary colour; GSEA adjusted P uses reversed Blues | ORA marks use the first stop of the enrichment scale; GSEA adjusted P uses the enrichment scale (low P dark), limits 0 to the cutoff as before |
 | DEG heatmap | double column, height from rows | content-aware: 5 mm sample columns, row height from the label font (7 pt down to the profile minimum, then labels are hidden and rows are 1.5 mm); width and height are measured from labels, trees, legend and title, never above the profile maximum |
 | PCA size | profile double column, height from the data, legend right | profile single column, height from the data (minimum 40 mm), legend below |
+| PCA with constant PC2 | y range ±20% of the PC1 span, one y break at the constant (see below) | same |
 | Font | Arial, else DejaVu Sans (recorded fallback) | Arimo only, no substitution |
 
 “Single column” is the profile's single column; for a profile without one (PLOS) the standard preset uses a compact 85 mm (`compact_width_mm`, never above the profile maximum). Legacy figures are unchanged.
+
+### PCA with a constant PC2
+
+Both presets draw PCA with equal axis scaling, so the panel's aspect ratio is that of the scores. When PC2 has no variance (two samples always; more samples only if they lie on one line), its scores are constant (0 up to floating-point rounding, as `prcomp` centres them) and an equal-scale panel would be a thin strip whose default y breaks overlap. `nf_rna_pca_y_axis()` (`figures.R`) treats PC2 as constant when its range is no larger than `sqrt(.Machine$double.eps)` times the PC1 range, and then, in both the legacy and the standard preset:
+
+* displays a y range of ±20% of the PC1 span around the constant (0, or the constant itself if it is not 0 within that tolerance); the figure height is sized for this range;
+* draws a single y break, at the constant, so no tick label can overlap or repeat;
+* records it in the figure manifest: the PCA entry's `axes` ends with `PC2 is constant (no variance): y range fixed at +/-20% of the PC1 span with a single break at 0`.
+
+Only the displayed y range and breaks change. `pca_scores.tsv` and `pca_variance.tsv` (for example PC1 = 100%, PC2 = 0%), the axis titles, equal axis scaling, sample positions, labels, colours and shapes, and the PNG/TIFF/PDF exports are unchanged; no separation is added. A PC2 with real spread, however small, keeps the previous display (at least ±1% of the PC1 span), so multi-sample PCA figures are unaffected.
 
 ## Typography and the bundled font
 

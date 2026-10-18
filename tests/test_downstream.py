@@ -47,6 +47,7 @@ def test_raw_counts_l1_real_backend_is_structured_and_text_deterministic(project
     assert vst_box["encoding"]["batch_marker"].startswith("none") and "neither show nor exclude a batch effect" in vst_box["interpretation"]
     pca = next(item for item in figures["figures"] if item["id"] == "pca")
     assert pca["labels"]["text"] == "every sample_id, unabbreviated" and "geom_text_repel, seed" in pca["labels"]["placement"]
+    assert pca["axes"] == "PC1/PC2 with proportion of variance explained; equal axis scaling"  # PC2 varies: no constant-axis handling
     assert figures["package_versions"]["ggrepel"]
     width_pt = next(item for item in pca["files"] if item["format"] == "pdf")["width_pt"]
     assert all(0 <= x <= width_pt for x, _ in pdf_text_origins(first.output_dir / "pca.pdf"))
@@ -106,12 +107,34 @@ def test_l1_boxplot_batch_annotation_is_independent_of_the_de_design(project_fac
     assert next(i for i in plain_figures["figures"] if i["id"] == "boxplot_vst")["encoding"]["batch_marker"] == "none (no batch column in metadata)"
 
 
-def test_l1_runs_for_two_samples_where_pc2_does_not_exist(project_factory):
+@pytest.mark.parametrize("figure_settings", [None, {"preset": "standard", "profile": "general"}], ids=["legacy", "standard"])
+def test_l1_runs_for_two_samples_where_pc2_does_not_exist(project_factory, figure_settings):
     require_r_packages("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
     counts = "gene_id,C1,T1\n" + "\n".join(f"Gene{index},{10 + index},{40 + index}" for index in range(1, 101)) + "\n"
     metadata = "sample_id,condition\nC1,Control\nT1,Treatment\n"
-    result = execute_l1(prepare_l1(validate_project(project_factory(counts=counts, metadata=metadata)), run_id=None))
+    config = base_config()
+    if figure_settings is not None:
+        config["figures"] = figure_settings
+    result = execute_l1(prepare_l1(validate_project(project_factory(config=config, counts=counts, metadata=metadata)), run_id=None))
     assert all((result.output_dir / name).is_file() for name in ("pca.png", "boxplot_log2_raw_counts.png", "boxplot_vst.png"))
+    # The scores and variance are written unchanged: PC1 carries everything, PC2 is constant at 0.
+    scores = [line.split("\t") for line in (result.output_dir / "pca_scores.tsv").read_text().splitlines()]
+    assert [row[0] for row in scores[1:]] == ["C1", "T1"]
+    assert float(scores[1][1]) == pytest.approx(-float(scores[2][1])) and float(scores[1][1]) != 0
+    assert all(abs(float(row[2])) < 1e-8 for row in scores[1:])
+    variance = dict(line.split("\t") for line in (result.output_dir / "pca_variance.tsv").read_text().splitlines()[1:])
+    assert float(variance["PC1"]) == pytest.approx(1) and float(variance["PC2"]) == pytest.approx(0, abs=1e-12)
+    figures = json.loads((result.output_dir / "figure_manifest.json").read_text())
+    pca = next(item for item in figures["figures"] if item["id"] == "pca")
+    assert "PC2 is constant (no variance)" in pca["axes"] and pca["axes"].endswith("single break at 0")
+    assert pca["labels"]["text"] == "every sample_id, unabbreviated"
+    assert {item["format"] for item in pca["files"]} == {"png", "tiff", "pdf"}
+    assert all((result.output_dir / f"pca.{extension}").is_file() for extension in ("png", "tiff", "pdf"))
+    # The panel is sized for a readable PC2 extent, not the former 2% sliver at the height floor
+    # (50 mm = 142 pt legacy, 40 mm = 113 pt standard).
+    pdf = next(item for item in pca["files"] if item["format"] == "pdf")
+    assert pdf["height_pt"] > (200 if figure_settings is None else 150)
+    assert all(0 <= x <= pdf["width_pt"] and 0 <= y <= pdf["height_pt"] for x, y in pdf_text_origins(result.output_dir / "pca.pdf"))
 
 
 def test_fastq_l1_requires_explicit_successful_handoff_and_upgrades_legacy(project_factory):

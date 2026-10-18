@@ -62,7 +62,7 @@ Docker is not required. Java, Nextflow, and Conda run on the host. nf-core/rnase
 
 ## Installation
 
-> **Stable release and development version.** The latest stable release is `v1.3.0`. This README describes the current development version on `main`. The template-first `rnaseq new` → L1 → `rnaseq design` → L2 lifecycle, L1-to-L2 upstream reuse, L1 sample-distribution QC, `rnaseq clean`, and the redesigned `rnaseq status` are **not** part of `v1.3.0`; they will ship in the next release (see [Unreleased](CHANGELOG.md#unreleased)). If you install `v1.3.0`, use the README at that tag. To use the development version now, follow [Development installation](docs/development.md).
+> **Stable release and development version.** The latest stable release is `v1.3.0`. This README describes the current development version on `main`. The template-first `rnaseq new` → L1 → `rnaseq design` → L2 lifecycle, L1-to-L2 upstream reuse, L1 sample-distribution QC, `rnaseq clean`, and the redesigned `rnaseq status` are **not** part of `v1.3.0`; they will ship in the next release (see [Unreleased](CHANGELOG.md#140--unreleased)). If you install `v1.3.0`, use the README at that tag. To use the development version now, follow [Development installation](docs/development.md).
 
 nf-rna has no PyPI distribution. Install the released CLI from its Git tag.
 Installing from Git lets pip record the exact source commit, which every run

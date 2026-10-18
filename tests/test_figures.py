@@ -169,6 +169,55 @@ cat(toJSON(list(mm=nf_rna_pt_to_mm(72.27), text=nf_rna_text_size(7), line=nf_rna
     assert result["line"] == pytest.approx(1)
 
 
+PCA_Y_AXIS_R = r'''
+pca_axis <- function(pc1, pc2) {
+  ax <- nf_rna_pca_y_axis(pc1, pc2)
+  # The same y scale, limits and fixed aspect as l1_analysis.R's PCA panel.
+  p <- ggplot(data.frame(PC1 = pc1, PC2 = pc2), aes(PC1, PC2)) + geom_point() +
+    scale_x_continuous(expand = expansion(mult = 0.05)) + scale_y_continuous(breaks = ax$breaks, expand = expansion(mult = 0.15)) +
+    expand_limits(y = ax$limits) + coord_fixed()
+  panel <- ggplot_build(p)$layout$panel_params[[1]]
+  list(constant = ax$constant, limits = ax$limits, extent = ax$extent, labels = I(as.vector(na.omit(panel$y$get_labels()))),
+       aspect = diff(panel$y$continuous_range) / diff(panel$x$continuous_range))
+}
+'''
+
+
+def test_pca_y_axis_is_readable_when_pc2_is_constant(tmp_path):
+    # The yeast smoke fixture's two-sample scores: PC2 is rounding noise around 0.
+    result = run_r(PCA_Y_AXIS_R + r'''
+cat(toJSON(list(
+  two_samples = pca_axis(c(-1.08891488656605, 1.08891488656605), c(2.64902712598957e-15, 2.53916043808519e-15)),
+  exact_zero = pca_axis(c(-1, 1), c(0, 0)),
+  uncentred = pca_axis(c(-1, 1, 3), c(3, 3, 3))
+), auto_unbox = TRUE, digits = NA))
+''', tmp_path)
+    two = result["two_samples"]
+    assert two["constant"] is True
+    assert two["limits"] == pytest.approx([-0.2 * 2.1778297731321, 0.2 * 2.1778297731321])
+    # One unique, readable break at the constant instead of five overlapping ones in a sliver.
+    assert two["labels"] == ["0"]
+    assert two["aspect"] > 0.3
+    assert result["exact_zero"]["constant"] is True and result["exact_zero"]["labels"] == ["0"]
+    # A constant away from 0 keeps its own value: the axis never moves the points.
+    assert result["uncentred"]["constant"] is True and result["uncentred"]["labels"] == ["3"]
+
+
+def test_pca_y_axis_is_unchanged_when_pc2_varies(tmp_path):
+    result = run_r(PCA_Y_AXIS_R + r'''
+cat(toJSON(list(
+  normal = pca_axis(c(-2, 0, 2, 1), c(-1, 0.5, 1, -0.5)),
+  narrow = pca_axis(c(-2, 0, 2), c(-1e-3, 0, 1e-3))
+), auto_unbox = TRUE, digits = NA))
+''', tmp_path)
+    normal, narrow = result["normal"], result["narrow"]
+    # The pre-existing minimum extent of +/-1% of the PC1 span around the PC2 centre.
+    assert normal["constant"] is False and normal["limits"] == pytest.approx([-0.04, 0.04]) and normal["extent"] == pytest.approx(2)
+    assert len(normal["labels"]) >= 3 and len(set(normal["labels"])) == len(normal["labels"])
+    # Real (if small) PC2 spread is drawn at true equal scale, not treated as constant.
+    assert narrow["constant"] is False and narrow["extent"] == pytest.approx(0.08)
+
+
 def test_display_labels_wrap_and_truncate_but_keep_full_text_elsewhere(tmp_path):
     result = run_r(r'''
 labels <- nf_rna_display_labels(c("short", paste(rep("very long pathway description", 6), collapse=" ")))

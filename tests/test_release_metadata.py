@@ -41,4 +41,9 @@ def test_release_metadata_matches_the_package_version():
     assert citation["version"] == __version__
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     first = re.search(r"^## (.+)$", changelog, flags=re.MULTILINE).group(1)
-    assert first == f"{__version__} — {citation['date-released']}"
+    # A development version is "X.Y.Z — Unreleased" and has no release date anywhere;
+    # the date is set in CHANGELOG.md and CITATION.cff together when the release is finalized.
+    if first == f"{__version__} — Unreleased":
+        assert "date-released" not in citation
+    else:
+        assert first == f"{__version__} — {citation['date-released']}"

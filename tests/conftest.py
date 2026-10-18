@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -199,10 +200,18 @@ def pdf_text_origins(path: Path) -> list[tuple[float, float]]:
     return origins
 
 
+def _r_unavailable(reason: str) -> None:
+    """Skip an R-dependent test, or fail it when NF_RNA_REQUIRE_R=1 (release validation)."""
+
+    if os.environ.get("NF_RNA_REQUIRE_R") == "1":
+        pytest.fail(f"{reason} (NF_RNA_REQUIRE_R=1: put the locked downstream R runtime on PATH; see docs/development.md)", pytrace=False)
+    pytest.skip(reason)
+
+
 def require_rscript() -> str:
     executable = shutil.which("Rscript")
     if executable is None:
-        pytest.skip("Rscript unavailable")
+        _r_unavailable("Rscript unavailable")
     return executable
 
 
@@ -213,5 +222,5 @@ def require_r_packages(*packages: str) -> str:
     expression = " && ".join(f'requireNamespace("{package}", quietly=TRUE)' for package in packages)
     result = subprocess.run([executable, "-e", f"quit(status=if ({expression}) 0 else 1)"], capture_output=True, text=True, check=False)
     if result.returncode != 0:
-        pytest.skip("R packages unavailable: " + ", ".join(packages))
+        _r_unavailable("R packages unavailable: " + ", ".join(packages))
     return executable

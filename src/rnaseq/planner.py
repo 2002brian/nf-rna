@@ -171,6 +171,8 @@ def render_analysis_plan(report: ValidationReport) -> str:
             "## Upstream processing", "", f"- Backend: `{method}`",
             f"- Strandedness: `{config.upstream.strandedness}`", f"- Reference source: `{reference.source}`",
         ])
+        if reference.source == "igenomes":
+            lines.append(f"- iGenomes genome: `{reference.genome}` (nf-core `--genome`; no local reference manifest or registry entry is used)")
         if method == "salmon":
             lines.append(f"- Pipeline: `nf-core/rnaseq {config.upstream.pipeline_version}`")
         else:

@@ -7,6 +7,7 @@ from types import ModuleType
 from types import SimpleNamespace
 from pathlib import Path
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
@@ -182,6 +183,47 @@ def test_new_defaults_to_fastq_project(tmp_path):
         "preprocessing": "raw",
     }
     assert config["upstream"]["pipeline_version"] == "3.26.0"
+
+
+FASTQ_SCAFFOLD = ["--species", "human", "--input-type", "fastq", "--method", "salmon", "--preset", "qc", "--scaffold", "--yes"]
+
+
+def test_noninteractive_salmon_new_states_the_igenomes_default_and_ignores_the_registry(monkeypatch, tmp_path):
+    # Non-interactive creation never consults the machine-local registry; only the wizard offers it.
+    monkeypatch.setattr("rnaseq.cli.compatible_registered_references", lambda *args: pytest.fail("registry consulted"))
+    result = runner.invoke(app, ["new", "--name", "defaulted", "--destination", str(tmp_path), *FASTQ_SCAFFOLD])
+    assert result.exit_code == 0, result.output
+    assert "Reference: igenomes GRCh38 (Salmon default, no --reference-source given; registered local references are used only with --reference-source local --reference-root)" in result.output
+    assert "registered local reference," not in result.output
+    config = yaml.safe_load((tmp_path / "defaulted" / "project.yaml").read_text(encoding="utf-8"))
+    assert config["reference"] == {"source": "igenomes", "genome": "GRCh38"}
+
+    explicit = runner.invoke(app, ["new", "--name", "explicit", "--destination", str(tmp_path), "--reference-source", "igenomes", *FASTQ_SCAFFOLD])
+    assert explicit.exit_code == 0, explicit.output
+    assert "Reference: igenomes GRCh38 (selected)" in explicit.output
+
+
+@pytest.mark.parametrize("source_flags", [["--reference-source", "local"], []])
+def test_noninteractive_new_respects_an_explicit_local_reference_root(tmp_path, source_flags):
+    root = tmp_path / "references" / "human_ensembl_116"
+    result = runner.invoke(app, ["new", "--name", "local_ref", "--destination", str(tmp_path), *source_flags, "--reference-root", str(root), *FASTQ_SCAFFOLD])
+    assert result.exit_code == 0, result.output
+    assert f"Reference: local {root} (manifest reference_manifest.yaml)" in result.output
+    assert "igenomes" not in result.output
+    config = yaml.safe_load((tmp_path / "local_ref" / "project.yaml").read_text(encoding="utf-8"))
+    assert config["reference"] == {"source": "local", "root": str(root), "manifest": "reference_manifest.yaml"}
+
+
+@pytest.mark.parametrize(("flags", "message"), [
+    (["--reference-source", "igenomes", "--reference-root", "/refs/x"], "--reference-root cannot be used with --reference-source igenomes."),
+    (["--reference-source", "local", "--reference-root", "/refs/x", "--reference-gtf", "/refs/g.gtf"], "--reference-gtf cannot be used with --reference-source local."),
+    (["--reference-root", "/refs/x", "--reference-fasta", "/refs/g.fa"], "Conflicting reference flags"),
+])
+def test_noninteractive_new_never_silently_drops_reference_flags(tmp_path, flags, message):
+    result = runner.invoke(app, ["new", "--name", "conflict", "--destination", str(tmp_path), *flags, *FASTQ_SCAFFOLD])
+    assert result.exit_code == 1
+    assert message in result.output
+    assert not (tmp_path / "conflict").exists()
 
 
 def test_interactive_fastq_new_retries_only_invalid_choice_and_creates_scaffold(monkeypatch, tmp_path):
@@ -410,7 +452,9 @@ def test_fastq_qc_scope_validates_and_plans_without_statistical_metadata(tmp_pat
     assert runner.invoke(app, ["validate", str(root)]).exit_code == 0
     planned = runner.invoke(app, ["plan", str(root)])
     assert planned.exit_code == 0, planned.output
-    assert "technical FASTQ QC only" in (root / "planning" / "analysis_plan.md").read_text(encoding="utf-8")
+    plan = (root / "planning" / "analysis_plan.md").read_text(encoding="utf-8")
+    assert "technical FASTQ QC only" in plan
+    assert "- iGenomes genome: `GRCm39` (nf-core `--genome`; no local reference manifest or registry entry is used)" in plan
 
 
 def test_new_cancellation_writes_no_partial_project(tmp_path):

@@ -62,7 +62,7 @@ L1 提供表現品質控制與探索。L2 必須明確選擇：它會對已宣�
 
 ## 安裝
 
-> **穩定 release 與開發版本。** 最新的穩定 release 是 `v1.3.0`。本 README 說明的是 `main` 上目前的開發版本。以範本為起點的 `rnaseq new` → L1 → `rnaseq design` → L2 流程、L1 到 L2 的 upstream reuse、L1 sample-distribution QC、`rnaseq clean`，以及重新設計的 `rnaseq status` **不**包含在 `v1.3.0` 中，將隨下一個 release 發布（見 [Unreleased](CHANGELOG.md#unreleased)）。若安裝 `v1.3.0`，請參考該 tag 的 README。若想現在使用開發版本，請依照 [Development installation](docs/development.md)。
+> **穩定 release 與開發版本。** 最新的穩定 release 是 `v1.3.0`。本 README 說明的是 `main` 上目前的開發版本。以範本為起點的 `rnaseq new` → L1 → `rnaseq design` → L2 流程、L1 到 L2 的 upstream reuse、L1 sample-distribution QC、`rnaseq clean`，以及重新設計的 `rnaseq status` **不**包含在 `v1.3.0` 中，將隨下一個 release 發布（見 [Unreleased](CHANGELOG.md#140--unreleased)）。若安裝 `v1.3.0`，請參考該 tag 的 README。若想現在使用開發版本，請依照 [Development installation](docs/development.md)。
 
 nf-rna 沒有 PyPI distribution。請從 Git tag 安裝已發布的 CLI。從 Git 安裝時，
 pip 會記錄精確的 source commit，而每次 run 都必須記錄它；若安裝方式沒有 commit

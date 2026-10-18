@@ -499,6 +499,38 @@ def _reference_options(
     return reference
 
 
+def _reference_source(explicit: str | None, method: str, *, local_flags: list[str], custom_flags: list[str]) -> str:
+    """Resolve the FASTQ reference source without ever ignoring a reference flag.
+
+    Without --reference-source, local or custom flags select that source; with
+    none, the documented default applies (iGenomes for Salmon, local for HISAT2).
+    The machine-local registry is never consulted here: only the wizard offers it.
+    """
+
+    if explicit is not None and explicit not in {"igenomes", "local", "custom"}:
+        raise ProjectCreationError("--reference-source must be igenomes, local, or custom.")
+    if explicit is None and local_flags and custom_flags:
+        raise ProjectCreationError(f"Conflicting reference flags: {', '.join(local_flags)} select a local reference, {', '.join(custom_flags)} a custom one; set --reference-source.")
+    source = explicit or ("local" if local_flags else "custom" if custom_flags else "igenomes" if method == "salmon" else "local")
+    ignored = custom_flags if source == "local" else local_flags if source == "custom" else local_flags + custom_flags
+    if ignored:
+        raise ProjectCreationError(f"{', '.join(ignored)} cannot be used with --reference-source {source}.")
+    return source
+
+
+def _reference_review(reference: dict[str, object], registered: LocalReference | None, *, defaulted: bool) -> str:
+    """State the selected reference and how it was chosen in the creation review."""
+
+    if registered is not None:
+        return f"{_managed_reference_identity(registered)} (registered local reference, root {registered.root})"
+    if reference["source"] == "igenomes":
+        how = "Salmon default, no --reference-source given; registered local references are used only with --reference-source local --reference-root" if defaulted else "selected"
+        return f"igenomes {reference['genome']} ({how})"
+    if reference["source"] == "local":
+        return f"local {reference['root']} (manifest {reference['manifest']})"
+    return f"custom {reference['fasta']} + {reference['gtf']}"
+
+
 def _new_summary(values: dict[str, Any]) -> None:
     typer.echo("\nProject review")
     typer.echo("--------------")
@@ -772,9 +804,11 @@ def new_project(
             normalized_method, normalized_strand, normalized_layout = "salmon", "auto", None
             reference = {"source": "igenomes", "genome": None}
         else:
-            source = reference_source or ("igenomes" if normalized_method == "salmon" else "local")
-            if source not in {"igenomes", "local", "custom"}:
-                raise ProjectCreationError("--reference-source must be igenomes, local, or custom.")
+            source = _reference_source(
+                reference_source, normalized_method,
+                local_flags=[flag for flag, value in (("--reference-root", reference_root), ("--reference-manifest", reference_manifest)) if value is not None],
+                custom_flags=[flag for flag, value in (("--reference-fasta", reference_fasta), ("--reference-gtf", reference_gtf), ("--reference-transcript-fasta", reference_transcript_fasta), ("--reference-salmon-index", reference_salmon_index), ("--reference-hisat2-index", reference_hisat2_index)) if value is not None],
+            )
             reference = _reference_options(source=source, species=normalized_species, method=normalized_method, local_root=reference_root, local_manifest=reference_manifest, fasta=reference_fasta, gtf=reference_gtf, transcript_fasta=reference_transcript_fasta, salmon_index=reference_salmon_index, hisat2_index=reference_hisat2_index)
         if execution_profile not in {None, "local"}:
             raise ProjectCreationError("Only --execution-profile local is supported.")
@@ -786,9 +820,9 @@ def new_project(
             normalized_preset, normalized_species, _enrichment_selection(enrichment), normalized_gene_id_type
         )
         review_reference = (
-            _managed_reference_identity(selected_managed_reference)
-            if selected_managed_reference is not None
-            else reference.get("source")
+            "not used (external raw counts)"
+            if normalized_input is InputType.RAW_COUNTS
+            else _reference_review(reference, selected_managed_reference, defaulted=reference_source is None)
         )
         review = {"Project": name, "Destination": destination, "Species": normalized_species.value, "Input": normalized_input.value, "Input handling": "scaffold — add data after project creation" if scaffold else "import supplied inputs", "Scope": normalized_preset.value, "Design": "not applicable for QC" if normalized_preset is Preset.QC else normalized_design.value, **({} if normalized_preset is Preset.QC else {"Technical batch": "yes (metadata template gets a 'batch' column)" if template_batch else ("yes (in model)" if formula is not None and "batch" in formula.replace("~", " ").replace("+", " ").split() else "no"), "Provisional model": formula or derive_design(normalized_design, pair_id, template_batch)[0], "Contrasts": "imported" if contrasts is not None else "set later by `rnaseq design`", "Enrichment": describe_enrichment(selected_enrichment) if normalized_preset is Preset.L2 else "selected when L2 is configured by `rnaseq design`", "Annotation": _annotation_review(normalized_species, normalized_gene_id_type)}), "Backend": normalized_method if normalized_input is InputType.FASTQ else "external raw counts", "Reference": review_reference, "Execution": f"local, {selected_cpus} CPUs / {selected_memory} GiB" if AUTO not in (selected_cpus, selected_memory) else f"local, CPUs={selected_cpus} / memory GiB={selected_memory} (auto = sized from the running machine)"}
         _new_summary(review)

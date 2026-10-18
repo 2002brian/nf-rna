@@ -64,6 +64,7 @@ pfig <- nf_rna_figure_scope(fig, "pca")  # the context PCA figures are drawn wit
 pc_labels <- labs(x = sprintf("PC1 (%.1f%%)", 100 * variance[[1]]), y = sprintf("PC2 (%.1f%%)", 100 * ifelse(length(variance) >= 2, variance[[2]], 0)))
 # PC scores share one unit, so both axes use the same scale (coord_fixed).
 NF_RNA_PCA_LABEL_SEED <- 20260930L
+pca_y <- nf_rna_pca_y_axis(scores$PC1, scores$PC2)
 pca_plot <- function(colour_by, colour_name, shape_by, shape_name) {
   colours <- if (identical(colour_by, "batch")) nf_rna_batch_colours(levels(scores[[colour_by]]), context = pfig) else nf_rna_group_colours(levels(scores[[colour_by]]), context = pfig)
   shapes <- nf_rna_categorical_shapes(levels(scores[[shape_by]]), pfig)
@@ -76,10 +77,9 @@ pca_plot <- function(colour_by, colour_name, shape_by, shape_name) {
                     seed = NF_RNA_PCA_LABEL_SEED, max.time = Inf, max.iter = 10000, max.overlaps = Inf,
                     box.padding = 0.3, point.padding = 0.3, min.segment.length = 0.4, segment.size = nf_rna_linewidth(0.3), segment.colour = "grey50") +
     scale_color_manual(values = colours, name = colour_name) +
-    scale_x_continuous(expand = expansion(mult = 0.05)) + scale_y_continuous(expand = expansion(mult = 0.15)) +
-    # With fewer than three samples PC2 does not exist (all zero); give the fixed-aspect panel the same
-    # minimum height as pca_height_mm() so it never collapses to zero size.
-    expand_limits(y = mean(range(scores$PC2)) + c(-1, 1) * 0.01 * max(diff(range(scores$PC1)), 1e-9)) +
+    scale_x_continuous(expand = expansion(mult = 0.05)) + scale_y_continuous(breaks = pca_y$breaks, expand = expansion(mult = 0.15)) +
+    # A constant PC2 (for example two samples) gets a readable fixed extent and one break; see nf_rna_pca_y_axis().
+    expand_limits(y = pca_y$limits) +
     coord_fixed(clip = "off") + pc_labels + nf_rna_theme(pfig) + pca_legend
   if (!is.null(shapes)) p <- p + scale_shape_manual(values = shapes, name = shape_name)
   list(plot = p, colours = colours, shapes = shapes)
@@ -91,7 +91,7 @@ pca_plot <- function(colour_by, colour_name, shape_by, shape_name) {
 pca_width_mm <- nf_rna_layout_width_mm(pfig, "pca", fig$profile$double_col_mm)
 pca_legend <- if (identical(pfig$preset, "standard")) theme(legend.position = "bottom", legend.box = "vertical") else NULL
 pca_height_mm <- function() {
-  x_range <- max(diff(range(scores$PC1)), 1e-9); y_range <- max(diff(range(scores$PC2)), x_range * 0.02)
+  x_range <- max(diff(range(scores$PC1)), 1e-9); y_range <- pca_y$extent
   if (identical(pfig$preset, "standard")) {
     panel_width <- pca_width_mm - 18; overhead <- 30
     return(min(pfig$profile$max_height_mm, max(nf_rna_layout_value(pfig, "pca", "min_height_mm", 50), overhead + panel_width * (y_range * 1.3) / (x_range * 1.1))))
@@ -100,7 +100,8 @@ pca_height_mm <- function() {
   min(fig$profile$max_height_mm, max(50, 25 + panel_width * (y_range * 1.3) / (x_range * 1.1)))
 }
 pca_meta <- function(encoding) list(
-  kind = "PCA", data = "blind VST, all retained genes, prcomp(center = TRUE, scale. = FALSE)", axes = "PC1/PC2 with proportion of variance explained; equal axis scaling",
+  kind = "PCA", data = "blind VST, all retained genes, prcomp(center = TRUE, scale. = FALSE)", axes = paste0("PC1/PC2 with proportion of variance explained; equal axis scaling",
+    if (pca_y$constant) sprintf("; PC2 is constant (no variance): y range fixed at +/-20%% of the PC1 span with a single break at %g", pca_y$breaks) else ""),
   encoding = encoding, ellipses = "none", paired_lines = "none",
   labels = list(text = "every sample_id, unabbreviated", placement = sprintf("ggrepel::geom_text_repel, seed %d, iteration-limited (max.iter 10000, no time limit), kept inside the panel; leader lines only for displaced labels", NF_RNA_PCA_LABEL_SEED)),
   source_data = list(nf_rna_source_data(file.path(cfg$output_dir, "pca_scores.tsv"), cfg$output_dir, "PC coordinates"), nf_rna_source_data(file.path(cfg$output_dir, "pca_variance.tsv"), cfg$output_dir, "proportion of variance"))

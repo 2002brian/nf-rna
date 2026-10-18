@@ -40,3 +40,17 @@ git diff --check
 ```
 
 The release gate additionally installs each wheel and source distribution into a fresh environment, checks its bundled Nextflow assets from outside the checkout, and runs CLI/resource smoke checks. See `.github/workflows/release-gate.yml` for the authoritative CI sequence.
+
+### R-dependent tests
+
+Tests that run the R analysis scripts (L1/L2 backends, figures, enrichment) call `require_rscript()` or `require_r_packages()` and are **skipped** when `Rscript` or a required R package is missing. A plain `python -m pytest -q` therefore still passes without the R stack; CI installs base R only, so its package-dependent R tests are skipped. `-rs` lists every skip and its reason.
+
+For release validation, run these tests with the same locked R runtime the pipeline uses: the downstream prefix that `rnaseq run` provisions from `workflow/envs/locks/nf-rna-downstream-<platform>.lock.yml`. It lives under `${RNASEQ_RUNTIME_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/nf-rna/runtime}/prefixes/` and is named `nf-rna-downstream-<platform>-<first 16 hex of the lock SHA-256>-<first 16 hex of the wheel SHA-256>`; the lock SHA-256 is in `workflow/envs/locks/SHA256SUMS`. Put its `bin` directory on `PATH` after the development environment, so pytest keeps the development Python and resolves `Rscript` to the locked R, and set `NF_RNA_REQUIRE_R=1` so a missing runtime or package fails the test instead of skipping it:
+
+```bash
+LOCK=$(awk '/linux-64/ {print substr($1, 1, 16)}' workflow/envs/locks/SHA256SUMS)
+R_PREFIX=$(ls -d "${XDG_CACHE_HOME:-$HOME/.cache}"/nf-rna/runtime/prefixes/nf-rna-downstream-linux-64-"$LOCK"-* | tail -n 1)
+PATH="$CONDA_PREFIX/bin:$R_PREFIX/bin:$PATH" NF_RNA_REQUIRE_R=1 python -m pytest -q -rs
+```
+
+The prefix exists only after a downstream run (for example the `examples/nfcore_smoke_test` smoke run) has provisioned it. Check that `Rscript` resolves into `$R_PREFIX` before trusting a pass. With `NF_RNA_REQUIRE_R=1`, a pass with no R-related skips means every R-dependent test actually ran against that runtime.

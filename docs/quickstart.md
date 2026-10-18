@@ -4,7 +4,7 @@ This guide is for production users on Linux x86-64 or Windows WSL2. Install Pyth
 
 ## Install a released nf-rna version
 
-The latest stable release is `v1.3.0`. This guide describes the current development version on `main`: the template-first lifecycle, `rnaseq design`, upstream reuse across it, and L1 sample-distribution QC are not part of `v1.3.0` and will ship in the next release (see [Unreleased](../CHANGELOG.md#unreleased)). With `v1.3.0`, follow the documentation at that tag; to use the development version now, see [Development installation](development.md).
+The latest stable release is `v1.3.0`. This guide describes the current development version on `main`: the template-first lifecycle, `rnaseq design`, upstream reuse across it, and L1 sample-distribution QC are not part of `v1.3.0` and will ship in the next release (see [Unreleased](../CHANGELOG.md#140--unreleased)). With `v1.3.0`, follow the documentation at that tag; to use the development version now, see [Development installation](development.md).
 
 nf-rna is installed from Git tags; it is not published to PyPI. Installing from
 Git lets pip record the exact source commit, which every run records; nf-rna
@@ -108,6 +108,19 @@ rnaseq reference register /absolute/reference-root
 ```
 
 Registration validates and records a local pointer to the existing manifest; it does not download, copy, or build assets. If you need to create an index rather than adopt one, use the optional builder workflow in [Runtime](runtime.md#managed-reference-builder-host-native).
+
+How `rnaseq new` picks the reference for a FASTQ project:
+
+- **Interactive wizard:** it offers the compatible registered references for the species and backend; declining one leads to the iGenomes, local, or custom choice.
+- **Non-interactive (flags):** the registry is never consulted. Name a registered or other managed reference explicitly:
+
+  ```bash
+  rnaseq new ... --method salmon --reference-source local --reference-root /absolute/reference-root
+  ```
+
+  `--reference-root` or `--reference-manifest` alone also select `local`, and the custom flags (`--reference-fasta`, `--reference-gtf`, ...) select `custom`. With no reference flag at all, Salmon uses iGenomes (`GRCh38` for human, `GRCm39` for mouse) and HISAT2 + featureCounts defaults to `local`, so it needs `--reference-root` (or the custom flags). Reference flags that do not belong to the selected source are refused rather than ignored.
+
+The project review printed by `rnaseq new` states the selected reference and whether it is the default, and `planning/analysis_plan.md` records the reference source (for iGenomes, the genome).
 
 For `input/counts.csv`, the first column is `gene_id` and remaining columns are sample IDs. For FASTQ, accurately declare `input.layout`, `input.preprocessing`, `upstream.strandedness`, the selected quantification backend, and a matching reference. HISAT2 + featureCounts requires explicit `unstranded`, `forward`, or `reverse` strandedness.
 
