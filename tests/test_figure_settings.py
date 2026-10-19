@@ -416,6 +416,7 @@ def _frozen_files(run) -> dict[str, bytes]:
     return {name: (frozen / name).read_bytes() for name in ("project.yaml", "downstream_contract.json")}
 
 
+@pytest.mark.usefixtures("production_capable_execution_capacity")
 def test_retry_clone_keeps_the_source_figures_even_if_the_live_project_changes(monkeypatch, project_factory):
     config = base_config()
     config["figures"] = {"preset": "standard", "profile": "nature"}
@@ -442,6 +443,7 @@ def test_retry_clone_keeps_the_source_figures_even_if_the_live_project_changes(m
     assert (retry.run_dir / "frozen" / "project.yaml").read_bytes() == (run.run_dir / "frozen" / "project.yaml").read_bytes()
 
 
+@pytest.mark.usefixtures("production_capable_execution_capacity")
 def test_retry_of_an_old_run_without_figures_stays_legacy_and_does_not_inject_figures(monkeypatch, project_factory):
     root, source = _failed_frozen_run(project_factory)  # base_config: no figures section
     path = source.run_dir / "frozen" / "downstream_contract.json"
@@ -458,6 +460,7 @@ def test_retry_of_an_old_run_without_figures_stays_legacy_and_does_not_inject_fi
     assert figure_settings_from_contract(cloned) == LEGACY
 
 
+@pytest.mark.usefixtures("production_capable_execution_capacity")
 def test_retry_refuses_a_source_whose_contract_and_project_disagree(monkeypatch, project_factory):
     root, source = _failed_frozen_run(project_factory)
     path = source.run_dir / "frozen" / "downstream_contract.json"
@@ -561,6 +564,7 @@ def test_r_receives_the_canonical_name_for_a_bioinfo_project(monkeypatch, projec
     assert resolve_figure_settings(report.config.figures) == _explicit("standard", "nature")
 
 
+@pytest.mark.usefixtures("production_capable_execution_capacity")
 def test_retry_of_a_run_frozen_with_bioinfo_keeps_its_bytes_and_stays_consistent(monkeypatch, project_factory):
     config = base_config()
     config["figures"] = {"preset": "bioinfo", "profile": "nature"}

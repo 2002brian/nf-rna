@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import require_rscript
+from conftest import require_r_packages, require_rscript
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools" / "figure_review"
 spec = importlib.util.spec_from_file_location("compare_runs", TOOLS / "compare_runs.py")
@@ -134,10 +134,8 @@ def test_png_reader_handles_every_cairo_filter(tmp_path):
 
 
 def test_palette_review_keeps_the_approved_colours_and_writes_the_review_files(tmp_path):
-    executable = require_rscript()
+    executable = require_r_packages("ggplot2", "pheatmap", "jsonlite", "colorspace")
     result = subprocess.run([executable, str(TOOLS / "palette_review.R"), str(tmp_path)], capture_output=True, text=True, check=False)
-    if result.returncode != 0 and "colorspace" in result.stderr:
-        pytest.skip("colorspace unavailable")
     assert result.returncode == 0, result.stderr
     for name in ("palette_groups", "palette_batch", "palette_batch_demo"):
         assert (tmp_path / f"{name}.png").stat().st_size > 1000 and (tmp_path / f"{name}.pdf").stat().st_size > 1000
