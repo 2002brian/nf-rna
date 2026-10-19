@@ -4,7 +4,7 @@ English | [繁體中文](README_zh-TW.md)
 
 `nf-rna` is a reproducible bulk RNA-seq workflow for FASTQ and raw-count projects. It validates declared inputs and design, performs the selected QC and analysis stages, and produces figures, tables, a technical report, and frozen provenance.
 
-`rnaseq` is the control plane, Nextflow is the execution plane, and Conda provides every process environment. The supported runtime for v1.3.0 is **Linux x86-64 or Windows WSL2, with Nextflow and Conda**; Docker is not required. Production users enter through `rnaseq`; they do not invoke internal Nextflow modules.
+`rnaseq` is the control plane, Nextflow is the execution plane, and Conda provides every process environment. The supported runtime for v1.4.0 is **Linux x86-64 or Windows WSL2, with Nextflow and Conda**; Docker is not required. Production users enter through `rnaseq`; they do not invoke internal Nextflow modules.
 
 ## Features
 
@@ -51,7 +51,7 @@ Every authorized execution creates an immutable run under `runs/<case-id>/<run-i
 
 ## Requirements
 
-Use a Linux x86-64 workstation or Windows with WSL2 (native Windows and macOS are not supported by v1.3.0) with:
+Use a Linux x86-64 workstation or Windows with WSL2 (native Windows and macOS are not supported by v1.4.0) with:
 
 - Python 3.11+ and Git;
 - Conda (for example Miniforge) on `PATH`, with the `conda-forge` and `bioconda` channels configured in that order, as nf-core requires (`conda config --add channels bioconda && conda config --add channels conda-forge && conda config --set channel_priority strict`);
@@ -62,7 +62,7 @@ Docker is not required. Java, Nextflow, and Conda run on the host. nf-core/rnase
 
 ## Installation
 
-> **Stable release and development version.** The latest stable release is `v1.3.0`. This README describes the current development version on `main`. The template-first `rnaseq new` → L1 → `rnaseq design` → L2 lifecycle, L1-to-L2 upstream reuse, L1 sample-distribution QC, `rnaseq clean`, and the redesigned `rnaseq status` are **not** part of `v1.3.0`; they will ship in the next release (see [Unreleased](CHANGELOG.md#140--unreleased)). If you install `v1.3.0`, use the README at that tag. To use the development version now, follow [Development installation](docs/development.md).
+> **Latest stable release: `v1.4.0`.** This README describes `v1.4.0` (see the [1.4.0 changes](CHANGELOG.md#140--2026-10-19)). For an earlier release, use the README at that release's tag. To use the development version, follow [Development installation](docs/development.md).
 
 nf-rna has no PyPI distribution. Install the released CLI from its Git tag.
 Installing from Git lets pip record the exact source commit, which every run

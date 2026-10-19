@@ -2,9 +2,9 @@
 
 All notable changes to this project are documented here.
 
-## 1.4.0 — Unreleased
+## 1.4.0 — 2026-10-19
 
-The release date is set when the release is finalized. Changes since `v1.3.0`. Unless stated otherwise, DESeq2, tximport, nf-core/rnaseq 3.26.0, contrast semantics, enrichment methods, and scientific result tables are unchanged.
+Changes since `v1.3.0`. Unless stated otherwise, DESeq2, tximport, nf-core/rnaseq 3.26.0, contrast semantics, enrichment methods, and scientific result tables are unchanged.
 
 ### Template-first project lifecycle
 

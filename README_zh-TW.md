@@ -4,7 +4,7 @@
 
 `nf-rna` 是可重現的 bulk RNA-seq workflow，支援 FASTQ 與 raw-count 專案。它會驗證已宣告的輸入與實驗設計，執行選定的 QC 與分析階段，並產生圖表、表格、technical report 與凍結的 provenance。
 
-`rnaseq` 是 control plane，Nextflow 是 execution plane，所有 process 環境皆由 Conda 提供。v1.3.0 支援的 runtime 為 **Linux x86-64 或 Windows WSL2，搭配 Nextflow 與 Conda**，不需要 Docker。production 使用者透過 `rnaseq` 執行，不需要呼叫內部 Nextflow module。
+`rnaseq` 是 control plane，Nextflow 是 execution plane，所有 process 環境皆由 Conda 提供。v1.4.0 支援的 runtime 為 **Linux x86-64 或 Windows WSL2，搭配 Nextflow 與 Conda**，不需要 Docker。production 使用者透過 `rnaseq` 執行，不需要呼叫內部 Nextflow module。
 
 ## 功能
 
@@ -51,7 +51,7 @@ L1 提供表現品質控制與探索。L2 必須明確選擇：它會對已宣�
 
 ## 系統需求
 
-請使用 Linux x86-64 workstation，或 Windows 的 WSL2（v1.3.0 不支援 native Windows 與 macOS），並準備：
+請使用 Linux x86-64 workstation，或 Windows 的 WSL2（v1.4.0 不支援 native Windows 與 macOS），並準備：
 
 - Python 3.11+ 與 Git；
 - 位於 `PATH` 的 Conda（例如 Miniforge），並依 nf-core 要求依序設定 `conda-forge` 與 `bioconda` channel（`conda config --add channels bioconda && conda config --add channels conda-forge && conda config --set channel_priority strict`）；
@@ -62,7 +62,7 @@ L1 提供表現品質控制與探索。L2 必須明確選擇：它會對已宣�
 
 ## 安裝
 
-> **穩定 release 與開發版本。** 最新的穩定 release 是 `v1.3.0`。本 README 說明的是 `main` 上目前的開發版本。以範本為起點的 `rnaseq new` → L1 → `rnaseq design` → L2 流程、L1 到 L2 的 upstream reuse、L1 sample-distribution QC、`rnaseq clean`，以及重新設計的 `rnaseq status` **不**包含在 `v1.3.0` 中，將隨下一個 release 發布（見 [Unreleased](CHANGELOG.md#140--unreleased)）。若安裝 `v1.3.0`，請參考該 tag 的 README。若想現在使用開發版本，請依照 [Development installation](docs/development.md)。
+> **最新的穩定 release：`v1.4.0`。** 本 README 說明的是 `v1.4.0`（見 [1.4.0 變更](CHANGELOG.md#140--2026-10-19)）。若使用較早的 release，請參考該 release tag 的 README。若想使用開發版本，請依照 [Development installation](docs/development.md)。
 
 nf-rna 沒有 PyPI distribution。請從 Git tag 安裝已發布的 CLI。從 Git 安裝時，
 pip 會記錄精確的 source commit，而每次 run 都必須記錄它；若安裝方式沒有 commit
