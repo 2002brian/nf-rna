@@ -2,9 +2,9 @@
 
 All notable changes to this project are documented here.
 
-## 1.4.1 — Unreleased
+## 1.4.1 — 2026-10-29
 
-The release date is set when the release is finalized. Patch release from the `v1.4.0` post-release user-workflow audit. DESeq2, tximport, nf-core/rnaseq 3.26.0, QC and enrichment calculations, Nextflow workflows, reference validation, the upstream-reuse compatibility contract, the provenance schema, and scientific result tables are unchanged.
+Patch release from the `v1.4.0` post-release user-workflow audit. DESeq2, tximport, nf-core/rnaseq 3.26.0, QC and enrichment calculations, Nextflow workflows, reference validation, the upstream-reuse compatibility contract, the provenance schema, and scientific result tables are unchanged.
 
 ### Compatibility
 

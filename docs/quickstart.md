@@ -4,7 +4,7 @@ This guide is for production users on Linux x86-64 or Windows WSL2. Install Pyth
 
 ## Install a released nf-rna version
 
-The latest stable release is `v1.4.0`. This guide describes the upcoming patch release `v1.4.1` (see the [1.4.1 changes](../CHANGELOG.md#141--unreleased)), whose analysis is unchanged from `v1.4.0`. For an earlier release, follow the documentation at that release's tag; to use the development version, see [Development installation](development.md).
+The latest stable release is `v1.4.1`, and this guide describes it (see the [1.4.1 changes](../CHANGELOG.md#141--2026-10-29)), a patch release whose analysis is unchanged from `v1.4.0`. For an earlier release, follow the documentation at that release's tag; to use the development version, see [Development installation](development.md).
 
 nf-rna is installed from Git tags; it is not published to PyPI. Installing from
 Git lets pip record the exact source commit, which every run records; nf-rna

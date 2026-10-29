@@ -62,7 +62,7 @@ Docker is not required. Java, Nextflow, and Conda run on the host. nf-core/rnase
 
 ## Installation
 
-> **Latest stable release: `v1.4.0`.** This README describes the upcoming patch release `v1.4.1` (see the [1.4.1 changes](CHANGELOG.md#141--unreleased)): corrected wizard instructions, clearer validation and upstream-reuse errors, and the beginner workflow documentation below. The analysis itself is unchanged from `v1.4.0`. For an earlier release, use the README at that release's tag. To use the development version, follow [Development installation](docs/development.md).
+> **Latest stable release: `v1.4.1`.** This README describes the patch release `v1.4.1` (see the [1.4.1 changes](CHANGELOG.md#141--2026-10-29)): corrected wizard instructions, clearer validation and upstream-reuse errors, and the beginner workflow documentation below. The analysis itself is unchanged from `v1.4.0`. For an earlier release, use the README at that release's tag. To use the development version, follow [Development installation](docs/development.md).
 
 nf-rna has no PyPI distribution. Install the released CLI from its Git tag.
 Installing from Git lets pip record the exact source commit, which every run

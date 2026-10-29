@@ -62,7 +62,7 @@ L1 提供表現品質控制與探索。L2 必須明確選擇：它會對已宣�
 
 ## 安裝
 
-> **最新的穩定 release：`v1.4.0`。** 本 README 說明的是即將發布的修補版 `v1.4.1`（見 [1.4.1 變更](CHANGELOG.md#141--unreleased)）：修正 wizard 指示、更清楚的驗證與 upstream reuse 錯誤訊息，以及下方的新手流程說明。分析本身與 `v1.4.0` 相同。若使用較早的 release，請參考該 release tag 的 README。若想使用開發版本，請依照 [Development installation](docs/development.md)。
+> **最新的穩定 release：`v1.4.1`。** 本 README 說明的是修補版 `v1.4.1`（見 [1.4.1 變更](CHANGELOG.md#141--2026-10-29)）：修正 wizard 指示、更清楚的驗證與 upstream reuse 錯誤訊息，以及下方的新手流程說明。分析本身與 `v1.4.0` 相同。若使用較早的 release，請參考該 release tag 的 README。若想使用開發版本，請依照 [Development installation](docs/development.md)。
 
 nf-rna 沒有 PyPI distribution。請從 Git tag 安裝已發布的 CLI。從 Git 安裝時，
 pip 會記錄精確的 source commit，而每次 run 都必須記錄它；若安裝方式沒有 commit
