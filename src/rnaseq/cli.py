@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import shlex
 import sys
 import time
 from collections.abc import Iterator
@@ -18,7 +19,7 @@ from rnaseq.execution import (
     detect_local_resource_capacity, doctor_checks, doctor_readiness,
     validate_local_execution_budget,
 )
-from rnaseq.service import RunTermination, execute_retry_service_run, execute_service_run, prepare_service_run, sanitize_completed_delivery, validate_case_id
+from rnaseq.service import RunTermination, execute_retry_service_run, execute_service_run, preflight_reuse_upstream, prepare_service_run, sanitize_completed_delivery, validate_case_id
 from rnaseq.models import ANNOTATION_DATABASES, DEFAULT_L2_ENRICHMENT, GENE_ID_TYPES, DesignType, FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, SequencingLayout, Species, default_annotation, describe_enrichment
 from rnaseq.planner import generate_plan
 from rnaseq.resource_policy import AUTO, GIB, DetectedResources, resolve_policy
@@ -147,7 +148,11 @@ def render_validation_report(report: ValidationReport) -> str:
         if config.design.condition_order:
             lines.append(f"Condition order: {', '.join(config.design.condition_order)}")
         if config.project.preset is not Preset.QC and report.contrasts is not None and not report.contrasts.contrasts:
-            lines.append("Contrasts: not yet defined (run `rnaseq design PROJECT` after reviewing L1)")
+            lines.append(
+                "Contrasts: not yet defined (required for L2: run `rnaseq design PROJECT` to configure them)"
+                if config.project.preset is Preset.L2
+                else "Contrasts: not yet defined (run `rnaseq design PROJECT` after reviewing L1)"
+            )
     lines.extend(_render_batch_contingency(report))
     if report.pairing is not None:
         lines.extend(
@@ -824,7 +829,7 @@ def new_project(
             if normalized_input is InputType.RAW_COUNTS
             else _reference_review(reference, selected_managed_reference, defaulted=reference_source is None)
         )
-        review = {"Project": name, "Destination": destination, "Species": normalized_species.value, "Input": normalized_input.value, "Input handling": "scaffold — add data after project creation" if scaffold else "import supplied inputs", "Scope": normalized_preset.value, "Design": "not applicable for QC" if normalized_preset is Preset.QC else normalized_design.value, **({} if normalized_preset is Preset.QC else {"Technical batch": "yes (metadata template gets a 'batch' column)" if template_batch else ("yes (in model)" if formula is not None and "batch" in formula.replace("~", " ").replace("+", " ").split() else "no"), "Provisional model": formula or derive_design(normalized_design, pair_id, template_batch)[0], "Contrasts": "imported" if contrasts is not None else "set later by `rnaseq design`", "Enrichment": describe_enrichment(selected_enrichment) if normalized_preset is Preset.L2 else "selected when L2 is configured by `rnaseq design`", "Annotation": _annotation_review(normalized_species, normalized_gene_id_type)}), "Backend": normalized_method if normalized_input is InputType.FASTQ else "external raw counts", "Reference": review_reference, "Execution": f"local, {selected_cpus} CPUs / {selected_memory} GiB" if AUTO not in (selected_cpus, selected_memory) else f"local, CPUs={selected_cpus} / memory GiB={selected_memory} (auto = sized from the running machine)"}
+        review = {"Project": name, "Destination": destination, "Species": normalized_species.value, "Input": normalized_input.value, "Input handling": "scaffold — add data after project creation" if scaffold else "import supplied inputs", "Scope": normalized_preset.value, "Design": "not applicable for QC" if normalized_preset is Preset.QC else normalized_design.value, **({} if normalized_preset is Preset.QC else {"Technical batch": "yes (metadata template gets a 'batch' column)" if template_batch else ("yes (in model)" if formula is not None and "batch" in formula.replace("~", " ").replace("+", " ").split() else "no"), "Provisional model": formula or derive_design(normalized_design, pair_id, template_batch)[0], "Contrasts": "imported" if contrasts is not None else ("set later by `rnaseq design` (required before L2 can run)" if normalized_preset is Preset.L2 else "set later by `rnaseq design`"), "Enrichment": describe_enrichment(selected_enrichment) if normalized_preset is Preset.L2 else "selected when L2 is configured by `rnaseq design`", "Annotation": _annotation_review(normalized_species, normalized_gene_id_type)}), "Backend": normalized_method if normalized_input is InputType.FASTQ else "external raw counts", "Reference": review_reference, "Execution": f"local, {selected_cpus} CPUs / {selected_memory} GiB" if AUTO not in (selected_cpus, selected_memory) else f"local, CPUs={selected_cpus} / memory GiB={selected_memory} (auto = sized from the running machine)"}
         _new_summary(review)
         if not yes and not typer.confirm("Create this project?", default=True):
             if not noninteractive and typer.confirm("Revise choices?", default=True):
@@ -852,17 +857,51 @@ def new_project(
         raise typer.Exit(code=2) from exc
 
     typer.echo(f"Created project: {target}")
+    project_arg = shlex.quote(str(target))
     if scaffold:
-        typer.echo("This is an incomplete scaffold. Add valid inputs and complete metadata.csv, then run: rnaseq validate PROJECT")
+        typer.echo(f"This is an incomplete scaffold. Add valid inputs and complete metadata.csv, then run: rnaseq validate {project_arg}")
         if normalized_preset is not Preset.QC:
             header = ",".join(("sample_id", *derive_design(normalized_design, pair_id, template_batch)[2])) if metadata is None else "(imported)"
-            typer.echo(f"Next steps:\n  1. Fill {target / 'metadata.csv'} (columns: {header}).")
-            typer.echo("  2. rnaseq validate PROJECT, then run L1 for QC: rnaseq run PROJECT --case-id CASE-ID")
-            typer.echo("  3. After reviewing L1, set up differential expression: rnaseq design PROJECT, then run L2.")
+            for line in _scaffold_next_steps(target, normalized_preset, normalized_input, header):
+                typer.echo(line)
     elif normalized_input is InputType.FASTQ:
-        typer.echo("Imported FASTQs were copied into input/fastq; run rnaseq validate PROJECT to check readiness.")
+        typer.echo(f"Imported FASTQs were copied into input/fastq; run rnaseq validate {project_arg} to check readiness.")
     else:
-        typer.echo("Imported raw counts and supplied metadata/contrasts were preserved; run rnaseq validate PROJECT.")
+        typer.echo(f"Imported raw counts and supplied metadata/contrasts were preserved; run rnaseq validate {project_arg}.")
+
+
+def _scaffold_next_steps(target: Path, preset: Preset, input_type: InputType, header: str) -> list[str]:
+    """The ordered commands that take a new L1 or L2 scaffold to its first run."""
+
+    project = shlex.quote(str(target))
+    inputs = (
+        f"Copy the FASTQ files into {target / 'input' / 'fastq'} and fill {target / 'metadata.csv'} (columns: {header}).\n"
+        "     Each sample_id must equal the FASTQ sample ID: the file name before _Lnnn/_R1/_R2, "
+        "e.g. Ctrl1_S1_L001_R1_001.fastq.gz -> Ctrl1_S1."
+        if input_type is InputType.FASTQ
+        else f"Put the count matrix in {target / 'input' / 'counts.csv'} and fill {target / 'metadata.csv'} (columns: {header})."
+    )
+    if preset is Preset.L2:
+        return [
+            "Next steps (L2: differential expression and enrichment; the L2 run also performs the L1 QC):",
+            f"  1. {inputs}",
+            f"  2. Configure the contrasts: rnaseq design {project}",
+            "     (writes contrasts.csv and refreshes the planning artifacts; L2 cannot be validated or run without it)",
+            f"  3. Confirm readiness: rnaseq validate {project}  and  rnaseq doctor {project}",
+            f"  4. Run L2: rnaseq run {project} --case-id CASE-ID",
+            "     One L2 run produces the L1 QC, differential expression and enrichment; no separate L1 run is needed.",
+        ]
+    reuse = " --reuse-upstream CASE-ID/RUN-ID (of the successful L1 run)" if input_type is InputType.FASTQ else ""
+    return [
+        "Next steps (L1: QC and exploratory analysis):",
+        f"  1. {inputs}",
+        f"  2. Validate: rnaseq validate {project}",
+        f"  3. Plan and check the machine: rnaseq plan {project}  and  rnaseq doctor {project}",
+        f"  4. Run L1: rnaseq run {project} --case-id CASE-ID",
+        f"  5. Review the L1 QC in {target / 'runs'}/CASE-ID/RUN-ID/delivery/",
+        f"  6. Configure L2 (differential expression): rnaseq design {project}",
+        f"     then run L2 with a new case ID: rnaseq run {project} --case-id NEW-CASE-ID{reuse}",
+    ]
 
 
 @app.command("validate")
@@ -1074,7 +1113,8 @@ def design_command(
     typer.echo(f"Functional enrichment: {describe_enrichment(tuple(final_enrichment))}")
     typer.echo("L2 validation: " + after.state)
     typer.echo("Planning artifacts refreshed for the new configuration (equivalent to `rnaseq plan`).")
-    reuse = _latest_successful_run(Path(project_dir))
+    # Only FASTQ projects have an upstream stage whose results a later run can reuse.
+    reuse = _latest_successful_run(Path(project_dir)) if config.input.type is InputType.FASTQ else None
     hint = f" --reuse-upstream {reuse}" if reuse else ""
     typer.echo(f"Next: rnaseq run {project_dir} --case-id CASE-ID{hint}")
     if reuse:
@@ -1105,7 +1145,7 @@ def run_command(
     project_dir: Path,
     case_id: str = typer.Option(..., "--case-id", help="Required filesystem-safe client case identifier."),
     profile: str = typer.Option("local", "--profile", help="Execution profile; only local is implemented."),
-    reuse_upstream: str | None = typer.Option(None, "--reuse-upstream", help="Optional compatible CASE-ID/RUN-ID upstream reuse source."),
+    reuse_upstream: str | None = typer.Option(None, "--reuse-upstream", help="FASTQ projects: reuse the upstream results of a successful run, given as CASE-ID/RUN-ID (e.g. L1-001/20261029-101010+0800; see rnaseq status PROJECT --all)."),
     yes: bool = typer.Option(False, "--yes", help="Authorize execution without an interactive prompt."),
 ) -> None:
     """Execute one immutable client case through upstream and downstream workflows."""
@@ -1114,6 +1154,10 @@ def run_command(
         report = validate_project(project_dir)
         typer.echo(render_validation_report(report))
         validate_case_id(case_id)
+        if reuse_upstream and report.config is not None and report.is_valid:
+            # Fail on an unusable reuse source before the confirmation prompt
+            # and before any run directory exists.
+            preflight_reuse_upstream(report, reuse_upstream)
         prepare_service_run(report, profile=profile)
         assert report.config is not None
         if not yes:
@@ -1200,7 +1244,7 @@ def status_command(
     project_dir: Path,
     watch: bool = typer.Option(False, "--watch", "-w", help="Refresh the dashboard until the run reaches SUCCESS, FAILED or INTERRUPTED. Ctrl-C stops watching only; the run is never signalled."),
     interval: float = typer.Option(10.0, "--interval", min=2.0, help="Seconds between --watch refreshes (default 10, minimum 2)."),
-    case_id: str | None = typer.Option(None, "--case", help="Show the latest run of this case ID (or, with --run, that exact run)."),
+    case_id: str | None = typer.Option(None, "--case", "--case-id", help="Show the latest run of this case ID (or, with --run, that exact run)."),
     run_id: str | None = typer.Option(None, "--run", help="Show this exact run ID; add --case if the run ID exists in more than one case."),
     all_runs: bool = typer.Option(False, "--all", help="One-line summary of every recorded run (optionally only --case), newest first."),
 ) -> None:

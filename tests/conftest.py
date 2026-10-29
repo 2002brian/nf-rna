@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 import subprocess
@@ -223,4 +224,27 @@ def require_r_packages(*packages: str) -> str:
     result = subprocess.run([executable, "-e", f"quit(status=if ({expression}) 0 else 1)"], capture_output=True, text=True, check=False)
     if result.returncode != 0:
         _r_unavailable("R packages unavailable: " + ", ".join(packages))
+    return executable
+
+
+@functools.lru_cache(maxsize=None)
+def _missing_downstream_r_components(path: str | None) -> tuple[str, ...]:
+    from rnaseq.downstream import r_runtime_checks
+
+    return tuple(item.name for item in r_runtime_checks() if item.state != "FOUND")
+
+
+def require_downstream_r_runtime(*packages: str) -> str:
+    """Gate a test that runs the real execute_l1/execute_l2 on exactly what their runtime guard checks.
+
+    ``rnaseq.downstream._require_r`` refuses to run unless every component of
+    ``r_runtime_checks()`` is found; gating on a smaller hand-picked list turned
+    an incomplete R (for example a system R without tximport) into a failure
+    instead of a skip.  ``packages`` adds test-specific packages such as ggrepel.
+    """
+
+    executable = require_r_packages(*packages) if packages else require_rscript()
+    missing = _missing_downstream_r_components(os.environ.get("PATH"))
+    if missing:
+        _r_unavailable("downstream R runtime incomplete (required by execute_l1/execute_l2): " + ", ".join(missing))
     return executable

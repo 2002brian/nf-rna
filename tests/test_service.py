@@ -1031,6 +1031,24 @@ def test_upstream_reuse_still_requires_byte_identical_nfcore_inputs(project_fact
         reuse_upstream_if_compatible(run, frozen, _REUSE_SOURCE)
 
 
+def test_reuse_local_config_mismatch_explains_resource_limits_and_the_way_out(project_factory):
+    run, frozen, source = _reuse_pair(project_factory, source_manifest=_UPSTREAM_MANIFEST)
+    (source / "frozen" / "nfcore.local.config").write_text("executor { cpus = 8 }\n", encoding="utf-8")
+    with pytest.raises(ExecutionPreflightError) as raised:
+        reuse_upstream_if_compatible(run, frozen, _REUSE_SOURCE)
+    message = str(raised.value)
+    assert message.startswith("--reuse-upstream is incompatible: frozen nfcore.local.config differs.")
+    for cause in ("execution.max_cpus", "execution.max_memory_gb", "'auto'", "another host", "without --reuse-upstream"):
+        assert cause in message
+    assert not (run.run_dir / "upstream" / "nfcore_rnaseq").exists()  # still byte-identical or nothing is copied
+    # The resource hint is specific to the local config; other mismatches keep their plain message.
+    (source / "frozen" / "nfcore.local.config").write_bytes((run.run_dir / "frozen" / "nfcore.local.config").read_bytes())
+    (source / "frozen" / "nfcore.params.json").write_text("{}\n", encoding="utf-8")
+    with pytest.raises(ExecutionPreflightError) as raised:
+        reuse_upstream_if_compatible(run, frozen, _REUSE_SOURCE)
+    assert str(raised.value) == "--reuse-upstream is incompatible: frozen nfcore.params.json differs."
+
+
 def test_upstream_reuse_refuses_an_unreadable_or_non_mapping_source_manifest(project_factory):
     run, frozen, source = _reuse_pair(project_factory, source_manifest=_UPSTREAM_MANIFEST)
     for content in ("{unterminated", "- just\n- a list\n"):

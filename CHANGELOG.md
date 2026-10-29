@@ -2,6 +2,37 @@
 
 All notable changes to this project are documented here.
 
+## 1.4.1 — Unreleased
+
+The release date is set when the release is finalized. Patch release from the `v1.4.0` post-release user-workflow audit. DESeq2, tximport, nf-core/rnaseq 3.26.0, QC and enrichment calculations, Nextflow workflows, reference validation, the upstream-reuse compatibility contract, the provenance schema, and scientific result tables are unchanged.
+
+### Compatibility
+
+- `rnaseq run --reuse-upstream` is now refused for raw-count projects, which have no upstream stage; previously the option was silently ignored. Remove the option from such commands.
+
+### Fixed
+
+- **Wizard next steps.** `rnaseq new` printed the same "run L1 for QC" instructions for L1 and L2 projects, so following them in an L2 project failed validation. L1 projects now list validate → plan → run L1 → review QC → `rnaseq design`; L2 projects list `rnaseq design` → validate → run L2 and state that the L2 run also performs the L1 QC. The commands show the actual project path, the FASTQ steps state the sample-ID rule, and the review and validation report say that L2 needs `rnaseq design` before it can run.
+- **Validation blockers.** When validation failed for metadata, FASTQ, or contrast reasons, `rnaseq validate` also reported `reference genome not configured` for a correctly configured iGenomes (or custom) reference. It now reports `Project validation failed; fix the errors listed above before execution.` and names a reference problem only when the reference is actually not ready.
+- **Raw-count upstream reuse.** `rnaseq design` no longer suggests `--reuse-upstream` for raw-count projects, and `rnaseq run` rejects the option for them (see Compatibility).
+- **Early reuse preflight.** `--reuse-upstream` is checked before the confirmation prompt and before any run directory, input freezing, or runtime provisioning: the `CASE-ID/RUN-ID` format, the case and run IDs, the existence and SUCCESS state of the source run, and its upstream handoff manifest. Such mistakes no longer leave a FAILED run behind. The byte-level compatibility checks still run once the new run's inputs are frozen and are unchanged.
+- **Reuse compatibility errors.** `frozen nfcore.local.config differs` now explains that the file records the local CPU/memory ceiling (changed `execution.max_cpus` / `execution.max_memory_gb`, or `auto` resolving to a different capacity on another host) and how to proceed; format and source errors include an example and point to `rnaseq status PROJECT --all`.
+- **`rnaseq status --case-id`** is accepted as an alias of `--case`, matching `rnaseq run` and `rnaseq clean`.
+
+### Documentation
+
+- README (English and Traditional Chinese) and Quick Start describe both supported workflows, staged L1 → L2 and direct L2, and that `rnaseq design` writes the contrasts and refreshes the planning artifacts without needing a previous run. The obsolete statement that the L1 → L2 journey requires the development version was removed.
+- FASTQ naming and sample-ID rules, with the example `Ctrl1_S1_L001_R1_001.fastq.gz` → sample `Ctrl1_S1`.
+- Case ID versus run ID, and the exact `--reuse-upstream CASE-ID/RUN-ID` format.
+- Foreground execution, monitoring from a second terminal, the effect of closing the terminal, shutdown, sleep, and `wsl --shutdown`, and optional `tmux`/`nohup` use.
+- `rnaseq clean --dry-run` before cleanup.
+- Upstream reuse requires identical resource limits; `docs/runtime.md` distinguishes `auto` limits from the 8 CPU / 12 GiB floor and fallback, and its supported-runtime section was updated from `v1.3.0`.
+
+### Tests
+
+- Tests that run the real L1/L2 backends are gated on exactly the R components the runtime requires, so an incomplete R skips them (or fails them under `NF_RNA_REQUIRE_R=1`) instead of failing part-way.
+- Regression tests for the wizard instructions, validation blockers, upstream-reuse preflight and messages, the status alias, and a check that every `rnaseq` command and option shown in the user documentation exists.
+
 ## 1.4.0 — 2026-10-19
 
 Changes since `v1.3.0`. Unless stated otherwise, DESeq2, tximport, nf-core/rnaseq 3.26.0, contrast semantics, enrichment methods, and scientific result tables are unchanged.

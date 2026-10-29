@@ -4,7 +4,7 @@
 
 `nf-rna` 是可重現的 bulk RNA-seq workflow，支援 FASTQ 與 raw-count 專案。它會驗證已宣告的輸入與實驗設計，執行選定的 QC 與分析階段，並產生圖表、表格、technical report 與凍結的 provenance。
 
-`rnaseq` 是 control plane，Nextflow 是 execution plane，所有 process 環境皆由 Conda 提供。v1.4.0 支援的 runtime 為 **Linux x86-64 或 Windows WSL2，搭配 Nextflow 與 Conda**，不需要 Docker。production 使用者透過 `rnaseq` 執行，不需要呼叫內部 Nextflow module。
+`rnaseq` 是 control plane，Nextflow 是 execution plane，所有 process 環境皆由 Conda 提供。v1.4.1 支援的 runtime 為 **Linux x86-64 或 Windows WSL2，搭配 Nextflow 與 Conda**，不需要 Docker。production 使用者透過 `rnaseq` 執行，不需要呼叫內部 Nextflow module。
 
 ## 功能
 
@@ -51,7 +51,7 @@ L1 提供表現品質控制與探索。L2 必須明確選擇：它會對已宣�
 
 ## 系統需求
 
-請使用 Linux x86-64 workstation，或 Windows 的 WSL2（v1.4.0 不支援 native Windows 與 macOS），並準備：
+請使用 Linux x86-64 workstation，或 Windows 的 WSL2（v1.4.1 不支援 native Windows 與 macOS），並準備：
 
 - Python 3.11+ 與 Git；
 - 位於 `PATH` 的 Conda（例如 Miniforge），並依 nf-core 要求依序設定 `conda-forge` 與 `bioconda` channel（`conda config --add channels bioconda && conda config --add channels conda-forge && conda config --set channel_priority strict`）；
@@ -62,7 +62,7 @@ L1 提供表現品質控制與探索。L2 必須明確選擇：它會對已宣�
 
 ## 安裝
 
-> **最新的穩定 release：`v1.4.0`。** 本 README 說明的是 `v1.4.0`（見 [1.4.0 變更](CHANGELOG.md#140--2026-10-19)）。若使用較早的 release，請參考該 release tag 的 README。若想使用開發版本，請依照 [Development installation](docs/development.md)。
+> **最新的穩定 release：`v1.4.0`。** 本 README 說明的是即將發布的修補版 `v1.4.1`（見 [1.4.1 變更](CHANGELOG.md#141--unreleased)）：修正 wizard 指示、更清楚的驗證與 upstream reuse 錯誤訊息，以及下方的新手流程說明。分析本身與 `v1.4.0` 相同。若使用較早的 release，請參考該 release tag 的 README。若想使用開發版本，請依照 [Development installation](docs/development.md)。
 
 nf-rna 沒有 PyPI distribution。請從 Git tag 安裝已發布的 CLI。從 Git 安裝時，
 pip 會記錄精確的 source commit，而每次 run 都必須記錄它；若安裝方式沒有 commit
@@ -105,37 +105,96 @@ release，但 publication workflow 在 image build 或 push 前停止，因此�
 
 ## 快速開始
 
-標準流程以範本為起點：wizard 只寫入範本，你填寫 `metadata.csv`，先執行 L1 做 QC，再由 `rnaseq design` 準備 L2。此流程需要 `main` 上的開發版本（見[安裝](#安裝)）。
+支援兩種流程，兩者都從 `rnaseq new` 寫出的範本開始：
 
-```text
-rnaseq new
-  -> 填寫 metadata.csv
-  -> rnaseq validate
-  -> 執行 L1
-  -> 檢視 QC
-  -> rnaseq design PROJECT
-  -> 執行 L2
-```
+- **分段 L1 → L2**（預設）：先執行 L1 做 QC 並檢視，再由 `rnaseq design` 設定差異表現分析，然後執行 L2。
+- **直接 L2**：在 wizard 選擇 `L2`，第一次執行前先執行 `rnaseq design`，再執行一次 L2。L2 run 一定會同時完成 L1 QC，不需要另外執行 L1。
+
+contrasts 是由 `rnaseq design` 產生的：它讀取填好的 `metadata.csv`、提出 contrasts、寫入 `contrasts.csv`、將 scope 設為 L2，並更新 planning artifacts（之後不必再執行 `rnaseq plan`）。它不需要先前的 run。`contrasts.csv` 仍為空的 L2 專案，在執行 `rnaseq design` 之前，`rnaseq validate` 與 `rnaseq plan` 都會失敗。
+
+### FASTQ 檔名與 sample ID
+
+將 gzip 壓縮的 reads（`.fastq.gz` 或 `.fq.gz`）放入 `input/fastq/`。nf-rna 從檔名取得 sample ID：檔名必須以 `_R1` 或 `_R2` 結尾（後面可接 `_001`），前面可有三位數的 lane `_L001`，**lane／read 標記之前的全部文字就是 sample ID**：
+
+| 檔名 | Sample ID | Lane |
+|---|---|---|
+| `Ctrl1_S1_L001_R1_001.fastq.gz` | `Ctrl1_S1` | `L001` |
+| `Ctrl1_S1_L002_R1_001.fastq.gz` | `Ctrl1_S1` | `L002`（同一樣本的多個 lane 會合併） |
+| `Ctrl1_R1.fastq.gz` | `Ctrl1` | – |
+
+Illumina 的樣本編號（`_S1`）屬於 sample ID 的一部分。`metadata.csv` 的每個 `sample_id` 必須完全一致，因此 `Ctrl1_S1_L001_R1_001.fastq.gz` 要寫成 `Ctrl1_S1`（或在驗證前把檔案改名為 `Ctrl1_L001_R1_001.fastq.gz` 等）。paired-end 資料中，同一樣本、同一 lane 的每個 `_R1` 都需要對應的 `_R2`。`Ctrl1_1.fastq.gz`、`Ctrl1.R1.fastq.gz` 與未壓縮的 `.fastq` 會被拒絕。`rnaseq validate` 會列出只出現在 FASTQ 或只出現在 `metadata.csv` 的樣本。
+
+### 流程 A：先 L1，再 L2
 
 ```bash
 mkdir -p ~/projects/rnaseq-projects
 cd ~/projects/rnaseq-projects
-rnaseq new                 # 選擇實驗設計，並回答是否有已知的技術性 batch
+rnaseq new                 # 選擇 L1、實驗設計，並回答是否有已知的技術性 batch
 cd <new-project>
-# 將 FASTQ 放入 input/fastq/，或將 count matrix 放入 input/counts.csv，並完成 metadata.csv。
+# 將 FASTQ 放入 input/fastq/（或將 count matrix 放入 input/counts.csv），並完成 metadata.csv。
 rnaseq validate .
 rnaseq plan .
 rnaseq doctor .
-rnaseq run . --case-id L1-001 --profile local --yes     # L1：QC 與探索性分析
-# 檢視 L1 QC（sample boxplot、PCA、library size），再設定差異表現分析：
-rnaseq design .            # 讀取 metadata.csv、顯示 model、提出 contrast 並請你確認（同時更新 plan）
-rnaseq run . --case-id L2-001 --profile local --yes     # L2：差異表現分析
-# FASTQ 專案：加上 --reuse-upstream L1-001/<run-id> 以重複使用 L1 的 quantification（見下文）
-rnaseq status .            # 最新 run 的執行儀表板
-rnaseq status . --watch    # 持續更新直到 run 結束（Ctrl-C 只停止監看）
-rnaseq status . --all      # 每個 run 一行的歷史摘要
-rnaseq clean . --case-id L1-001 --run <run-id>   # 釋放已完成 run 的 Nextflow work
+rnaseq run . --case-id L1-001 --profile local --yes     # L1：QC 與探索性分析（前景執行，見下文）
+rnaseq status . --all      # RUN 欄位顯示 case L1-001 中 SUCCESS run 的 run ID
+# 在 runs/L1-001/<run-id>/delivery/ 檢視 L1 QC：sample boxplot、PCA、library size。
+rnaseq design .            # 提出 contrasts 並請你確認；同時更新 plan
+rnaseq run . --case-id L2-001 --profile local --reuse-upstream L1-001/<run-id> --yes   # FASTQ 專案
+rnaseq run . --case-id L2-001 --profile local --yes     # raw-count 專案（沒有可重用的 upstream）
 ```
+
+### 流程 B：直接 L2
+
+```bash
+rnaseq new                 # 選擇 L2
+cd <new-project>
+# 將 FASTQ 放入 input/fastq/（或將 count matrix 放入 input/counts.csv），並完成 metadata.csv。
+rnaseq design .            # 必須先做：寫入 contrasts.csv 並更新 plan
+rnaseq validate .          # 應顯示 "Validation result: PASS" 與 "Execution readiness: READY"
+rnaseq doctor .
+rnaseq run . --case-id L2-001 --profile local --yes     # 一次 run：upstream、L1 QC、DESeq2、enrichment
+```
+
+### Case ID 與 run ID
+
+- **case ID** 是你以 `--case-id` 指定的名稱（英文字母、數字、`.`、`_`、`-`，例如 `L1-001`）。以相同 case ID 再執行會在該 case 下建立另一個 run，不會覆寫既有 run。
+- **run ID** 由 nf-rna 為每次執行建立：以 Asia/Taipei 時間表示的開始時間 `YYYYMMDD-HHMMSS+0800`（例如 `20261029-101010+0800`；同一秒內開始的第二個 run 會加上 `-01`）。`rnaseq run` 結束時會印出兩者（`Case run: SUCCESS (L1-001/20261029-101010+0800)`），`rnaseq status . --all` 的 RUN 欄位也會列出；每個 run 位於 `runs/<case-id>/<run-id>/`。
+- 選取單一 run 的指令需要兩者：`rnaseq status . --case L1-001 --run <run-id>`、`rnaseq clean . --case-id L1-001 --run <run-id>`；`--reuse-upstream` 與 `rnaseq retry --retry-of` 則使用單一值 `CASE-ID/RUN-ID`。
+
+### 執行、監看與中斷
+
+`rnaseq run` 在前景執行：終端機會一直被佔用直到 run 結束，FASTQ 專案可能需要數小時。請在**另一個終端機**監看：
+
+```bash
+rnaseq status .            # 最新 run 的執行儀表板
+rnaseq status . --watch    # 持續更新直到 SUCCESS、FAILED 或 INTERRUPTED（Ctrl-C 只停止監看）
+rnaseq status . --all      # 每個 run 一行的歷史摘要
+```
+
+run 結束前請讓電腦保持喚醒，並保持執行 run 的終端機開啟：
+
+- Ctrl-C、關閉終端機或 SSH 連線、登出，都會停止 Nextflow，並將 run 記錄為 INTERRUPTED。
+- 關機、重新開機、會重新開機的 Windows 更新，以及 `wsl --shutdown`，會直接終止 run 而不記錄結束狀態；`rnaseq status` 之後會顯示為 INTERRUPTED (stale)。睡眠或休眠會暫停 run，長時間暫停可能使 task 失敗。在 Windows 上，請將電源計畫設為執行期間不進入睡眠。
+- 已記錄為 FAILED 或 INTERRUPTED 的 run 可以用 `rnaseq retry . --retry-of CASE-ID/RUN-ID` 重試；stale run 請重新開始一個新 run。
+
+若要在關閉終端機後讓 run 繼續，可在 `tmux` 中啟動（需另行安裝；以 Ctrl-b d 離開，以 `tmux attach` 回來），或使用 `nohup`（必須加 `--yes`，因為無法回答確認提示）：
+
+```bash
+nohup rnaseq run . --case-id L1-001 --profile local --yes > L1-001.out 2>&1 &
+```
+
+兩者都無法防止關機、睡眠或 `wsl --shutdown`。
+
+### 結果與清理
+
+最終結果位於 `runs/<case-id>/<run-id>/delivery/`。每個 run 的 Nextflow work 目錄是可丟棄的中間資料（FASTQ run 常達數百 GB），會保留到你移除為止。請先確認將移除的內容，再進行清理：
+
+```bash
+rnaseq clean . --case-id L1-001 --run <run-id> --dry-run   # 顯示路徑、狀態與大小；不刪除任何東西
+rnaseq clean . --case-id L1-001 --run <run-id>             # 刪除前會詢問
+```
+
+清理只移除 work 目錄；`runs/<case-id>/<run-id>/`（包含 `delivery/`）永遠不會被移除，已清理的 L1 run 仍可被 L2 重用。見 [Runtime](docs/runtime.md#nextflow-work-directories-and-rnaseq-clean)。
 
 ### wizard 詢問的內容與範本
 
@@ -158,34 +217,34 @@ L1 不需要 contrasts，會產生 raw-count 與 VST sample boxplot、PCA、samp
 - nf-rna 不會用這些圖決定 model 是否納入 batch；已知 batch 由你在建立專案時宣告。
 - 正式的差異推論在 L2 進行。
 
-### `rnaseq design`：從 L1 到 L2
+### `rnaseq design`：設定 L2
 
-檢視 L1 之後，`rnaseq design PROJECT` 會讀取填好的 `metadata.csv` 並準備 L2：
+`rnaseq design PROJECT` 會讀取填好的 `metadata.csv` 並準備 L2，可在檢視 L1 之後（流程 A）或第一次執行之前（流程 B）使用：
 
 - 寫入任何檔案之前先驗證設計：model matrix 必須 full rank（batch 與 condition 不可完全 confounded；paired 設計中 batch 必須在配對內有變化），且 categorical variable 展開後仍須有 residual degrees of freedom。部分 confounding 與只有單一樣本的 batch 會以警告提示，並顯示 batch × condition 的樣本數。
 - **Two-group：** 依 condition levels 在 `metadata.csv` 中首次出現的順序，提出「後者 vs 前者」，例如 `Treatment_vs_Control`（log2FC > 0 代表 Treatment 較高）。輸入 `y` 確認、`swap` 反轉方向、`n` 不做任何變更（非互動可用 `--yes`、`--swap`）。`swap` 只改變 `contrasts.csv` 中的 contrast（方向以它為準）；`design.condition_order` 維持首次出現順序（或 `--condition-order` 指定的順序）。
 - **Multi-group：** 依首次出現順序產生所有成對 contrast（後者 vs 前者）。`Control, DrugA, DrugB` 會得到 `DrugA_vs_Control`、`DrugB_vs_Control`、`DrugB_vs_DrugA`；k 個 level 共 k(k-1)/2 個 contrast。沒有逐一挑選比較的介面，要移除比較請編輯 `contrasts.csv`。各 contrast 的 adjusted p-value 不會跨 contrast 校正。
 - 可用 `--condition-order Control,DrugA,DrugB` 明確指定順序（reference level 在前）。
-- 確認後才會寫入 `contrasts.csv`、將順序凍結為 `project.yaml` 的 `design.condition_order`（之後重新排序 metadata 列不會翻轉 contrast 方向），並把 scope 設為 `L2`。`project.yaml` 中的 formula 維持推導結果：`~ batch + condition`，paired 設計為 `~ <pair_id> + batch + condition`。
+- 確認後才會寫入 `contrasts.csv`、將順序凍結為 `project.yaml` 的 `design.condition_order`（之後重新排序 metadata 列不會翻轉 contrast 方向），把 scope 設為 `L2`，並更新 planning artifacts。`project.yaml` 中的 formula 維持推導結果：`~ batch + condition`，paired 設計為 `~ <pair_id> + batch + condition`。
 - 既有的非空 `contrasts.csv` 不會被覆寫，除非加上 `--force`。QC-only 專案與 metadata／design 無效的專案會被拒絕；已設為 L2 但 contrasts 為空的專案可以使用。
 
 ### 在 L2 重複使用 L1 的 upstream 結果（FASTQ 專案）
 
-FASTQ 專案的 L2 run 可以重複使用先前成功 L1 run 的 upstream quantification，而不必重新執行：
+FASTQ 專案的 L2 run 可以重複使用先前成功 L1 run 的 upstream quantification，而不必重新執行。`--reuse-upstream` 的值必須正好是該 run 的 `CASE-ID/RUN-ID`，例如：
 
 ```bash
-rnaseq run . --case-id L2-001 --reuse-upstream L1-001/<run-id> --yes
+rnaseq run . --case-id L2-001 --profile local --reuse-upstream L1-001/20261029-101010+0800 --yes
 ```
 
-`<run-id>` 是 `runs/L1-001/` 下 L1 run 的目錄名稱，可在 `rnaseq status . --all` 的 RUN 欄位查到。Salmon/tximport 與 HISAT2 + featureCounts 專案皆支援。必須通過相容性檢查：
+run ID 請取自 `rnaseq status . --all` 中 SUCCESS 那一列的 RUN 欄位（一個 case 可能有多個 run，包括 FAILED 的 run）；`rnaseq design` 的 `Next:` 行也會印出最新的成功 run。Salmon/tximport 與 HISAT2 + featureCounts 專案皆支援。必須通過相容性檢查：
 
 - 來源必須是同一專案中狀態為 SUCCESS、且具有已驗證 upstream handoff 的 run；
-- 其凍結的 nf-core parameters、Nextflow config 與 samplesheet 必須與新 run 相同；
+- 其凍結的 nf-core parameters、Nextflow config 與 samplesheet 必須與新 run 逐位元組相同；
 - 其 input、upstream 與 reference identity 必須與新 run 相同。
 
-否則新 run 會以 incompatibility error 失敗，且不會複製任何 upstream 結果。analysis scope、design、metadata 與 contrasts 可以不同，因此 `rnaseq design` 所做的變更不會妨礙 reuse。upstream 結果是從 L1 run 的永久紀錄複製，因此以 `rnaseq clean` 移除 L1 run 的 Nextflow work 不影響 reuse。Raw-count 專案沒有 upstream 階段，因此不需要此選項。
+凍結的 Nextflow config 記錄了本機 CPU／記憶體上限。因此若在兩次 run 之間更改 `execution.max_cpus` 或 `execution.max_memory_gb`，或在容量與執行 L1 的機器不同的機器上使用 `auto`，都會使 reuse 不相容：請維持相同的上限與機器，或執行 L2 時不加 `--reuse-upstream`。檢查未通過時，新 run 會以 incompatibility error 失敗，且不會複製任何 upstream 結果。analysis scope、design、metadata 與 contrasts 可以不同，因此 `rnaseq design` 所做的變更不會妨礙 reuse。upstream 結果是從 L1 run 的永久紀錄複製，因此以 `rnaseq clean` 移除 L1 run 的 Nextflow work 不影響 reuse。Raw-count 專案沒有 upstream 階段，請勿對其使用此選項。
 
-最終結果位於 `runs/<case-id>/<run-id>/delivery/`。每個 run 的 Nextflow work 目錄是可丟棄的中間資料（FASTQ run 常達數百 GB），會保留到你以 `rnaseq clean` 明確移除為止；見 [Runtime](docs/runtime.md#nextflow-work-directories-and-rnaseq-clean)。新專案預設依硬體自動設定 CPU／記憶體上限（`execution.max_cpus: auto`、`execution.max_memory_gb: auto`）；`project.yaml` 中明確指定的整數上限會被保留。
+新專案預設依硬體自動設定 CPU／記憶體上限（`execution.max_cpus: auto`、`execution.max_memory_gb: auto`）；`project.yaml` 中明確指定的整數上限會被保留。見 [Local resource policy](docs/runtime.md#local-resource-policy)。
 
 wizard 只建立 project scaffold，不會推測科學輸入。FASTQ 專案還需要 execution-ready reference；可用 `rnaseq reference register /absolute/reference-root` 註冊既有的 checksum-bound managed reference，或設定支援的 reference route。詳細內容請見 [Quick Start](docs/quickstart.md)。
 

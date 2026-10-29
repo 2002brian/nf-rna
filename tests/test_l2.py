@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from conftest import BASE_COUNTS, BASE_METADATA, base_config, pdf_text_origins, require_r_packages
+from conftest import BASE_COUNTS, BASE_METADATA, base_config, pdf_text_origins, require_downstream_r_runtime
 from rnaseq.downstream import L1Result
 from rnaseq.errors import DownstreamExecutionError
 from rnaseq.l2 import execute_l2, prepare_l2
@@ -59,7 +59,7 @@ def _typed_design_project(
 
 
 def test_l2_scientific_provenance_records_actual_typed_model(tmp_path):
-    require_r_packages("jsonlite", "DESeq2", "ggplot2", "pheatmap")
+    require_downstream_r_runtime("jsonlite", "DESeq2", "ggplot2", "pheatmap")
     root = _typed_design_project(
         tmp_path,
         formula="~ batch + age + condition",
@@ -88,7 +88,7 @@ def test_l2_scientific_provenance_records_actual_typed_model(tmp_path):
 
 
 def test_real_l2_three_batch_levels_emits_only_the_biological_contrast(tmp_path):
-    require_r_packages("jsonlite", "DESeq2", "ggplot2", "pheatmap")
+    require_downstream_r_runtime("jsonlite", "DESeq2", "ggplot2", "pheatmap")
     root = _example_copy(tmp_path)
     config = yaml.safe_load((root / "project.yaml").read_text(encoding="utf-8"))
     config["schema_version"] = "1.3"
@@ -122,7 +122,7 @@ def test_real_l2_three_batch_levels_emits_only_the_biological_contrast(tmp_path)
 def test_l2_scientific_provenance_covers_simple_and_paired_models(
     tmp_path, formula, variables, paired, expected_columns,
 ):
-    require_r_packages("jsonlite", "DESeq2", "ggplot2", "pheatmap")
+    require_downstream_r_runtime("jsonlite", "DESeq2", "ggplot2", "pheatmap")
     root = _typed_design_project(tmp_path, formula=formula, variables=variables, paired=paired)
     result = execute_l2(prepare_l2(validate_project(root), run_id=None))
     design = json.loads((result.output_dir / "scientific_provenance.json").read_text())["design"]
@@ -140,7 +140,7 @@ def test_l2_scientific_provenance_covers_simple_and_paired_models(
 
 
 def test_real_l2_replicated_raw_counts_outputs_and_determinism(tmp_path):
-    require_r_packages("jsonlite", "DESeq2", "ggplot2", "pheatmap")
+    require_downstream_r_runtime("jsonlite", "DESeq2", "ggplot2", "pheatmap")
     root = _example_copy(tmp_path)
     prepared = prepare_l2(validate_project(root), run_id=None)
     first = execute_l2(prepared)
@@ -212,7 +212,7 @@ def test_l2_supports_multiple_named_contrasts_and_paired_metadata(project_factor
 
 
 def test_l2_zero_deg_heatmap_is_not_applicable(tmp_path):
-    require_r_packages("jsonlite", "DESeq2", "ggplot2", "pheatmap")
+    require_downstream_r_runtime("jsonlite", "DESeq2", "ggplot2", "pheatmap")
     root = _example_copy(tmp_path)
     config = yaml.safe_load((root / "project.yaml").read_text())
     config["thresholds"]["abs_log2fc"] = 100.0
@@ -299,7 +299,7 @@ def _imbalanced_batch_project(tmp_path: Path, name: str, formula: str, variables
 
 
 def test_batch_term_changes_the_fitted_model_and_the_condition_contrast(tmp_path):
-    require_r_packages("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
+    require_downstream_r_runtime("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
     results = {}
     for name, formula, variables in (
         ("plain", "~ condition", {"condition": "categorical"}),
@@ -325,7 +325,7 @@ def test_batch_term_changes_the_fitted_model_and_the_condition_contrast(tmp_path
 
 
 def test_l1_boxplot_samples_follow_sample_order_not_metadata_row_order(tmp_path):
-    require_r_packages("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
+    require_downstream_r_runtime("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
     root = _imbalanced_batch_project(tmp_path, "shuffled", "~ batch + condition", {"batch": "categorical", "condition": "categorical"})
     lines = (root / "metadata.csv").read_text(encoding="utf-8").splitlines()
     (root / "metadata.csv").write_text("\n".join([lines[0], *reversed(lines[1:])]) + "\n", encoding="utf-8")

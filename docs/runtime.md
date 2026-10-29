@@ -1,10 +1,10 @@
 # Runtime and reproducibility
 
-## Supported runtime (v1.3.0)
+## Supported runtime (v1.4.1)
 
-nf-rna v1.3.0 supports one runtime: **Linux x86-64, including Windows WSL2,
+nf-rna v1.4.1 supports one runtime: **Linux x86-64, including Windows WSL2,
 with Nextflow and Conda**. Docker is not required and is never invoked. Native
-Windows and macOS are not supported by v1.3.0.
+Windows and macOS are not supported by v1.4.1.
 
 Required local components:
 
@@ -320,6 +320,13 @@ effective ceilings, whether each was `auto` or explicit, any fallback, and the
 Salmon scheduling request. A retry inherits the source run's frozen resource
 configuration.
 
+Because the frozen local configuration contains the effective ceiling,
+`--reuse-upstream` accepts a source run only when that ceiling is identical:
+changing `execution.max_cpus` or `execution.max_memory_gb`, or resolving `auto`
+on a machine with a different capacity, makes the source incompatible
+(`frozen nfcore.local.config differs`). Restore the source run's limits, or run
+without `--reuse-upstream`.
+
 ## Monitoring a run
 
 ```bash
@@ -376,6 +383,23 @@ running tasks with their sample and elapsed time, and task counts as
 completed / running / queued / failed; no total is shown because Nextflow creates
 tasks as the run progresses.
 
+`rnaseq run` runs in the foreground and keeps its terminal until the run ends,
+so use `rnaseq status PROJECT --watch` from a second terminal. `--case-id` is
+accepted as an alias of `--case` from v1.4.1.
+
+A run stops when its `rnaseq` process stops. Ctrl-C, closing the terminal or SSH
+session, and logging out (SIGINT, SIGHUP) stop Nextflow and record the run as
+INTERRUPTED. Shutdown, restart, and `wsl --shutdown` kill it without recording an
+end state, so status later shows INTERRUPTED (stale); sleep or hibernation
+suspends it and long pauses can make tasks fail. Keep the machine awake for the
+whole run. To survive a closed terminal, run inside `tmux`, or start the run with
+`nohup` and `--yes`: an ignored SIGHUP is left ignored, so the run continues.
+
+```bash
+nohup rnaseq run PROJECT --case-id CASE-001 --profile local --yes > CASE-001.out 2>&1 &
+rnaseq status PROJECT --watch
+```
+
 `rnaseq status` is read-only and does not need Nextflow to be running. It reads
 the run's `run_state.json`, frozen `input_manifest.yaml` and samplesheet, its own
 logs, the nf-core/rnaseq execution trace (`upstream/nfcore_rnaseq/pipeline_info/`),
@@ -425,7 +449,7 @@ The default local contracts are intentionally conservative:
 | MEDIUM | 4 | 8 GiB | 8 h |
 | LARGE | 8 | 12 GiB | 12 h |
 
-The default project ceiling is 8 CPUs, 12 GiB, and 12 hours. The frozen config sets Nextflow's aggregate local executor ceiling and `resourceLimits`, while preserving nf-core labels and first-party per-process requests. Independent sample-level and enrichment tasks may run concurrently when their summed requests fit that ceiling; dependency edges still sequence dependent stages. The first-party HISAT2 workflow binds fastp, HISAT2, supported SAMtools operations, and featureCounts threads to `task.cpus`. Each FASTQ run freezes one path-free local Nextflow configuration and its SHA-256, and supplies it to nf-core Salmon, HISAT2/featureCounts, and downstream. These are scheduling bounds only and do not alter quantification, filtering, DESeq2, thresholds, rankings, or GSEA calculations.
+The 8 CPU / 12 GiB / 12 hour LARGE contract is the floor that the effective ceiling must reach and the fallback `auto` uses when capacity cannot be detected; it is not the default for new projects, which use `auto` (see [Local resource policy](#local-resource-policy)). The frozen config sets Nextflow's aggregate local executor ceiling and `resourceLimits`, while preserving nf-core labels and first-party per-process requests. Independent sample-level and enrichment tasks may run concurrently when their summed requests fit that ceiling; dependency edges still sequence dependent stages. The first-party HISAT2 workflow binds fastp, HISAT2, supported SAMtools operations, and featureCounts threads to `task.cpus`. Each FASTQ run freezes one path-free local Nextflow configuration and its SHA-256, and supplies it to nf-core Salmon, HISAT2/featureCounts, and downstream. These are scheduling bounds only and do not alter quantification, filtering, DESeq2, thresholds, rankings, or GSEA calculations.
 
 ## Filesystem layout
 

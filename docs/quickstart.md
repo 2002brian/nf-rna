@@ -4,7 +4,7 @@ This guide is for production users on Linux x86-64 or Windows WSL2. Install Pyth
 
 ## Install a released nf-rna version
 
-The latest stable release is `v1.4.0`, and this guide describes it (see the [1.4.0 changes](../CHANGELOG.md#140--2026-10-19)). For an earlier release, follow the documentation at that release's tag; to use the development version, see [Development installation](development.md).
+The latest stable release is `v1.4.0`. This guide describes the upcoming patch release `v1.4.1` (see the [1.4.1 changes](../CHANGELOG.md#141--unreleased)), whose analysis is unchanged from `v1.4.0`. For an earlier release, follow the documentation at that release's tag; to use the development version, see [Development installation](development.md).
 
 nf-rna is installed from Git tags; it is not published to PyPI. Installing from
 Git lets pip record the exact source commit, which every run records; nf-rna
@@ -29,31 +29,57 @@ Releases `v1.1.2` through `v1.2.1` used a Docker execution image published as
 
 ## Create and run a project
 
-The normal journey is template-first:
+Both supported workflows are template-first:
 
 ```text
-rnaseq new -> fill metadata.csv -> rnaseq validate -> run L1 -> review QC -> rnaseq design PROJECT -> run L2
+Staged L1 -> L2: rnaseq new (L1) -> add inputs, fill metadata.csv -> validate -> plan -> run L1 -> review QC -> rnaseq design -> run L2
+Direct L2:       rnaseq new (L2) -> add inputs, fill metadata.csv -> rnaseq design -> validate -> run L2 (includes the L1 QC)
 ```
+
+Staged L1 -> L2:
 
 ```bash
 mkdir -p ~/projects/rnaseq-projects
 cd ~/projects/rnaseq-projects
-rnaseq new
+rnaseq new                 # choose L1
 cd <new-project>
 # Add FASTQs to input/fastq/, or a count matrix to input/counts.csv, and complete metadata.csv.
 rnaseq validate .
 rnaseq plan .
 rnaseq doctor .
 rnaseq run . --case-id L1-001 --profile local --yes   # L1: QC and exploratory analysis
-rnaseq status .          # add --watch to follow a running case
-# Review the L1 QC (sample boxplots, PCA), then confirm the model and contrasts for L2:
+rnaseq status . --all     # RUN column: the run ID of the SUCCESS run of L1-001
+# Review the L1 QC (sample boxplots, PCA) in runs/L1-001/<run-id>/delivery/, then confirm the model and contrasts:
 rnaseq design .
-rnaseq run . --case-id L2-001 --profile local --yes   # L2: differential expression
-# FASTQ projects: add --reuse-upstream L1-001/<run-id> to reuse the L1 quantification (see below)
-rnaseq clean . --case-id L1-001 --run <run-id>   # after SUCCESS: remove the disposable Nextflow work
+rnaseq run . --case-id L2-001 --profile local --reuse-upstream L1-001/<run-id> --yes   # FASTQ projects
+rnaseq run . --case-id L2-001 --profile local --yes                                    # raw-count projects
+rnaseq clean . --case-id L1-001 --run <run-id> --dry-run   # after SUCCESS: show what would be removed
+rnaseq clean . --case-id L1-001 --run <run-id>             # remove the disposable Nextflow work
 ```
 
-The wizard writes `project.yaml`, `metadata.csv`, `contrasts.csv`, `input/`, and `planning/`; it does not import data unless explicit import flags are supplied. FASTQ projects require an execution-ready reference.
+Direct L2:
+
+```bash
+rnaseq new                 # choose L2
+cd <new-project>
+# Add the inputs and complete metadata.csv, then configure the contrasts before the first run:
+rnaseq design .            # writes contrasts.csv and refreshes the planning artifacts
+rnaseq validate .
+rnaseq doctor .
+rnaseq run . --case-id L2-001 --profile local --yes   # upstream, L1 QC, DESeq2 and enrichment in one run
+```
+
+An L2 project fails `rnaseq validate` and `rnaseq plan` until `rnaseq design` has written its contrasts; a separate L1 run is never needed for L2. The wizard writes `project.yaml`, `metadata.csv`, `contrasts.csv`, `input/`, and `planning/`; it does not import data unless explicit import flags are supplied. FASTQ projects require an execution-ready reference.
+
+### FASTQ names and sample IDs
+
+FASTQs must be gzipped (`.fastq.gz` or `.fq.gz`) and named `<sample>[_L<nnn>]_R1|_R2[_<nnn>]`. The sample ID is everything before the optional lane and the read marker, so `Ctrl1_S1_L001_R1_001.fastq.gz` belongs to sample `Ctrl1_S1` (the Illumina `_S1` is kept) and `Ctrl1_R1.fastq.gz` to `Ctrl1`. Lanes of one sample are combined, paired-end data needs a matching `_R2` for each `_R1`, and `_1`/`_2` or `.R1` names are rejected. Each `sample_id` in `metadata.csv` must match exactly; `rnaseq validate` lists the samples found on only one side.
+
+### Case ID, run ID, and monitoring
+
+`--case-id` is a name you choose (for example `L1-001`). nf-rna creates a run ID for every execution, its Asia/Taipei start time `YYYYMMDD-HHMMSS+0800`, prints `Case run: SUCCESS (CASE-ID/RUN-ID)` at the end, and stores the run in `runs/<case-id>/<run-id>/`; final results are in its `delivery/` directory. `rnaseq status . --all` lists both IDs. `--reuse-upstream` and `rnaseq retry --retry-of` take `CASE-ID/RUN-ID`; `rnaseq clean` takes `--case-id` and `--run`.
+
+`rnaseq run` runs in the foreground. Watch it from a second terminal with `rnaseq status . --watch` (Ctrl-C there stops only the watching). Closing the run's terminal or SSH session, logging out, or Ctrl-C stops the run and records it as INTERRUPTED; shutdown, restart, sleep, and `wsl --shutdown` stop or suspend it as well, so keep the machine awake until it finishes. To survive a closed terminal, start the run inside `tmux` or with `nohup rnaseq run . --case-id L1-001 --profile local --yes > L1-001.out 2>&1 &`; neither survives shutdown or sleep.
 
 ### Metadata templates
 
@@ -74,9 +100,9 @@ L1 runs without contrasts. It uses the provisional model only as the DESeq2 obje
 
 The two L1 boxplots compare sample distributions: `boxplot_log2_raw_counts` shows log2(raw count + 1) before normalization (depth and composition differences), and `boxplot_vst` shows the blind VST values used by PCA and correlation (whether normalization aligned the samples). `sample_distribution_qc.tsv` records each sample's Tukey box statistics for both.
 
-### Confirming L2 with `rnaseq design`
+### Configuring L2 with `rnaseq design`
 
-`rnaseq design .` validates the model (full rank, no perfect confounding of batch and condition, and residual degrees of freedom after categorical variables are expanded), prints the batch-by-condition sample counts, and proposes contrasts from the condition levels in the order they first appear in `metadata.csv`:
+`rnaseq design .` works before or after an L1 run. It validates the model (full rank, no perfect confounding of batch and condition, and residual degrees of freedom after categorical variables are expanded), prints the batch-by-condition sample counts, and proposes contrasts from the condition levels in the order they first appear in `metadata.csv`:
 
 - two-group: `Treatment_vs_Control` (later vs earlier; log2FC > 0 means higher in Treatment); answer `swap` to reverse it (only the contrast changes; `design.condition_order` keeps the first-appearance order);
 - multi-group: all pairwise contrasts, later vs earlier (`DrugA_vs_Control`, `DrugB_vs_Control`, `DrugB_vs_DrugA`).
@@ -85,19 +111,19 @@ Nothing is written until you confirm. Confirmation writes `contrasts.csv`, freez
 
 ### Reusing L1 upstream results (FASTQ projects)
 
-For a FASTQ project (Salmon/tximport or HISAT2 + featureCounts), the L2 run can reuse the upstream quantification of a successful L1 run instead of repeating it:
+For a FASTQ project (Salmon/tximport or HISAT2 + featureCounts), the L2 run can reuse the upstream quantification of a successful L1 run instead of repeating it. The value is exactly `CASE-ID/RUN-ID`:
 
 ```bash
-rnaseq run . --case-id L2-001 --reuse-upstream L1-001/<run-id> --yes
+rnaseq run . --case-id L2-001 --profile local --reuse-upstream L1-001/20261029-101010+0800 --yes
 ```
 
-`<run-id>` is listed in the RUN column of `rnaseq status . --all`. Compatibility checks must pass:
+Take the run ID from the SUCCESS row of `rnaseq status . --all`. Compatibility checks must pass:
 
 - the source must be a SUCCESS run of the same project with a validated upstream handoff;
-- its frozen nf-core parameters, Nextflow config, and samplesheet must match the new run;
+- its frozen nf-core parameters, Nextflow config, and samplesheet must match the new run byte for byte;
 - its input, upstream, and reference identity must match the new run.
 
-Otherwise the new run fails with an incompatibility error and no upstream results are copied. Scope, design, metadata, and contrasts may differ, so the changes made by `rnaseq design` do not block reuse. Results are copied from the durable L1 run record, so `rnaseq clean` on the L1 run does not prevent reuse. Raw-count projects have no upstream stage and do not need this option.
+The frozen Nextflow config contains the local CPU/memory ceiling, so changing `execution.max_cpus` or `execution.max_memory_gb`, or using `auto` on a machine with a different capacity, makes the runs incompatible; keep the same limits and machine, or run without `--reuse-upstream`. Otherwise the new run fails with an incompatibility error and no upstream results are copied. Scope, design, metadata, and contrasts may differ, so the changes made by `rnaseq design` do not block reuse. Results are copied from the durable L1 run record, so `rnaseq clean` on the L1 run does not prevent reuse. Raw-count projects have no upstream stage; do not use this option for them.
 
 ## References and inputs
 

@@ -728,6 +728,14 @@ def test_case_selects_the_latest_run_of_that_case(tmp_path):
     assert "Run 20260925-120000+0800" in _status(project, "--case", "CASE-A")
 
 
+def test_case_id_is_an_alias_of_case_like_run_and_clean(tmp_path):
+    project = _selection_project(tmp_path)
+    for option in ("--case", "--case-id"):
+        assert "Run 20260925-110000+0800" in _status(project, option, "CASE-B")
+        assert "Run 20260925-100000+0800" in _status(project, option, "CASE-A", "--run", "20260925-100000+0800")
+    assert _status(project, "--all", "--case-id", "CASE-B") == _status(project, "--all", "--case", "CASE-B")
+
+
 def test_run_selects_that_exact_run(tmp_path):
     project = _selection_project(tmp_path)
     output = _status(project, "--run", "20260925-100000+0800")

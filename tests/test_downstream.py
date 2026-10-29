@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from conftest import BASE_CONTRASTS, base_config, pdf_text_origins, require_r_packages
+from conftest import BASE_CONTRASTS, base_config, pdf_text_origins, require_downstream_r_runtime
 from rnaseq.downstream import execute_l1, prepare_l1
 from rnaseq.errors import DownstreamExecutionError
 from rnaseq.validators import validate_project
@@ -21,7 +21,7 @@ def _digest(path: Path) -> str:
 
 def test_raw_counts_l1_real_backend_is_structured_and_text_deterministic(project_factory):
     pytest.importorskip("yaml")
-    require_r_packages("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
+    require_downstream_r_runtime("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
     counts = "gene_id,C1,C2,C3,T1,T2,T3\n" + "\n".join(
         f"Gene{index},{10 + index},{12 + index},{9 + index},{40 + index},{45 + index},{43 + index}"
         for index in range(1, 101)
@@ -58,7 +58,7 @@ def test_raw_counts_l1_real_backend_is_structured_and_text_deterministic(project
 
 
 def test_l1_boxplots_annotate_batch_when_declared_categorical(project_factory):
-    require_r_packages("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
+    require_downstream_r_runtime("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
     counts = "gene_id,C1,C2,C3,T1,T2,T3\n" + "\n".join(
         f"Gene{index},{10 + index},{12 + index},{9 + index},{40 + index},{45 + index},{43 + index}" for index in range(1, 101)
     ) + "\n"
@@ -82,7 +82,7 @@ def test_l1_boxplots_annotate_batch_when_declared_categorical(project_factory):
     (("B1", "", "B2", "B1", "B2", "B2"), "none (batch column has missing values for some samples)", False),
 ))
 def test_l1_boxplot_batch_annotation_is_independent_of_the_de_design(project_factory, batch_values, expected_marker, in_design):
-    require_r_packages("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
+    require_downstream_r_runtime("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
     counts = "gene_id,C1,C2,C3,T1,T2,T3\n" + "\n".join(
         f"Gene{index},{10 + index},{12 + index},{9 + index},{40 + index},{45 + index},{43 + index}" for index in range(1, 101)
     ) + "\n"
@@ -109,7 +109,7 @@ def test_l1_boxplot_batch_annotation_is_independent_of_the_de_design(project_fac
 
 @pytest.mark.parametrize("figure_settings", [None, {"preset": "standard", "profile": "general"}], ids=["legacy", "standard"])
 def test_l1_runs_for_two_samples_where_pc2_does_not_exist(project_factory, figure_settings):
-    require_r_packages("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
+    require_downstream_r_runtime("jsonlite", "yaml", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
     counts = "gene_id,C1,T1\n" + "\n".join(f"Gene{index},{10 + index},{40 + index}" for index in range(1, 101)) + "\n"
     metadata = "sample_id,condition\nC1,Control\nT1,Treatment\n"
     config = base_config()

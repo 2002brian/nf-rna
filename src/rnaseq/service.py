@@ -2132,29 +2132,76 @@ def _upstream_identity(manifest_path: Path) -> dict[str, Any] | None:
     }
 
 
-def reuse_upstream_if_compatible(run: CaseRun, frozen: FrozenInputs, reference: str) -> str:
-    """Copy a prior nf-core output only when its frozen upstream contract matches."""
+_REUSE_FORMAT = (
+    "--reuse-upstream must be formatted as CASE-ID/RUN-ID, for example L1-001/20261029-101010+0800 "
+    "(the case ID you chose and the run ID nf-rna created); list runs with: rnaseq status PROJECT --all."
+)
+_LOCAL_CONFIG_REUSE_HINT = (
+    " It records the local CPU/memory ceiling, so it differs when execution.max_cpus or execution.max_memory_gb "
+    "changed since the source run, or when 'auto' resolved to a different capacity (for example on another host). "
+    "Restore the source run's limits (see its frozen/nfcore.local.config), or run without --reuse-upstream."
+)
+
+
+def _reuse_source(runs_dir: Path, reference: str) -> tuple[str, str, Path]:
+    """Resolve ``CASE-ID/RUN-ID`` to a SUCCESS run directory of this project."""
 
     pieces = reference.split("/")
     if len(pieces) != 2:
-        raise ExecutionPreflightError("--reuse-upstream must be formatted as CASE-ID/RUN-ID.")
+        raise ExecutionPreflightError(_REUSE_FORMAT)
     source_case, source_run = pieces
     validate_case_id(source_case)
     if not RUN_ID_PATTERN.fullmatch(source_run):
-        raise ExecutionPreflightError("--reuse-upstream has an unsafe run ID.")
-    runs_dir = run.run_dir.parent.parent
+        raise ExecutionPreflightError(f"--reuse-upstream has an unsafe run ID. {_REUSE_FORMAT}")
     source = runs_dir / source_case / source_run
     try:
         source.resolve().relative_to(runs_dir.resolve())
     except ValueError as exc:
         raise ExecutionPreflightError("--reuse-upstream must refer to a run in this project.") from exc
     state_path = source / "run_state.json"
-    if not state_path.is_file() or json.loads(state_path.read_text(encoding="utf-8")).get("status") != "SUCCESS":
-        raise ExecutionPreflightError("--reuse-upstream must refer to a successful case run.")
+    if not state_path.is_file():
+        raise ExecutionPreflightError(
+            f"--reuse-upstream must refer to a successful case run; no recorded run {source_case}/{source_run} "
+            "exists in this project. List runs with: rnaseq status PROJECT --all."
+        )
+    try:
+        status = json.loads(state_path.read_text(encoding="utf-8")).get("status")
+    except (OSError, ValueError, AttributeError):
+        status = "unreadable"
+    if status != "SUCCESS":
+        raise ExecutionPreflightError(
+            f"--reuse-upstream must refer to a successful case run; {source_case}/{source_run} is {status}."
+        )
+    return source_case, source_run, source
+
+
+def preflight_reuse_upstream(report: ValidationReport, reference: str) -> None:
+    """Reject an unusable ``--reuse-upstream`` before a run directory or any expensive work exists.
+
+    The byte-level compatibility checks need the new run's frozen inputs and
+    stay in :func:`reuse_upstream_if_compatible`.
+    """
+
+    assert report.config is not None
+    if report.config.input.type is not InputType.FASTQ:
+        raise ExecutionPreflightError(
+            "--reuse-upstream applies only to FASTQ projects; a raw-count project has no upstream stage. "
+            "Run without --reuse-upstream."
+        )
+    _source_case, _source_run, source = _reuse_source(report.project_dir / "runs", reference)
+    if not (source / "handoff" / "upstream_manifest.yaml").is_file():
+        raise ExecutionPreflightError("--reuse-upstream has no validated upstream handoff manifest.")
+
+
+def reuse_upstream_if_compatible(run: CaseRun, frozen: FrozenInputs, reference: str) -> str:
+    """Copy a prior nf-core output only when its frozen upstream contract matches."""
+
+    source_case, source_run, source = _reuse_source(run.run_dir.parent.parent, reference)
     for name in ("nfcore.params.json", "nfcore.local.config"):
         old, current = source / "frozen" / name, run.run_dir / "frozen" / name
         if not old.is_file() or not current.is_file() or old.read_bytes() != current.read_bytes():
-            raise ExecutionPreflightError(f"--reuse-upstream is incompatible: frozen {name} differs.")
+            hint = _LOCAL_CONFIG_REUSE_HINT if name == "nfcore.local.config" else ""
+            raise ExecutionPreflightError(f"--reuse-upstream is incompatible: frozen {name} differs.{hint}")
     # The frozen samplesheet is the sample -> FASTQ mapping (with per-sample strandedness) that
     # nf-core consumes; a run without one (no FASTQ input) must be missing from both.
     old_sheet, current_sheet = source / "frozen" / "samplesheet.csv", run.run_dir / "frozen" / "samplesheet.csv"
@@ -2226,6 +2273,8 @@ def execute_service_run(
 ) -> CaseRun:
     """Run the complete service lifecycle; final success requires downstream completion."""
 
+    if reuse_upstream and report.config is not None and report.is_valid:
+        preflight_reuse_upstream(report, reuse_upstream)
     resources = prepare_service_run(report, profile=profile)
     run = create_case_run(report, case_id)
     command = ["rnaseq", "run", str(report.project_dir), "--case-id", case_id, "--profile", profile]

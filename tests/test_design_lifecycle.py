@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 from pathlib import Path
 
@@ -9,7 +10,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from conftest import base_config, require_r_packages
+from conftest import base_config, require_downstream_r_runtime
 from rnaseq.cli import app
 from rnaseq.design_setup import DesignSetupError, generate_contrasts, updated_project_yaml
 from rnaseq.models import ProjectConfig
@@ -645,8 +646,21 @@ def test_design_never_mutates_existing_run_records(tmp_path):
     assert _config(root)["project"]["preset"] == "L2"
 
 
-def test_design_points_to_the_latest_successful_run_for_reuse(tmp_path):
-    root = _ready(tmp_path, "proj")
+def _ready_fastq(tmp_path: Path, name: str = "proj") -> Path:
+    """An iGenomes/Salmon FASTQ L1 scaffold with tiny placeholder reads and completed metadata."""
+
+    assert _new(tmp_path, name, input_type="fastq").exit_code == 0
+    root = tmp_path / name
+    for sample in ("s1", "s2", "s3", "s4", "s5", "s6"):
+        for read in ("R1", "R2"):
+            (root / "input" / "fastq" / f"{sample}_{read}.fastq.gz").write_bytes(gzip.compress(b"@r\nACGT\n+\nIIII\n"))
+    (root / "metadata.csv").write_text(
+        "sample_id,condition\ns1,Control\ns2,Control\ns3,Control\ns4,Treatment\ns5,Treatment\ns6,Treatment\n", encoding="utf-8"
+    )
+    return root
+
+
+def _record_runs(root: Path) -> None:
     for case, run in (("L1-001", "20260101-000000+0000"), ("L1-002", "20260102-000000+0000")):
         directory = root / "runs" / case / run
         directory.mkdir(parents=True)
@@ -654,7 +668,23 @@ def test_design_points_to_the_latest_successful_run_for_reuse(tmp_path):
     failed = root / "runs" / "L1-003" / "20260103-000000+0000"
     failed.mkdir(parents=True)
     (failed / "run_state.json").write_text(json.dumps({"status": "FAILED"}), encoding="utf-8")
-    assert "--reuse-upstream L1-002/20260102-000000+0000" in _design(root, "--yes").output
+
+
+def test_design_points_to_the_latest_successful_run_for_reuse(tmp_path):
+    root = _ready_fastq(tmp_path)
+    _record_runs(root)
+    result = _design(root, "--yes")
+    assert result.exit_code == 0, result.output
+    assert "--reuse-upstream L1-002/20260102-000000+0000" in result.output
+
+
+def test_design_never_suggests_upstream_reuse_for_a_raw_count_project(tmp_path):
+    root = _ready(tmp_path, "proj")
+    _record_runs(root)
+    result = _design(root, "--yes")
+    assert result.exit_code == 0, result.output
+    assert "--reuse-upstream" not in result.output
+    assert f"Next: rnaseq run {root} --case-id CASE-ID\n" in result.output
 
 
 # ---------------------------------------------------------------- project.yaml editing
@@ -686,7 +716,7 @@ def test_two_group_known_batch_lifecycle_ends_in_the_batch_adjusted_deseq2_model
     from rnaseq.downstream import execute_l1, prepare_l1
     from rnaseq.l2 import execute_l2, prepare_l2
 
-    require_r_packages("jsonlite", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
+    require_downstream_r_runtime("jsonlite", "DESeq2", "ggplot2", "pheatmap", "ggrepel")
     created = _new(tmp_path, "e2e", "--batch")
     assert created.exit_code == 0, created.output
     root = tmp_path / "e2e"

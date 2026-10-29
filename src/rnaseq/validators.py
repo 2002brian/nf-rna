@@ -39,6 +39,8 @@ FASTQ_NAME_PATTERN = re.compile(
     r"^(?P<sample>.+?)(?:_L(?P<lane>\d{3}))?_R(?P<read>[12])(?:_\d{3})?\.(?:fastq|fq)\.gz$"
 )
 
+VALIDATION_BLOCKER = "Project validation failed; fix the errors listed above before execution."
+
 
 class Severity(str, Enum):
     ERROR = "ERROR"
@@ -176,6 +178,12 @@ class ValidationReport:
             return False
         if self.config.input.type is InputType.RAW_COUNTS:
             return True
+        return self._reference_ready()
+
+    def _reference_ready(self) -> bool:
+        """Whether the configured FASTQ reference route can execute, independent of other validation errors."""
+
+        assert self.config is not None
         reference = self.config.reference
         if reference is None:
             return False
@@ -201,21 +209,30 @@ class ValidationReport:
             return ()
         if self.execution_ready:
             return ()
-        if self.config.reference.source == "local":
-            method = self.config.upstream.quantification.method if self.config.upstream.quantification else "salmon"
-            if self.local_reference is not None and method == "salmon" and self.local_reference.salmon_index is None:
-                return ("Local reference manifest has no validated Salmon index; register a compatible prebuilt index or use the optional host-native builder.",)
-            if self.local_reference is not None and method == "hisat2_featurecounts" and self.local_reference.hisat2_index is None:
-                return ("Local reference manifest has no validated HISAT2 index; register a compatible prebuilt index or use the optional host-native builder.",)
-            if self.local_reference is not None and method == "hisat2_featurecounts" and not self.local_reference.hisat2_runtime_ready:
-                return ("local HISAT2 genome-only index/runtime compatibility requires the documented smoke validation before execution",)
-            if self.local_reference is not None:
-                return ("FASTQ input validation must pass before execution readiness can be confirmed.",)
-            return ("local reference configuration or integrity validation failed",)
+        # Only a reference that is genuinely not ready is reported as a
+        # reference blocker; metadata, FASTQ or contrast errors are reported as
+        # what they are, never as a missing reference.
+        blockers = [] if self.is_valid else [VALIDATION_BLOCKER]
+        if not self._reference_ready():
+            blockers.append(self._reference_blocker())
+        return tuple(blockers)
+
+    def _reference_blocker(self) -> str:
+        assert self.config is not None
         method = self.config.upstream.quantification.method if self.config.upstream.quantification else "salmon"
+        if self.config.reference is None:
+            return "reference genome not configured"
+        if self.config.reference.source == "local":
+            if self.local_reference is not None and method == "salmon" and self.local_reference.salmon_index is None:
+                return "Local reference manifest has no validated Salmon index; register a compatible prebuilt index or use the optional host-native builder."
+            if self.local_reference is not None and method == "hisat2_featurecounts" and self.local_reference.hisat2_index is None:
+                return "Local reference manifest has no validated HISAT2 index; register a compatible prebuilt index or use the optional host-native builder."
+            if self.local_reference is not None and method == "hisat2_featurecounts" and not self.local_reference.hisat2_runtime_ready:
+                return "local HISAT2 genome-only index/runtime compatibility requires the documented smoke validation before execution"
+            return "local reference configuration or integrity validation failed"
         if method == "hisat2_featurecounts":
-            return ("HISAT2 requires checksum-bound custom/local FASTA, GTF, and prepared HISAT2 index",)
-        return ("reference genome not configured",)
+            return "HISAT2 requires checksum-bound custom/local FASTA, GTF, and prepared HISAT2 index"
+        return "reference genome not configured"
 
     def error(self, code: str, message: str) -> None:
         self.issues.append(ValidationIssue(Severity.ERROR, code, message))

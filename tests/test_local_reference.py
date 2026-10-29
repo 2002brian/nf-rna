@@ -43,7 +43,7 @@ from rnaseq.references import (
     register_local_reference,
 )
 from rnaseq.service import CaseRun, create_case_run, freeze_case_inputs, prepare_service_run
-from rnaseq.validators import validate_project
+from rnaseq.validators import VALIDATION_BLOCKER, validate_project
 
 
 runner = CliRunner()
@@ -476,9 +476,7 @@ def test_empty_fastq_input_does_not_misreport_a_valid_local_reference(tmp_path):
 
     assert not report.is_valid
     assert report.local_reference is not None
-    assert report.execution_blockers == (
-        "FASTQ input validation must pass before execution readiness can be confirmed.",
-    )
+    assert report.execution_blockers == (VALIDATION_BLOCKER,)
 
 
 def test_built_local_reference_passes_index_without_external_transcript_fasta(tmp_path):
