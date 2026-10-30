@@ -4,7 +4,7 @@ English | [繁體中文](README_zh-TW.md)
 
 `nf-rna` is a reproducible bulk RNA-seq workflow for FASTQ and raw-count projects. It validates declared inputs and design, performs the selected QC and analysis stages, and produces figures, tables, a technical report, and frozen provenance.
 
-`rnaseq` is the control plane, Nextflow is the execution plane, and Conda provides every process environment. The supported runtime for v1.5.0 is **Linux x86-64 or Windows WSL2, with Nextflow and Conda**; Docker is not required. Production users enter through `rnaseq`; they do not invoke internal Nextflow modules.
+`rnaseq` is the control plane, Nextflow is the execution plane, and Conda provides every process environment. The supported runtime for v1.5.1 is **Linux x86-64 or Windows WSL2, with Nextflow and Conda**; Docker is not required. Production users enter through `rnaseq`; they do not invoke internal Nextflow modules.
 
 ## Features
 
@@ -51,7 +51,7 @@ Every authorized execution creates an immutable run under `runs/<case-id>/<run-i
 
 ## Requirements
 
-Use a Linux x86-64 workstation or Windows with WSL2 (native Windows and macOS are not supported by v1.5.0) with:
+Use a Linux x86-64 workstation or Windows with WSL2 (native Windows and macOS are not supported by v1.5.1) with:
 
 - Python 3.11+ and Git;
 - Conda (for example Miniforge) on `PATH`, with the `conda-forge` and `bioconda` channels configured in that order, as nf-core requires (`conda config --add channels bioconda && conda config --add channels conda-forge && conda config --set channel_priority strict`);
@@ -62,7 +62,7 @@ Docker is not required. Java, Nextflow, and Conda run on the host. nf-core/rnase
 
 ## Installation
 
-> **Latest stable release: `v1.5.0`.** This README describes `v1.5.0` (see the [1.5.0 changes](CHANGELOG.md#150--2026-10-30)): DEG tables with gene symbols, normalized-count group means and shrunken log2 fold changes, an MA plot and 300 dpi figures; GO/KEGG ORA and GSEA significance is now the Benjamini-Hochberg adjusted p-value ≤ 0.05, and KEGG gene sets come from a local snapshot that you should pin for published results. DESeq2 statistics and the DEG definition are unchanged from `v1.4.1`; results produced with `v1.4.x` keep their earlier enrichment semantics. For an earlier release, use the README at that release's tag. To use the development version, follow [Development installation](docs/development.md).
+> **Latest stable release: `v1.5.1`.** This README describes the maintenance release `v1.5.1` (see the [1.5.1 changes](CHANGELOG.md#151--2026-10-30)), which only fixes test dependency gating; its analysis is identical to `v1.5.0` (see the [1.5.0 changes](CHANGELOG.md#150--2026-10-30)): DEG tables with gene symbols, normalized-count group means and shrunken log2 fold changes, an MA plot and 300 dpi figures; GO/KEGG ORA and GSEA significance is now the Benjamini-Hochberg adjusted p-value ≤ 0.05, and KEGG gene sets come from a local snapshot that you should pin for published results. DESeq2 statistics and the DEG definition are unchanged from `v1.4.1`; results produced with `v1.4.x` keep their earlier enrichment semantics. For an earlier release, use the README at that release's tag. To use the development version, follow [Development installation](docs/development.md).
 
 nf-rna has no PyPI distribution. Install the released CLI from its Git tag.
 Installing from Git lets pip record the exact source commit, which every run

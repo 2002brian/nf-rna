@@ -4,7 +4,7 @@ This guide is for production users on Linux x86-64 or Windows WSL2. Install Pyth
 
 ## Install a released nf-rna version
 
-The latest stable release is `v1.5.0`, and this guide describes it (see the [1.5.0 changes](../CHANGELOG.md#150--2026-10-30)). In v1.5.0 GO/KEGG enrichment calls a term significant when the Benjamini-Hochberg adjusted p-value is ≤ 0.05, and KEGG gene sets come from a local snapshot: for results you will publish, pin the snapshot ID that `rnaseq validate` reports with `annotation.enrichment.kegg.snapshot` in `project.yaml`. For an earlier release, follow the documentation at that release's tag; to use the development version, see [Development installation](development.md).
+The latest stable release is `v1.5.1`, and this guide describes it (see the [1.5.1 changes](../CHANGELOG.md#151--2026-10-30)), a maintenance release whose analysis is identical to `v1.5.0` (see the [1.5.0 changes](../CHANGELOG.md#150--2026-10-30)). In v1.5.0 GO/KEGG enrichment calls a term significant when the Benjamini-Hochberg adjusted p-value is ≤ 0.05, and KEGG gene sets come from a local snapshot: for results you will publish, pin the snapshot ID that `rnaseq validate` reports with `annotation.enrichment.kegg.snapshot` in `project.yaml`. For an earlier release, follow the documentation at that release's tag; to use the development version, see [Development installation](development.md).
 
 nf-rna is installed from Git tags; it is not published to PyPI. Installing from
 Git lets pip record the exact source commit, which every run records; nf-rna

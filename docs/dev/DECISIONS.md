@@ -64,6 +64,13 @@ Non-blocking implementation choices, recorded as they are made.
 | The GO GSEA `on.exit` cleanup removes only objects that still exist (`rm(list = intersect(..., ls()))`). | The success path already removed them; the warnings were noise. Tables are byte-identical. |
 | Two preflight tests set `XDG_CACHE_HOME` to an empty temporary directory. | They assumed no KEGG snapshot exists, which now depends on the machine. |
 
+## v1.5.1 maintenance release (2026-10-30)
+
+| Decision | Reason |
+|---|---|
+| Ship the CI test-gating fix `f66f96e` as v1.5.1 instead of moving the published `v1.5.0` tag. | `v1.5.0` (`c283d31`) is public; moving it would change what existing installs from the tag resolve to. The fix touches tests only, so v1.5.0 stays a valid release. |
+| v1.5.1 changes only the version, release metadata and docs; no source, workflow, lock or R script. | A maintenance release must not change scientific results; CHANGELOG states that v1.5.0 results need not be recomputed. |
+
 ## v1.5.0 finalization (2026-10-30)
 
 | Decision | Reason |

@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here.
 
+## 1.5.1 — 2026-10-30
+
+Maintenance release. It fixes how three R-dependent tests decide whether they can run; nothing that nf-rna installs or executes has changed. DESeq2, GO/KEGG ORA, GSEA, the enrichment significance semantics ("v1.5"), the downstream Conda lock, the Nextflow workflows and every result table are identical to v1.5.0. Results produced with v1.5.0 do not need to be recomputed.
+
+### Fixed
+
+- Tests: the KEGG snapshot-resolution test and the offline KEGG backend tests (`tests/test_kegg.py`, `tests/test_enrichment_mapping_qc.py`, `tests/test_figure_dotplots.py`) now require the R packages they load (`jsonlite`, `openssl`) through the shared `require_r_packages` gate, so they skip on a system R without `openssl` (or fail under `NF_RNA_REQUIRE_R=1`) instead of failing in CI. The `v1.5.0` tag predates this fix; it is unchanged and remains valid.
+
+### Runtime
+
+- The downstream lock is unchanged (`nf-rna-downstream-linux-64.lock.yml`). Because the runtime environment is keyed by lock and installed nf-rna build, the first v1.5.1 run provisions a fresh downstream environment from the same lock.
+
 ## 1.5.0 — 2026-10-30
 
 Scientific-engine release: publication-ready DEG outputs and a new enrichment significance contract. **GO/KEGG ORA and GSEA now call a term significant when the Benjamini–Hochberg adjusted p-value (p.adjust) is ≤ 0.05.** KEGG gene sets come from a SHA-256-verified local snapshot; **pin `annotation.enrichment.kegg.snapshot` for results you will publish.** DESeq2 statistics and the DEG definition are unchanged from v1.4.1. Results produced with v1.4.x are not recomputed and keep their v1.4 semantics.
