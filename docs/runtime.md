@@ -11,7 +11,7 @@ or smoke-tested on a Mac and does not make macOS a supported platform.
 Required local components:
 
 - Python 3.11+ for the `rnaseq` control plane, installed from a Git release tag
-  so that pip records the source commit (see the [README](../README.md)).
+  so that pip records the source commit (see the [README](../README_latest.md)).
 - Conda on `PATH` (for example Miniforge), with the `conda-forge` and `bioconda`
   channels in that order in its effective configuration, as nf-core/rnaseq
   `-profile conda` requires. Other channels may also be present.
