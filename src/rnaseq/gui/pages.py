@@ -1,4 +1,4 @@
-"""Streamlit pages: Dashboard, New Project, Input & Metadata, Contrasts, Run.
+"""Streamlit pages: Dashboard, New Project, Input & Metadata, Contrasts, Run, Results, Reports & Downloads.
 
 Pages read every state from the project and run files on each rerun;
 ``st.session_state`` holds only unsaved UI input (the metadata being edited,
@@ -15,7 +15,7 @@ import pandas as pd
 import streamlit as st
 
 from rnaseq.errors import ExecutionPreflightError, ProjectConfigError, ProjectCreationError
-from rnaseq.gui import jobs, services
+from rnaseq.gui import jobs, results, services
 from rnaseq.gui.config import GuiConfig, PathNotAllowed, ensure_data_layout, gui_state_dir, load_config
 from rnaseq.models import DEFAULT_L2_ENRICHMENT, PIPELINE_VERSION, DesignType, FastqPreprocessing, InputType, Preset, SequencingLayout, describe_enrichment
 from rnaseq.run_status import _Cache, build_status, discover_runs, render_status
@@ -735,6 +735,8 @@ def _run_status_section(config: GuiConfig, project: Path, active: jobs.Launch | 
         st.error(f"FAILED: {state.get('error') or 'see the logs'}")
     elif shown == "SUCCESS":
         st.success(f"SUCCESS. Results: `{state.get('delivery') or run_dir / 'delivery'}`")
+        if "results" in PAGES:
+            st.page_link(PAGES["results"], label="Open in Results →")
     st.code(render_status(status, ascii_only=True), language=None)
 
     st.markdown("**Logs**")
@@ -814,6 +816,294 @@ def runner_page() -> None:
     _run_status_section(config, project, active)
 
 
+# --------------------------------------------------------------------- F. Results explorer
+
+@st.cache_data(max_entries=32, show_spinner=False)
+def _table(path: str, mtime: float) -> results.Table:
+    return results.read_table(Path(path))
+
+
+def table(path: Path) -> results.Table:
+    return _table(str(path), path.stat().st_mtime)
+
+
+def frame(data: results.Table) -> pd.DataFrame:
+    return pd.DataFrame(list(data.rows), columns=list(data.columns), dtype=str)
+
+
+def download(path: Path, label: str, key: str, config: GuiConfig) -> None:
+    """One file as a download button, or its server path and scp command when it is too large."""
+
+    if results.too_large(path, config.download_limit_mb):
+        st.caption(f"{label}: larger than {config.download_limit_mb} MB; copy it from the server: `{path}`")
+        st.code(results.scp_command(path), language="bash")
+        return
+    st.download_button(label, data=lambda: path.read_bytes(), file_name=path.name, key=key, on_click="ignore")
+
+
+def show_figure(item: results.Figure, key: str, config: GuiConfig) -> None:
+    if item.png is None:
+        st.warning(f"**{item.label}: unavailable** — {item.reason}")
+        return
+    st.image(str(item.png), caption=item.label)
+    cols = st.columns(2)
+    with cols[0]:
+        download(item.png, "PNG", f"{key}::png", config)
+    if item.pdf is not None:
+        with cols[1]:
+            download(item.pdf, "PDF", f"{key}::pdf", config)
+
+
+def facts_table(facts: dict[str, object]) -> None:
+    rows = [{"item": name, "value": str(value)} for name, value in facts.items() if value not in (None, "")]
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+
+def choose_run(project: Path, key: str) -> results.ResultRun | None:
+    runs = results.result_runs(project, _Cache())
+    if not runs:
+        st.info("This project has no run with results yet; start one on the Run page.")
+        return None
+    labels = [f"{run.label} — {run.state}, {run.level or '?'}" for run in runs]
+    chosen = st.selectbox("Run", labels, index=0, key=key)
+    run = runs[labels.index(chosen)]
+    if run.state != "SUCCESS":
+        st.warning(f"This run is {run.state}; only the outputs it wrote are shown, and missing ones are marked unavailable.")
+    return run
+
+
+def _qc_section(run: results.ResultRun, config: GuiConfig) -> None:
+    view = results.qc_view(run)
+    summary = view.summary
+    if summary is None:
+        st.warning("**L1 QC: unavailable** — l1/backend_summary.json was not produced.")
+    else:
+        facts_table({
+            "samples": len(summary.get("samples") or []), "genes input": summary.get("genes_input"),
+            "all-zero genes removed": summary.get("genes_removed_all_zero"), "low-total genes removed": summary.get("genes_removed_low_total"),
+            "genes retained": summary.get("genes_retained"), "filter": (summary.get("filter") or {}).get("rule"),
+            "normalization": (summary.get("normalization") or {}).get("method"), "VST": (summary.get("vst") or {}).get("method"),
+            "flags": ", ".join(map(str, summary.get("flags") or [])) or "none",
+        })
+    if view.multiqc is not None:
+        st.markdown("**Upstream QC (MultiQC)**")
+        download(view.multiqc, f"MultiQC report ({view.multiqc.name})", "qc::multiqc", config)
+    cols = st.columns(2)
+    for index, item in enumerate(view.figures):
+        with cols[index % 2]:
+            show_figure(item, f"qc::{index}", config)
+    for name, path in view.tables.items():
+        with st.expander(name):
+            st.dataframe(frame(table(path)), hide_index=True, width="stretch")
+            download(path, f"Download {name}", f"qc::table::{name}", config)
+
+
+def _deg_section(run: results.ResultRun, contrast: str, config: GuiConfig) -> None:
+    view = results.deg_view(run, contrast)
+    cols = st.columns(5)
+    for col, (label, name) in zip(cols, (("significant", "significant"), ("up", "upregulated"), ("down", "downregulated"))):
+        value = view.counts[name]
+        col.metric(f"{label} genes", "unavailable" if value is None else value)
+    cols[3].metric("DEG threshold: padj <", str(view.padj_below))
+    cols[4].metric("DEG threshold: |log2FC| ≥", str(view.abs_log2fc_at_least))
+    st.caption(f"DEG rule (contrast_metadata.json): {view.rule}")
+    shrinkage = view.shrinkage
+    explanation = (
+        "DEGs are called on the **raw** `log2FoldChange` (with padj); `log2FoldChange_shrunk` is the shrunken "
+        "effect size, used only for display and ranking."
+    )
+    if not shrinkage:
+        st.info(explanation + " Shrinkage: not recorded for this run (L2 results from before nf-rna v1.5).")
+    elif shrinkage.get("status") == "success":
+        st.info(explanation + f" Shrinkage method: **{shrinkage.get('method')}** (coef `{shrinkage.get('coef')}`), status **{shrinkage.get('status')}**.")
+    else:
+        st.error(explanation + f" Shrinkage **{shrinkage.get('status')}** (method {shrinkage.get('method')}): {shrinkage.get('error') or 'no error recorded'}. `log2FoldChange_shrunk` is not a valid shrunken estimate for this contrast.")
+    figure_cols = st.columns(3)
+    for index, item in enumerate(view.figures):
+        with figure_cols[index]:
+            show_figure(item, f"deg::{contrast}::{index}", config)
+
+    st.markdown("**DEG table** (`all_genes.tsv`; values exactly as written by DESeq2/R)")
+    path = view.root / "all_genes.tsv"
+    if not path.is_file():
+        st.warning("**all_genes.tsv: unavailable** — not produced for this contrast.")
+        return
+    genes = table(path)
+    key = f"deg::{run.label}::{contrast}"
+    cols = st.columns([3, 2, 2, 2, 2, 1])
+    query = cols[0].text_input("Search symbol or gene_id", key=f"{key}::query")
+    only = cols[1].toggle("Only significant", key=f"{key}::only")
+    padj_max = cols[2].number_input("padj ≤", min_value=0.0, max_value=1.0, value=None, format="%g", key=f"{key}::padj")
+    lfc_min = cols[3].number_input("|log2FC| ≥", min_value=0.0, value=None, format="%g", key=f"{key}::lfc")
+    sort_by = cols[4].selectbox("Sort by", [column for column in results.DEG_SORT_COLUMNS if column in genes.columns], key=f"{key}::sort")
+    descending = cols[5].toggle("Desc.", key=f"{key}::desc")
+    selected = results.filter_deg(genes, results.significant_ids(view), query=query, only_significant=only, padj_max=padj_max, abs_lfc_min=lfc_min, sort_by=sort_by, descending=descending)
+    st.caption(f"{len(selected.rows)} of {len(genes.rows)} genes. 'Only significant' = the genes in significant.tsv.")
+    first = [column for column in ("gene_id", "symbol", "log2FoldChange", "log2FoldChange_shrunk", "padj", "pvalue", "baseMean") if column in selected.columns]
+    st.dataframe(frame(selected), hide_index=True, width="stretch", key=f"{key}::table", column_order=[*first, *(column for column in selected.columns if column not in first)])
+    cols = st.columns(4)
+    for col, name in zip(cols, ("all_genes", "significant", "upregulated", "downregulated")):
+        if (view.root / f"{name}.tsv").is_file():
+            with col:
+                download(view.root / f"{name}.tsv", f"{name}.tsv", f"{key}::dl::{name}", config)
+
+
+def _enrichment_section(run: results.ResultRun, contrast: str, config: GuiConfig) -> None:
+    modules = results.enrichment_modules(run)
+    if not modules:
+        st.info("No functional enrichment was selected for this run (analysis.enrichment: []).")
+        return
+    labels = [module.label for module in modules]
+    module = modules[labels.index(st.radio("Analysis", labels, horizontal=True, key=f"enr::{run.label}::module"))]
+    if module.summary is None:
+        st.warning(f"**{module.label}: unavailable** — {module.reason}")
+        return
+    if module.legacy:
+        st.warning(f"**Legacy results.** This {module.label} output was produced before nf-rna v1.5 and records no v1.5 significance semantics. Its significant terms follow that version's rule; they are shown as written and not mixed with v1.5 definitions.")
+    facts_table(module.facts)
+    sets = results.enrichment_results(module, contrast)
+    names = [item.label for item in sets]
+    result = sets[names.index(st.selectbox("Result set", names, key=f"enr::{run.label}::{module.key}::set"))]
+    key = f"enr::{run.label}::{contrast}::{module.key}::{result.label}"
+    status_text = f"Status **{result.status}**" + (f" — {result.reason}" if result.reason else "")
+    (st.success if result.status == "SUCCESS" else st.info)(status_text)
+    facts_table(result.facts)
+    dotplots = [item for item in result.figures if "running score" not in item.label]
+    running = [item for item in result.figures if "running score" in item.label]
+    cols = st.columns(max(1, len(dotplots)))
+    for index, item in enumerate(dotplots):
+        with cols[index]:
+            show_figure(item, f"{key}::fig::{index}", config)
+    if running:
+        with st.expander(f"GSEA running-score plots ({sum(1 for item in running if item.png)})", expanded=True):
+            cols = st.columns(2)
+            for index, item in enumerate(running):
+                with cols[index % 2]:
+                    show_figure(item, f"{key}::rs::{index}", config)
+
+    show_all = st.toggle("Show all evaluated terms (default: significant only)", key=f"{key}::all")
+    terms = result.all_terms if show_all else result.significant
+    if terms is None:
+        st.warning(f"**{'All-terms' if show_all else 'Significant-terms'} table: unavailable** — not produced in `{result.directory}`.")
+        return
+    found = table(terms)
+    st.caption(f"`{terms.name}`: {len(found.rows)} terms. Select a row to see its member genes.")
+    event = st.dataframe(frame(found), hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key=f"{key}::terms")
+    download(terms, f"Download {terms.name}", f"{key}::dl::terms", config)
+    if result.members is None:
+        st.warning("**Member genes: unavailable** — no member table in these results.")
+        return
+    members = table(result.members)
+    id_column = results.term_id_column(members)
+    options = list(dict.fromkeys(members.column(id_column))) if id_column else []
+    picked = None
+    rows = event.selection.rows if event is not None else []
+    if rows and "ID" in found.columns:
+        picked = found.rows[rows[0]]["ID"]
+    choose = f"{key}::pathway"
+    if picked is not None and st.session_state.get(f"{choose}::last") != picked:
+        st.session_state[f"{choose}::last"] = picked
+        if picked in options:
+            st.session_state[choose] = picked
+    if picked is not None and picked not in options:
+        st.info(f"{picked}: member genes are recorded for significant pathways only.")
+    pathway = st.selectbox("Pathway", options, index=None, placeholder="Select a row above or choose", key=choose)
+    st.markdown(f"**Member genes** (`{result.members.name}`" + (", legacy member table" if result.members_legacy else "") + ")")
+    if pathway is not None:
+        genes = results.pathway_members(result.members, pathway)
+        st.caption(f"{pathway}: {len(genes.rows)} member genes.")
+        st.dataframe(frame(genes), hide_index=True, width="stretch", height=min(38 + 35 * len(genes.rows), 1200), key=f"{key}::members")
+    download(result.members, f"Download {result.members.name}", f"{key}::dl::members", config)
+
+
+def results_page() -> None:
+    config = gui_config()
+    st.title("Results")
+    project = require_project()
+    if project is None:
+        return
+    run = choose_run(project, "results_run")
+    if run is None:
+        return
+    st.caption(f"`{run.run_dir}` · analysis level {run.level or 'not recorded'}. Figures are the pipeline's own PNG files (PDF for download); nothing is recomputed.")
+    sections = ["QC & exploratory", *(["Differential expression", "Enrichment"] if run.is_l2 else []), "Provenance"]
+    section = st.radio("Section", sections, horizontal=True, key=f"results_section::{run.level}")
+    contrast = None
+    if section in {"Differential expression", "Enrichment"}:
+        contrasts = results.contrast_ids(run)
+        if not contrasts:
+            st.warning("**L2 results: unavailable** — no contrast output under downstream/l2/contrasts.")
+            return
+        contrast = st.selectbox("Contrast", contrasts, key=f"results_contrast::{run.label}")
+    if section == "QC & exploratory":
+        _qc_section(run, config)
+    elif section == "Differential expression":
+        _deg_section(run, contrast, config)
+    elif section == "Enrichment":
+        _enrichment_section(run, contrast, config)
+    else:
+        st.dataframe(pd.DataFrame(results.provenance(run), columns=["item", "value"]), hide_index=True, width="stretch")
+
+
+# --------------------------------------------------------------------- G. Reports & downloads
+
+def reports_page() -> None:
+    import streamlit.components.v1 as components
+
+    config = gui_config()
+    st.title("Reports & downloads")
+    project = require_project()
+    if project is None:
+        return
+    run = choose_run(project, "reports_run")
+    if run is None:
+        return
+    st.subheader("Report")
+    report = results.report_path(run)
+    if report is None:
+        st.warning("**report.html: unavailable** — the run has not produced its report.")
+    else:
+        st.caption(f"`{report}` (self-contained; figures are embedded).")
+        download(report, f"Download {report.name}", "rep::report", config)
+        if st.toggle("Show the report here", key="rep::show"):
+            components.html(report.read_text(encoding="utf-8"), height=900, scrolling=True)
+
+    st.subheader("Files")
+    items = results.downloads(run)
+    groups = list(dict.fromkeys(item.group for item in items if item.group != "Report"))
+    for group in groups:
+        members = [item for item in items if item.group == group]
+        cols = st.columns([4, 1])
+        labels = [item.label for item in members]
+        chosen = cols[0].selectbox(f"{group} ({len(members)})", labels, key=f"rep::{group}")
+        with cols[1]:
+            st.write("")
+            item = members[labels.index(chosen)]
+            download(item.path, "Download", f"rep::{group}::dl", config)
+
+    st.subheader("Delivery package")
+    size = results.delivery_size(run)
+    if size is None:
+        st.warning("**Delivery package: unavailable** — the run has no delivery/delivery_manifest.yaml.")
+        return
+    st.caption(f"`{run.delivery}` · {size / 1024 / 1024:.1f} MB in the delivery manifest.")
+    if size > config.download_limit_mb * 1024 * 1024:
+        st.info(f"Larger than the download limit ({config.download_limit_mb} MB, `download_limit_mb` in gui.yaml); copy the folder from the server:")
+        st.code(results.scp_command(run.delivery), language="bash")
+        return
+    archive = results.delivery_archive_path(run)
+    if st.button("Prepare delivery package (.zip)", key="rep::zip"):
+        try:
+            with st.spinner("Verifying the delivery manifest and writing the zip ..."):
+                archive = results.build_delivery_archive(run)
+        except OSError as exc:
+            st.error(str(exc))
+    if archive.is_file():
+        download(archive, f"Download {archive.name}", "rep::zip::dl", config)
+        st.caption(f"Written to `{archive}` after checking every file against delivery_manifest.yaml.")
+
+
 PAGES: dict[str, st.Page] = {}
 
 
@@ -825,6 +1115,8 @@ def main() -> None:
         "inputs": st.Page(inputs_page, title="Input & Metadata", url_path="inputs"),
         "contrasts": st.Page(contrasts_page, title="Contrasts", url_path="contrasts"),
         "run": st.Page(runner_page, title="Run", url_path="run"),
+        "results": st.Page(results_page, title="Results", url_path="results"),
+        "reports": st.Page(reports_page, title="Reports & Downloads", url_path="reports"),
     })
     page = st.navigation(list(PAGES.values()), position="sidebar")
     sidebar(gui_config())

@@ -4,15 +4,14 @@
 front end to the same Python services as the CLI: projects it creates are
 `rnaseq new` projects, its validation is `rnaseq validate`, its contrast step
 is `rnaseq design`, and its runs are `rnaseq run`. It keeps no database and no
-analysis state of its own.
-
-Result browsing and downloads are not part of v1.6.0 Phase 6a; a finished run
-shows the path of its `delivery/` folder.
+analysis state of its own. Results are read from the run's own files; the GUI
+never recomputes a statistic or redraws a figure.
 
 ## Install and start
 
 ```bash
-pip install -e '.[gui]'       # source checkout; or pip install 'nf-rna[gui]'
+python -m pip install "nf-rna[gui] @ git+https://github.com/2002brian/nf-rna.git@v1.6.0"
+# or, in a source checkout: pip install -e '.[gui]'
 tmux new -s nf-rna-gui        # or attach: tmux attach -t nf-rna-gui
 rnaseq gui                    # --port 8600 to use another port
 ```
@@ -39,6 +38,7 @@ project_parent: /media/duobook02/brian/nf-rna/projects   # default location of n
 condarc: /home/brian/nf-rna-work/conda/condarc.yml       # set as CONDARC for runs (unless already set)
 log_tail_lines: 200
 launcher: auto                       # auto, systemd or process (see "How runs are started")
+download_limit_mb: 500               # larger files: server path and scp command instead of a download
 ```
 
 Every path typed or browsed in the GUI is resolved (symlinks included) and must
@@ -155,6 +155,57 @@ whose `rnaseq` process no longer exists is shown as **INCOMPLETE** (`rnaseq
 status` calls it INTERRUPTED (stale)); the run's files are not changed. A run
 that is preparing (freezing inputs, creating the runtime) is shown as RUNNING
 with that explanation.
+
+### Results
+
+Choose a run of the current project that has downstream outputs (any state; a
+run that did not finish shows what it wrote). Sections follow the run's
+analysis level: an L1 run shows only *QC & exploratory* and *Provenance*.
+
+- **QC & exploratory**: the L1 summary (genes filtered and retained,
+  normalization, VST), PCA, sample correlation, raw and VST boxplots, the QC
+  tables, and the MultiQC report of FASTQ runs.
+- **Differential expression** (one contrast at a time): the numbers of
+  significant, up and down genes and the DEG thresholds and rule from
+  `contrast_metadata.json`; the LFC shrinkage method and status (a failed
+  shrinkage is shown as an error); volcano, MA plot and heatmap; and the
+  `all_genes.tsv` table, searchable by symbol or gene_id, filterable by padj and
+  |log2FC|, sortable, with *Only significant* (the genes of `significant.tsv`).
+  DEGs are called on the raw `log2FoldChange`; `log2FoldChange_shrunk` is for
+  display and ranking only.
+- **Enrichment** (GO ORA, KEGG ORA, GO GSEA, KEGG GSEA): significance
+  semantics and rule, BH adjustment, ORA universe definition and size, GSEA
+  ranking metric, seed and nPermSimple, the KEGG snapshot and whether the
+  project pinned it. Per result set (ORA foreground × ontology, GSEA ontology):
+  status and reason, dotplots, simplified GO dotplots, running-score plots, the
+  significant-terms table (or all evaluated terms), and the member genes of the
+  pathway selected in the table (from `*_members.tsv`, significant pathways
+  only). Output written before v1.5 has no significance-semantics record and
+  is labelled **legacy**.
+- **Provenance**: nf-rna version and commit, Nextflow, the downstream lock
+  SHA-256 and runtime prefix, input and reference, and the R/Bioconductor
+  package versions and KEGG snapshot recorded by the backends.
+
+Tables are read as text, so every number is shown exactly as in the TSV.
+Figures are the pipeline's PNG files, each with PNG and PDF downloads. An
+output that does not exist is shown as *unavailable* with the backend's
+recorded reason (for example "no significant pathway"); nothing is filled in.
+
+### Reports & Downloads
+
+- The run's `report.html` (the delivered copy), shown in the page or
+  downloaded. It is self-contained: figures are embedded and nothing is loaded
+  from the network.
+- Single files by group: counts (normalized, VST), QC tables, DEG tables
+  (all / significant / up / down per contrast), enrichment tables and member
+  tables, and every figure as PNG or PDF. L1 runs offer no L2 file.
+- The delivery package: *Prepare delivery package* checks every file of
+  `delivery/` against `delivery_manifest.yaml` and writes a zip to
+  `~/.cache/nf-rna/gui/packages/` (the run directory is not written), then
+  offers it for download.
+
+Files and packages larger than `download_limit_mb` are not offered for
+download; the page shows their server path and an `scp` command instead.
 
 ## How runs are started
 

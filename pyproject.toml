@@ -20,7 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9", "build>=1.2,<2"]
-gui = ["streamlit>=1.40,<2"]
+gui = ["streamlit>=1.66,<2"]
 # Browser acceptance of the GUI (scripts/dev/gui_browser_acceptance.py); not needed by the test suite.
 gui-dev = ["nf-rna[gui]", "playwright>=1.40,<2"]
 

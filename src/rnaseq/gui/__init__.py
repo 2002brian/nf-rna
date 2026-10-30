@@ -1,4 +1,4 @@
-"""Optional browser GUI (``pip install 'nf-rna[gui]'``; started with ``rnaseq gui``).
+"""Optional browser GUI (the ``gui`` extra; started with ``rnaseq gui``).
 
 Only :mod:`rnaseq.gui.app` and :mod:`rnaseq.gui.pages` import Streamlit; the
 service modules here are plain Python so they stay importable and testable
@@ -14,7 +14,7 @@ from pathlib import Path
 
 GUI_ADDRESS = "127.0.0.1"
 DEFAULT_PORT = 8501
-INSTALL_HINT = "pip install -e '.[gui]'  (from a source checkout)  or  pip install 'nf-rna[gui]'"
+INSTALL_HINT = "pip install -e '.[gui]'  (from a source checkout)  or  python -m pip install \"nf-rna[gui] @ git+https://github.com/2002brian/nf-rna.git@vX.Y.Z\""
 
 
 def streamlit_available() -> bool:

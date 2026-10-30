@@ -635,6 +635,16 @@ def test_report_states_the_v15_ora_significance_rule_not_the_legacy_cutoffs(proj
     assert "pvalue &le; 0.05 and qvalue &le; 0.2 for ORA" in text  # the pre-v1.5 rule is documented in Methods
 
 
+def test_report_has_samples_reference_shrinkage_and_software_sections(project_factory):
+    text = _render_enrichment_report(project_factory, ["kegg"])
+    for heading in ("<h2>Samples</h2>", "<h2>Reference and quantification</h2>", "<h2>Software versions and provenance</h2>"):
+        assert heading in text
+    assert text.index("<h2>Samples</h2>") < text.index("<h2>L1 — quality control</h2>") < text.index("<h2>Software versions and provenance</h2>")
+    # The fixture has no contrast_metadata.json: the shrinkage line says so rather than guessing.
+    assert "DEG rule and LFC shrinkage: not recorded (L2 results from before nf-rna v1.5)." in text
+    assert "src='http" not in text and 'src="http' not in text
+
+
 def test_report_states_only_the_enabled_ora_module_rule(project_factory):
     text = _render_enrichment_report(project_factory, ["kegg"])
     assert "<h3>GO ORA</h3>" not in text

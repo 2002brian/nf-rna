@@ -2,6 +2,30 @@
 
 All notable changes to this project are documented here.
 
+## 1.6.0 — Unreleased
+
+**This release includes the v1.5.1 test fixes**: v1.5.1 was prepared but not tagged separately, so its changes ship in v1.6.0 (see [1.5.1](#151--2026-10-30)). **Upgrading from v1.4.x: the enrichment significance semantics changed in v1.5.0.** GO/KEGG ORA and GSEA call a term significant when the Benjamini–Hochberg adjusted p-value is ≤ 0.05, the ORA universe changed, and KEGG gene sets come from a local snapshot that you should pin for published results; read the [1.5.0 notes](#150--2026-10-30) before comparing results across versions. v1.4.x results are not recomputed and keep their v1.4 semantics.
+
+v1.6.0 adds an optional local browser GUI. DESeq2, GO/KEGG ORA, GSEA, the significance semantics ("v1.5"), the downstream Conda lock, the Nextflow workflows, the R scripts and every result table and figure are unchanged from v1.5.0/v1.5.1; v1.5.x results do not need to be recomputed.
+
+### Added — browser GUI (`rnaseq gui`, optional `gui` extra)
+
+- `rnaseq gui` serves a Streamlit GUI on 127.0.0.1 (default port 8501, `--port`); use an SSH port forward from another machine. Install with the `gui` extra (`pip install -e '.[gui]'`, or `"nf-rna[gui] @ git+https://github.com/2002brian/nf-rna.git@v1.6.0"`). Without the extra the CLI is unchanged and `rnaseq gui` prints the install command.
+- Pages: Dashboard (projects, recent runs, `rnaseq doctor`, registered references, mount state of the data roots), New Project (the `rnaseq new` wizard), Input & Metadata (count matrix or FASTQ folder import, an Excel-paste metadata grid that may be saved incomplete), Contrasts (the `rnaseq design` transaction, KEGG snapshot pinning), Run (validate, plan, background `rnaseq run` with one active GUI run, status and logs), Results and Reports & Downloads.
+- The GUI calls the same services as the CLI: wizard choices, the `rnaseq design` transaction and the FASTQ/count import were moved into shared functions, with unchanged CLI prompts and messages. It keeps no database; run state is read from the run files.
+- Runs started from the GUI are ordinary `rnaseq run --yes` runs, started as a transient `systemd --user` unit when the GUI runs under systemd or lingering is enabled, otherwise as a detached process; they survive closing the browser or restarting the GUI. A run whose process has died is shown as INCOMPLETE without changing its files.
+- Results Explorer: QC and PCA, per-contrast DEG summary (counts and thresholds from `contrast_metadata.json`), volcano, MA plot and heatmap, a searchable DEG table showing `log2FoldChange` and `log2FoldChange_shrunk` with the shrinkage method and status, GO/KEGG ORA and GSEA tables (significant or all terms) with the member genes of a selected pathway, dotplots, simplified GO dotplots and running-score plots, the significance semantics, ORA universe sizes, GSEA ranking metric and seed, the KEGG snapshot and whether it was pinned, and provenance. Results produced before v1.5 are labelled legacy. Figures are the pipeline's own PNG files; nothing is recomputed. Missing outputs are shown as unavailable with the backend's reason; L1 runs show no L2 sections.
+- Reports & Downloads: the run's `report.html` (viewed in the page or downloaded), DEG/count/QC/enrichment TSVs, PNG/PDF figures and the delivery package as a zip verified against `delivery_manifest.yaml`. Files above `download_limit_mb` (default 500 MB) are offered as a server path and `scp` command.
+- `docs/gui.md`; an example `systemd --user` unit in `docs/systemd/` (never installed or enabled by nf-rna).
+
+### Changed
+
+- `report.html` gains a Samples table, a Reference and quantification section, the DEG rule and LFC shrinkage method/status per contrast, and a Software versions and provenance table (nf-rna version, source revision, wheel and lock SHA-256, R, DESeq2, apeglm, ashr, clusterProfiler, OrgDb, GO.db, KEGG snapshot). The report remains a single self-contained file with embedded figures; no table or figure changes.
+
+### Runtime
+
+- The downstream lock is unchanged. The runtime environment is keyed by lock and nf-rna build, so the first v1.6.0 run provisions a fresh downstream environment from the same lock.
+
 ## 1.5.1 — 2026-10-30
 
 Maintenance release. It fixes how three R-dependent tests decide whether they can run; nothing that nf-rna installs or executes has changed. DESeq2, GO/KEGG ORA, GSEA, the enrichment significance semantics ("v1.5"), the downstream Conda lock, the Nextflow workflows and every result table are identical to v1.5.0. Results produced with v1.5.0 do not need to be recomputed.

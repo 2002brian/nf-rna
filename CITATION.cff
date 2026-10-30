@@ -1,9 +1,8 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite the repository and the release you used."
 title: "nf-rna"
-version: "1.5.1"
-date-released: 2026-10-30
+version: "1.6.0"
 license: MIT
 authors:
   - name: "nf-rna Contributors"
-abstract: "A versioned, provenance-oriented control plane for bulk RNA-seq FASTQ and raw-count projects on Linux/WSL2 with Nextflow and Conda, with Salmon and HISAT2 + featureCounts backends and interactive or explicit project creation."
+abstract: "A versioned, provenance-oriented control plane for bulk RNA-seq FASTQ and raw-count projects on Linux/WSL2 with Nextflow and Conda, with Salmon and HISAT2 + featureCounts backends, interactive or explicit project creation, and an optional local browser GUI."

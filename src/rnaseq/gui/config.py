@@ -48,6 +48,8 @@ class GuiConfig:
     condarc: Path | None
     log_tail_lines: int = 200
     launcher: str = "auto"
+    # Larger files and delivery packages are offered as a server path and scp command.
+    download_limit_mb: int = 500
     source: Path | None = None
     notes: tuple[str, ...] = field(default_factory=tuple)
 
@@ -102,7 +104,7 @@ def load_config(path: Path | None = None) -> GuiConfig:
         raw = loaded if isinstance(loaded, dict) else {}
     else:
         condarc = str(Path(DEFAULT_CONDARC).expanduser()) if Path(DEFAULT_CONDARC).expanduser().is_file() else None
-        raw = {"allowed_roots": [str(Path(root).expanduser()) for root in DEFAULT_ALLOWED_ROOTS], "project_parent": f"{DEFAULT_ALLOWED_ROOTS[0]}/projects", "condarc": condarc, "log_tail_lines": 200, "launcher": "auto"}
+        raw = {"allowed_roots": [str(Path(root).expanduser()) for root in DEFAULT_ALLOWED_ROOTS], "project_parent": f"{DEFAULT_ALLOWED_ROOTS[0]}/projects", "condarc": condarc, "log_tail_lines": 200, "launcher": "auto", "download_limit_mb": 500}
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
@@ -115,7 +117,7 @@ def load_config(path: Path | None = None) -> GuiConfig:
     launcher = str(raw.get("launcher") or "auto")
     if launcher not in {"auto", "systemd", "process"}:
         raise ValueError(f"{path}: launcher must be auto, systemd or process (got {launcher!r}).")
-    return GuiConfig(roots, parent, condarc, int(raw.get("log_tail_lines") or 200), launcher, path, tuple(notes))
+    return GuiConfig(roots, parent, condarc, int(raw.get("log_tail_lines") or 200), launcher, int(raw.get("download_limit_mb") or 500), path, tuple(notes))
 
 
 def ensure_data_layout(config: GuiConfig) -> list[str]:

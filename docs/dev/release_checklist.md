@@ -1,57 +1,136 @@
-# nf-rna v1.5.1 release checklist
+# nf-rna v1.6.0 release checklist
 
-State: v1.5.1 is a maintenance release prepared on `main`, on top of `f66f96e` (the R-package test-gating fix). The published `v1.5.0` annotated tag stays on `c283d31` and is not moved. No GitHub Release exists for v1.5.0. The release metadata is dated 2026-10-30. Nothing for v1.5.1 has been tagged, pushed or released yet.
+State: v1.6.0 is prepared on `feature/v1.6.0` (Phase 6a GUI core, Phase 6b
+results, reports and release preparation). The version is `1.6.0`, CHANGELOG
+says `1.6.0 — Unreleased` and CITATION.cff has no `date-released`; the release
+date is set by the finalize commit. Local `main` is at `9a7352b` (the v1.5.1
+maintenance commit, never pushed or tagged); `origin/main` is at `f66f96e`.
+v1.5.1 is **not** tagged separately: its changes ship in v1.6.0. Nothing for
+v1.6.0 has been merged, pushed, tagged or released.
+
+These are the steps for the maintainer to run by hand. Run them in order; stop
+at the first failure.
 
 ## Scope
 
-- Changed since `v1.5.0`: three test files (`f66f96e`) and the v1.5.1 version and release metadata. No source, workflow, R script, lock, reference or example change.
-- Scientific analysis semantics are identical to v1.5.0 (DESeq2, GO/KEGG ORA, GSEA, significance semantics "v1.5"). v1.5.0 results do not need to be recomputed.
+- Since `v1.5.0`: the v1.5.1 test-gating fix (`f66f96e`), the v1.5.1 release
+  metadata (`9a7352b`), the browser GUI (`rnaseq.gui`, `rnaseq gui`, the `gui`
+  and `gui-dev` extras), shared wizard/design/import functions used by CLI and
+  GUI, and new `report.html` sections.
+- Unchanged: R scripts, Nextflow workflows, the downstream locks, DESeq2/
+  enrichment semantics ("v1.5"), every result table and figure (airway rerun:
+  135/135 tables byte-identical, `docs/dev/phase6b_report.md`).
 
-## Platform policy
+## 1. Review
 
-The supported runtime is **Linux x86-64, including Windows WSL2** (`docs/runtime.md`; `execution_backend()` refuses every other platform). The repository keeps `workflow/envs/locks/nf-rna-downstream-osx-arm64.lock.yml` as an **unqualified candidate**: resolved on linux, never installed or smoke-tested on a Mac. This is not a release blocker.
+```bash
+cd /home/brian/projects/nf-rna
+git status                                   # clean
+git log --oneline v1.5.0..feature/v1.6.0     # f66f96e, 9a7352b, the 6a and 6b commits
+git diff --stat v1.5.0 feature/v1.6.0
+git diff v1.5.0 feature/v1.6.0 -- src/rnaseq/r workflow   # expect no output
+```
 
-## Release evidence
+## 2. Finalize (on main)
 
-| Check | Result | Where |
-|---|---|---|
-| GitHub Actions on `f66f96e` | SUCCESS | GitHub Actions, `main` |
-| v1.5.0 release evidence (full suite, airway end-to-end, Phase 1/2 acceptance, figure gate) | still applies: no analysis code changed | `v1.5.0` checklist at tag `v1.5.0` |
-| Release metadata, package build, KEGG-gating tests | maintenance release commit | maintenance release commit |
+```bash
+git switch main
+git merge --ff-only feature/v1.6.0
+```
 
-## Remaining manual steps
+Edit, in one commit:
 
-1. Review: `git log --oneline v1.5.0..main` (expect `f66f96e` and the v1.5.1 release commit) and `git diff --stat v1.5.0 main`.
-2. Push `main`:
+- `CHANGELOG.md`: `## 1.6.0 — Unreleased` → `## 1.6.0 — YYYY-MM-DD`.
+- `CITATION.cff`: add `date-released: YYYY-MM-DD` after `version: "1.6.0"`.
+- `docs/dev/release_notes_v1.6.0.md`: no change needed unless the date is mentioned.
 
-   ```
-   cd /home/brian/projects/nf-rna
-   git push origin main
-   ```
+```bash
+python -m pytest -q tests/test_release_metadata.py
+git add CHANGELOG.md CITATION.cff
+git commit -m "chore(release): finalize nf-rna v1.6.0"
+```
 
-   Wait for GitHub Actions on the release commit to pass.
-3. Annotated tag on the release commit, in the style of earlier tags:
+The commit is authored by Brian Wu with no AI attribution trailer (CLAUDE.md).
 
-   ```
-   git tag -a v1.5.1 -m "nf-rna v1.5.1" main
-   git show v1.5.1 --no-patch
-   git push origin v1.5.1
-   ```
+## 3. Full tests before pushing
 
-4. GitHub release from the tag, with the CHANGELOG 1.5.1 section as notes:
+With the locked R runtime on PATH (`NF_RNA_REQUIRE_R=1` makes missing R packages fail instead of skip):
 
-   ```
-   awk '/^## 1.5.1 /{flag=1; next} /^## 1.5.0 /{flag=0} flag' CHANGELOG.md > /tmp/nf-rna-v1.5.1-notes.md
-   gh release create v1.5.1 --title "nf-rna v1.5.1" --notes-file /tmp/nf-rna-v1.5.1-notes.md --verify-tag --latest
-   ```
+```bash
+PATH=$HOME/.cache/nf-rna/runtime/prefixes/<current prefix>/bin:$PATH python -m pytest -q
+```
 
-   The 1.5.1 notes describe only the maintenance fix; the scientific changes are in the 1.5.0 section of CHANGELOG.md.
-5. Check the release:
-   - Install from the tag in a fresh env: `python -m pip install "git+https://github.com/2002brian/nf-rna.git@v1.5.1"`.
-   - `rnaseq --version` must print 1.5.1, and `rnaseq doctor` must report READY.
+And in an environment with only `.[dev]` (no GUI extra, as CI):
+
+```bash
+conda create --yes -p /tmp/nf-rna-ci python=3.11
+/tmp/nf-rna-ci/bin/python -m pip install -e '.[dev]'
+/tmp/nf-rna-ci/bin/python -m pytest -q          # GUI page tests skip; service tests run
+```
+
+## 4. Push main and wait for CI
+
+```bash
+git push origin main
+gh run list --branch main --limit 3
+gh run watch <run-id> --exit-status
+```
+
+Do not tag until GitHub Actions on the finalize commit is green.
+
+## 5. Tag
+
+```bash
+git tag -a v1.6.0 -m "nf-rna v1.6.0" main
+git show v1.6.0 --no-patch
+git push origin v1.6.0
+```
+
+Do not create a `v1.5.1` tag.
+
+## 6. GitHub Release
+
+```bash
+gh release create v1.6.0 --title "nf-rna v1.6.0" \
+  --notes-file docs/dev/release_notes_v1.6.0.md --verify-tag --latest
+gh release view v1.6.0
+```
+
+The notes start with the v1.5.0 enrichment-semantics warning for v1.4.x users.
+
+## 7. Clean-environment install test
+
+CLI only:
+
+```bash
+conda create --yes --name nf-rna-160 python=3.11
+conda run -n nf-rna-160 python -m pip install "git+https://github.com/2002brian/nf-rna.git@v1.6.0"
+conda run -n nf-rna-160 rnaseq --version     # 1.6.0
+conda run -n nf-rna-160 rnaseq doctor        # Overall: READY
+conda run -n nf-rna-160 rnaseq gui           # prints the gui-extra install command, exit 1
+```
+
+With the GUI extra:
+
+```bash
+conda create --yes --name nf-rna-160-gui python=3.11
+conda run -n nf-rna-160-gui python -m pip install "nf-rna[gui] @ git+https://github.com/2002brian/nf-rna.git@v1.6.0"
+conda run -n nf-rna-160-gui python -c "import streamlit; print(streamlit.__version__)"   # >= 1.66
+conda run -n nf-rna-160-gui rnaseq gui --port 8610   # in tmux; open via ssh -L 8610:127.0.0.1:8610
+```
+
+In the browser: Dashboard lists the projects; Results of `airway-e2e` shows the
+DEG table and figures; Reports & Downloads downloads `report.html`. Stop the
+server (Ctrl-C) and remove the test environments:
+
+```bash
+conda env remove --yes --name nf-rna-160
+conda env remove --yes --name nf-rna-160-gui
+```
 
 ## Not to be done
 
 - Do not move, recreate or delete existing tags (`v1.3.0`, `v1.4.0`, `v1.4.1`, `v1.5.0`).
-- Do not rewrite history to change authorship. Commits are authored by Brian Wu without AI attribution trailers (CLAUDE.md).
+- Do not rewrite history to change authorship.
+- Do not enable the example `systemd --user` unit or lingering as part of the release.
 - MRPan is not part of this release.

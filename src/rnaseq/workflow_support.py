@@ -635,6 +635,117 @@ def _enrichment_status_html(rows: list[dict[str, str]]) -> list[str]:
     ]
 
 
+def _samples_html(inputs_root: Path, manifest: dict[str, Any]) -> list[str]:
+    """The staged sample metadata, as analysed (every column of metadata.csv)."""
+
+    metadata = _staged_file(inputs_root, manifest.get("metadata"), "metadata")
+    with metadata.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        columns = list(reader.fieldnames or [])
+        rows = list(reader)
+    headers = "".join(f"<th>{escape(column)}</th>" for column in columns)
+    body = "".join("<tr>" + "".join(f"<td>{escape(row.get(column) or '')}</td>" for column in columns) + "</tr>" for row in rows)
+    return ["<h2>Samples</h2>", f"<p>{len(rows)} samples (metadata as analysed).</p>", f"<table><thead><tr>{headers}</tr></thead><tbody>{body}</tbody></table>"]
+
+
+def _reference_quantification_html(contract: dict[str, Any], project: dict[str, Any]) -> list[str]:
+    """Where the counts came from: nf-rna's FASTQ route and reference, or a supplied matrix."""
+
+    source_type = contract["source"]["type"]
+    upstream = project.get("upstream") if isinstance(project.get("upstream"), dict) else {}
+    reference = project.get("reference") if isinstance(project.get("reference"), dict) else {}
+    project_input = project.get("input") if isinstance(project.get("input"), dict) else {}
+    annotation = project.get("annotation") if isinstance(project.get("annotation"), dict) else {}
+    items = [f"<li>Count import: {escape(_source_import_label(source_type))}</li>"]
+    if source_type == "raw_counts":
+        items.append(
+            "<li>Quantification: not performed by nf-rna; the raw-count matrix was supplied with the project "
+            f"(recorded provider: {escape(str(upstream.get('provider') or 'not recorded'))}; "
+            f"recorded method: {escape(str(upstream.get('quantification_method') or 'not recorded'))}).</li>"
+            "<li>Reference genome: none used by nf-rna for this input.</li>"
+        )
+    else:
+        quantification = upstream.get("quantification") if isinstance(upstream.get("quantification"), dict) else {}
+        method = quantification.get("method") or ("salmon" if source_type == "salmon_tximport" else "hisat2_featurecounts")
+        items.append(
+            f"<li>Quantification: {escape(str(method))}; layout {escape(str(project_input.get('layout') or 'not recorded'))}; "
+            f"strandedness {escape(str(upstream.get('strandedness') or 'not recorded'))}; "
+            f"FASTQ preprocessing {escape(str(project_input.get('preprocessing') or 'not recorded'))}.</li>"
+        )
+        details = [f"{name} {escape(str(reference[name]))}" for name in ("genome", "root", "manifest", "fasta", "gtf", "transcript_fasta", "salmon_index", "hisat2_index") if reference.get(name)]
+        items.append(
+            f"<li>Reference: source {escape(str(reference.get('source') or 'not recorded'))}"
+            + (f"; {'; '.join(details)}" if details else "") + ". The resolved reference identity and checksums are in the run's input and execution manifests.</li>"
+        )
+    if annotation:
+        items.append(f"<li>Gene identifiers: {escape(str(annotation.get('input_id_type') or 'not recorded'))}; organism {escape(str(annotation.get('organism') or 'not recorded'))}.</li>")
+    return ["<h2>Reference and quantification</h2>", "<ul>" + "".join(items) + "</ul>"]
+
+
+def _shrinkage_html(metadata: dict[str, Any] | None) -> str:
+    """The DEG rule and the LFC shrinkage actually used, from the contrast's own record."""
+
+    if metadata is None:
+        return "<li>DEG rule and LFC shrinkage: not recorded (L2 results from before nf-rna v1.5).</li>"
+    rule = (metadata.get("deg_definition") or {}).get("rule") if isinstance(metadata.get("deg_definition"), dict) else None
+    shrinkage = metadata.get("shrinkage") if isinstance(metadata.get("shrinkage"), dict) else {}
+    status = str(shrinkage.get("status") or "not recorded")
+    text = f"{escape(str(shrinkage.get('method') or 'not recorded'))}, status <strong>{escape(status)}</strong>"
+    if shrinkage.get("error"):
+        text += f" ({escape(str(shrinkage['error']))})"
+    return (
+        f"<li>DEG rule: {escape(str(rule or 'not recorded'))}</li>"
+        f"<li>LFC shrinkage (<code>log2FoldChange_shrunk</code>, effect-size display and ranking only): {text}</li>"
+    )
+
+
+def _software_provenance_html(execution: object, versions: dict[str, object], kegg_snapshot: str | None) -> list[str]:
+    """nf-rna build, runtime lock and the analysis package versions recorded by the backends."""
+
+    runtime = execution.get("downstream_runtime") if isinstance(execution, dict) and isinstance(execution.get("downstream_runtime"), dict) else {}
+    lock = runtime.get("lock") if isinstance(runtime.get("lock"), dict) else {}
+    wheel = runtime.get("wheel") if isinstance(runtime.get("wheel"), dict) else {}
+    rows = [
+        ("nf-rna", runtime.get("nf_rna_version")),
+        ("nf-rna source revision", runtime.get("source_revision")),
+        ("nf-rna wheel SHA-256", wheel.get("sha256")),
+        ("Downstream Conda lock", f"{lock.get('filename')} (SHA-256 {lock.get('sha256')})" if lock.get("sha256") else None),
+        *versions.items(),
+    ]
+    if kegg_snapshot is not None:
+        rows.append(("KEGG snapshot", kegg_snapshot))
+    body = "".join(f"<tr><td>{escape(str(name))}</td><td><code>{escape(str(value)) if value else 'not available'}</code></td></tr>" for name, value in rows)
+    return ["<h2>Software versions and provenance</h2>", f"<table><thead><tr><th>Item</th><th>Version or identity</th></tr></thead><tbody>{body}</tbody></table>",
+            "<p>Per-module records: <code>methods_and_versions/</code> (scientific provenance, R session information, figure manifests).</p>"]
+
+
+def _l2_versions(
+    package_versions: dict[str, Any], contrast_metadata: dict[str, dict[str, Any] | None], indexed: dict[str, Path],
+) -> tuple[dict[str, object], str | None]:
+    """Package versions recorded by L1, L2 and the enrichment backends, and the KEGG snapshot they used."""
+
+    versions: dict[str, object] = {"R": package_versions.get("R"), "DESeq2": package_versions.get("DESeq2")}
+    software = next((item["software"] for item in contrast_metadata.values() if item and isinstance(item.get("software"), dict)), {})
+    for name in ("apeglm", "ashr"):
+        if software.get(name):
+            versions[name] = software[name]
+    snapshot = None
+    for directory, summary_name in (("go", "go_backend_summary.json"), ("kegg", "kegg_backend_summary.json"), ("gsea_go", "gsea_backend_summary.json"), ("gsea_kegg", "gsea_kegg_backend_summary.json")):
+        root = indexed.get(directory)
+        if root is None or not (root / summary_name).is_file():
+            continue
+        summary = _read_json_artifact(root / summary_name, f"{directory} backend summary")
+        source = summary.get("gene_set_source") if isinstance(summary.get("gene_set_source"), dict) else {}
+        versions.setdefault("clusterProfiler", summary.get("clusterProfiler_version"))
+        if summary.get("annotation_database"):
+            versions.setdefault(str(summary["annotation_database"]), summary.get("annotation_database_version"))
+        if source.get("go_db_version"):
+            versions.setdefault("GO.db", source["go_db_version"])
+        if source.get("snapshot_id") and snapshot is None:
+            snapshot = f"{source['snapshot_id']} ({source.get('kegg_release') or 'release not recorded'}; SHA-256 verified: {source.get('sha256_verified')})"
+    return versions, snapshot
+
+
 def _report_l1_only(
     contract: dict[str, Any], inputs_root: Path, manifest: dict[str, Any], project: dict[str, Any],
     l1: Path, output: Path,
@@ -666,6 +777,8 @@ def _report_l1_only(
         f"<li>Configured contrasts: {len(contrasts)}</li>"
         "<li>Requested analysis level: L1</li>"
         "</ul>",
+        *_samples_html(inputs_root, manifest),
+        *_reference_quantification_html(contract, project),
         *_experimental_design_html(project, contrasts, contract),
         "<h2>L1 — quality control</h2>",
         "<ul>"
@@ -698,6 +811,7 @@ def _report_l1_only(
         f"<li>{_pipeline_provenance_line(execution, project.get('project', {}).get('pipeline') if isinstance(project.get('project'), dict) else None)}</li>"
         f"<li>{_source_revision_line(execution)}</li>"
         "</ul>",
+        *_software_provenance_html(execution, {"R": package_versions.get("R"), "DESeq2": package_versions.get("DESeq2")}, None),
         "<p>This automated report contains technical/statistical results only and no biological interpretation.</p>",
         "</body></html>",
     ]
@@ -743,6 +857,8 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
         f"<li>Design: <code>{escape(str(project['design']['formula']))}</code></li>"
         f"<li>Configured contrasts: {len(contrasts)}</li>"
         "</ul>",
+        *_samples_html(inputs_root, manifest),
+        *_reference_quantification_html(contract, project),
         *_experimental_design_html(project, contrasts, contract),
         "<h2>L1 — quality control</h2>",
         "<ul>"
@@ -765,10 +881,13 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
         "<h2>L2 — differential expression</h2>",
     ]
 
+    contrast_metadata: dict[str, dict[str, Any] | None] = {}
     for contrast in contrasts:
         contrast_id = contrast["contrast_id"]
         root = l2 / "contrasts" / contrast_id
         summary = _read_json_artifact(root / "backend_summary.json", f"L2 summary for contrast {contrast_id}")
+        metadata = _read_json_artifact(root / "contrast_metadata.json", f"L2 contrast metadata for {contrast_id}") if (root / "contrast_metadata.json").is_file() else None
+        contrast_metadata[contrast_id] = metadata
         for required in ("all_genes.tsv", "significant.tsv", "upregulated.tsv", "downregulated.tsv"):
             if not (root / required).is_file():
                 raise ValueError(f"final report requires L2 {required} for contrast {contrast_id}")
@@ -783,6 +902,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
             f"<li>Upregulated genes: {_tsv_row_count(root / 'upregulated.tsv')}</li>"
             f"<li>Downregulated genes: {_tsv_row_count(root / 'downregulated.tsv')}</li>"
             f"<li>Thresholds: padj &lt; {escape(str(thresholds['padj']))}; |log2FC| ≥ {escape(str(thresholds['abs_log2fc']))}</li>"
+            + _shrinkage_html(metadata) +
             f"<li>Client tables: <code>tables/l2/contrasts/{escape(contrast_id)}/</code></li>"
             "</ul>",
             _image_html(root / "volcano.png", f"Volcano plot: {contrast_id}"),
@@ -970,6 +1090,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
         + ("<li>KEGG gene sets come from a local snapshot of KEGG REST; its ID and SHA-256 are in the KEGG scientific provenance.</li>" if {"kegg", "gsea"} & set(selected) else "")
         + ("<li>GO GSEA evaluates BP, MF, and CC; KEGG GSEA uses the same KEGG snapshot as KEGG ORA.</li>" if "gsea" in selected else "")
         + "</ul>",
+        *_software_provenance_html(execution, *_l2_versions(package_versions, contrast_metadata, indexed)),
         "<p>This automated report contains technical/statistical results only and no biological interpretation.</p>",
         "</body></html>",
     ])
