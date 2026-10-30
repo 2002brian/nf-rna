@@ -16,10 +16,13 @@ import yaml
 from rnaseq.downstream import L1_FILTER, PreparedL1, _read_yaml, _require_r, _write, execute_l1, prepare_l1
 from rnaseq.design_matrix import residual_degrees_of_freedom_message
 from rnaseq.errors import DownstreamExecutionError
-from rnaseq.models import PIPELINE_VERSION, DesignType, InputType, MetadataVariableType, ProjectConfig
+from rnaseq.models import PIPELINE_VERSION, DesignType, InputType, MetadataVariableType, ProjectConfig, deg_gene_annotation
 from rnaseq.validators import CONTRAST_HEADER, ContrastDefinition, ValidationReport
 
-RESULT_HEADER = ("gene_id", "baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj")
+RESULT_HEADER = (
+    "gene_id", "symbol", "description", "baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj",
+    "mean_normcount_numerator", "mean_normcount_denominator", "log2FoldChange_shrunk",
+)
 L2_STATES = {"RUNNING", "SUCCESS", "PARTIAL", "FAILED"}
 HEATMAP_TOP_N = 50
 
@@ -166,7 +169,7 @@ def _as_float(value: str) -> float | None:
 
 
 def _validate_contrast_outputs(directory: Path, contrast: ContrastDefinition, thresholds: dict[str, float]) -> dict[str, Any]:
-    required = ("all_genes.tsv", "significant.tsv", "upregulated.tsv", "downregulated.tsv", "volcano.png", "backend_summary.json")
+    required = ("all_genes.tsv", "significant.tsv", "upregulated.tsv", "downregulated.tsv", "volcano.png", "ma_plot.png", "backend_summary.json", "contrast_metadata.json")
     missing = [name for name in required if not (directory / name).is_file()]
     if missing:
         raise DownstreamExecutionError(f"Contrast {contrast.contrast_id} is missing required output(s): " + ", ".join(missing))
@@ -300,6 +303,10 @@ def execute_l2(prepared: PreparedL2) -> L2Result:
         "thresholds": {"padj": prepared.config.thresholds.padj, "abs_log2fc": prepared.config.thresholds.abs_log2fc},
         "contrasts": [{"contrast_id": item.contrast_id, "factor": item.factor, "numerator": item.numerator, "denominator": item.denominator} for item in prepared.contrasts],
         "l1_vst": str(prepared.l1.output_dir / "vst.tsv"), "heatmap_top_n": HEATMAP_TOP_N,
+        "gene_annotation": deg_gene_annotation(
+            prepared.config.organism.species.value,
+            prepared.config.annotation.model_dump() if prepared.config.annotation is not None else None,
+        ),
         # One setting per run: L2 reuses the figure settings resolved for its own L1.
         "figure_style": dict(prepared.l1.figures),
     }

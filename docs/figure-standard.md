@@ -183,6 +183,13 @@ Only the displayed y range and breaks change. `pca_scores.tsv` and `pca_variance
 * Every figure is drawn directly at its final physical size on each device, with no
   resampling: PNG preview, raster TIFF (LZW, RGB, opaque white) and Cairo PDF. Sizes are
   snapped to whole points so the three outputs share one size.
+* `nf_rna_save_figure(..., formats = ...)` also accepts `png_raster`: an additional PNG,
+  `<name>_<raster dpi>dpi.png`, drawn at the profile's raster dpi. Since v1.5.0 the L2 volcano,
+  MA plot (`ma_plot`, drawn with the volcano scope) and DEG heatmap use it; the 150 dpi
+  preview keeps its name and remains the report image.
+* Since v1.5.0 the volcano and MA plot draw `log2FoldChange_shrunk` (raw LFC only as a labelled
+  fallback when shrinkage failed), label the top 10 DEGs by symbol, and DEG heatmap rows are labelled
+  by symbol; see `docs/scientific_contract.md`. Colours and significance are unchanged.
 * File names and paths, the three formats and the source-data tables
   (`*_source_data.tsv`, `pca_scores.tsv`, `all_genes.tsv`, …) do not depend on the
   preset or profile.

@@ -179,8 +179,8 @@ def test_installed_nf_rna_provisions_and_reuses_the_locked_prefix(installed, mon
     runtime = downstream_runtime.ensure_downstream_runtime()
     identity = runtime.identity()
     assert identity["wheel"]["origin"] == downstream_runtime.WHEEL_ORIGIN_INSTALLED
-    assert identity["lock"]["sha256"] == "18197d49b7087d39c3a8e3aef8a16d7bd65af7e56e07d87aa47be656b219617d"
-    assert runtime.prefix.name == f"nf-rna-downstream-linux-64-18197d49b7087d39-{runtime.wheel_sha256[:16]}"
+    assert identity["lock"]["sha256"] == "0e721ff3cf1983f6f4411a64279dd1cd67e5f9d9ff266dd46f873b05c6540213"
+    assert runtime.prefix.name == f"nf-rna-downstream-linux-64-0e721ff3cf1983f6-{runtime.wheel_sha256[:16]}"
     marker = json.loads((runtime.prefix / "runtime" / "nf-rna-wheel.json").read_text(encoding="utf-8"))
     assert marker == {"filename": runtime.wheel_filename, "sha256": runtime.wheel_sha256, "origin": "installed-distribution"}
     # The R scripts inventoried inside the prefix are exactly the bundled source scripts.

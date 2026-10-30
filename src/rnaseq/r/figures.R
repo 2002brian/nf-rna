@@ -873,10 +873,11 @@ nf_rna_save_figure <- function(context, figure, path_stem, width_mm, height_mm, 
   width_mm <- width_pt * 25.4 / 72; height_mm <- height_pt * 25.4 / 72
   files <- list()
   for (format in formats) {
-    path <- paste0(path_stem, ".", format)
+    # "png_raster": an opt-in PNG at the profile's raster dpi beside the 150 dpi report preview.
     dpi <- if (format == "png") profile$preview_dpi else profile$raster_dpi
+    path <- if (format == "png_raster") sprintf("%s_%ddpi.png", path_stem, as.integer(dpi)) else paste0(path_stem, ".", format)
     pixels <- c(round(width_pt / 72 * dpi), round(height_pt / 72 * dpi))
-    if (format == "png") {
+    if (format %in% c("png", "png_raster")) {
       grDevices::png(path, width=pixels[[1]], height=pixels[[2]], units="px", res=dpi, type="cairo", bg="white", family=family)
     } else if (format == "tiff") {
       grDevices::tiff(path, width=pixels[[1]], height=pixels[[2]], units="px", res=dpi, type="cairo", compression="lzw", bg="white", family=family)
@@ -885,7 +886,7 @@ nf_rna_save_figure <- function(context, figure, path_stem, width_mm, height_mm, 
     } else stop(paste("unsupported figure format:", format))
     tryCatch({ nf_rna_prime_device_metrics(family); nf_rna_draw(figure) }, finally=grDevices::dev.off())
     entry <- list(path=nf_rna_relative_path(path, output_root), format=format, width_mm=width_mm, height_mm=height_mm)
-    if (format %in% c("png", "tiff")) {
+    if (format %in% c("png", "png_raster", "tiff")) {
       entry <- c(entry, list(dpi=dpi, width_px=pixels[[1]], height_px=pixels[[2]], role=if (format == "png") "report preview" else "raster submission",
                              colour_model="RGB, opaque white background", compression=if (format == "tiff") "LZW" else "PNG deflate"))
     } else {

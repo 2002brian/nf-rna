@@ -19,6 +19,9 @@ dependencies:
   # First-party R backends only.  Do not add nf-core alignment/QC tools here.
   - r-base=4.5
   - bioconductor-deseq2
+  # L2 display-only LFC shrinkage (lfcShrink type apeglm / ashr).
+  - bioconductor-apeglm
+  - r-ashr
   - bioconductor-tximport
   - bioconductor-clusterprofiler
   - bioconductor-annotationdbi

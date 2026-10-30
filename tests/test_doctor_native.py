@@ -234,7 +234,7 @@ def test_downstream_linux_lock_identity_is_verified(monkeypatch, tmp_path):
     lock = downstream_runtime.lock_path_for_platform("linux-64")
     passed = downstream_runtime_checks()[0]
     assert passed.verdict == "PASS"
-    assert "18197d49b7087d39c3a8e3aef8a16d7bd65af7e56e07d87aa47be656b219617d" in passed.detail
+    assert "0e721ff3cf1983f6f4411a64279dd1cd67e5f9d9ff266dd46f873b05c6540213" in passed.detail
 
     tampered = tmp_path / "locks" / lock.name
     tampered.parent.mkdir()

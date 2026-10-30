@@ -3,6 +3,7 @@ if (length(args) != 2 || args[[1]] != "--config") stop("usage: go_analysis.R --c
 script_arg <- commandArgs(trailingOnly=FALSE)
 script_file <- sub("^--file=", "", script_arg[grep("^--file=", script_arg)][[1]])
 source(file.path(dirname(normalizePath(script_file)), "provenance.R"))
+source(file.path(dirname(normalizePath(script_file)), "gene_annotation.R"))
 source(file.path(dirname(normalizePath(script_file)), "ora_helpers.R"))
 source(file.path(dirname(normalizePath(script_file)), "annotation_mapping_qc.R"))
 source(file.path(dirname(normalizePath(script_file)), "figures.R"))
@@ -12,7 +13,7 @@ dir.create(cfg$output_dir, recursive=TRUE, showWarnings=FALSE)
 fig <- nf_rna_figure_context(cfg)
 orgdb <- get(cfg$orgdb_package, envir=asNamespace(cfg$orgdb_package))
 input_type <- cfg$annotation$input_id_type
-normalize_id <- function(x) if (input_type == "ENSEMBL") sub("\\.[0-9]+$", "", x) else x
+normalize_id <- function(x) nf_rna_annotation_key(x, input_type)
 write_table <- function(x, path) write.table(x, path, sep="\t", quote=FALSE, row.names=FALSE, na="NA")
 empty_go <- function() data.frame(ID=character(), Description=character(), GeneRatio=character(), BgRatio=character(), pvalue=numeric(), p.adjust=numeric(), qvalue=numeric(), geneID=character(), Count=integer(), stringsAsFactors=FALSE)
 

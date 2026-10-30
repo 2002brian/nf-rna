@@ -159,7 +159,11 @@ def test_real_l2_replicated_raw_counts_outputs_and_determinism(tmp_path):
     assert (contrast / "heatmap.png").stat().st_size > 0
     assert (contrast / "heatmap.tiff").stat().st_size > 0
     assert not list(contrast.glob("*.svg"))
-    assert {path.name for path in contrast.glob("*.pdf")} == {"volcano.pdf", "heatmap.pdf"}
+    assert {path.name for path in contrast.glob("*.pdf")} == {"volcano.pdf", "ma_plot.pdf", "heatmap.pdf"}
+    assert {"volcano_300dpi.png", "ma_plot_300dpi.png", "heatmap_300dpi.png"} <= {path.name for path in contrast.glob("*.png")}
+    shrinkage = json.loads((contrast / "contrast_metadata.json").read_text())["shrinkage"]
+    assert shrinkage["status"] == "success" and shrinkage["method"] == "apeglm"
+    assert all(row["log2FoldChange_shrunk"] not in {"NA", row["log2FoldChange"]} for row in all_rows)
     heatmap_genes = [row["gene_id"] for row in _rows(contrast / "heatmap_genes.tsv")]
     assert set(heatmap_genes) == {row["gene_id"] for row in significant}
     heatmap = next(item for item in json.loads((first.output_dir / "figure_manifest.json").read_text())["figures"] if item["id"].endswith("/heatmap"))

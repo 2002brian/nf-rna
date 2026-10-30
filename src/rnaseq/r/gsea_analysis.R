@@ -3,6 +3,7 @@ if (length(args) != 2 || args[[1]] != "--config") stop("usage: gsea_analysis.R -
 script_arg <- commandArgs(trailingOnly = FALSE)
 script_file <- sub("^--file=", "", script_arg[grep("^--file=", script_arg)][[1]])
 source(file.path(dirname(normalizePath(script_file)), "provenance.R"))
+source(file.path(dirname(normalizePath(script_file)), "gene_annotation.R"))
 source(file.path(dirname(normalizePath(script_file)), "gsea_core_members.R"))
 source(file.path(dirname(normalizePath(script_file)), "annotation_mapping_qc.R"))
 source(file.path(dirname(normalizePath(script_file)), "gsea_term_filtering.R"))
@@ -15,7 +16,7 @@ fig <- nf_rna_figure_context(cfg)
 orgdb <- get(cfg$orgdb_package, envir = asNamespace(cfg$orgdb_package))
 input_type <- cfg$annotation$input_id_type
 gsea_cfg <- cfg$annotation$enrichment$gsea
-normalize_id <- function(x) if (input_type == "ENSEMBL") sub("\\.[0-9]+$", "", x) else x
+normalize_id <- function(x) nf_rna_annotation_key(x, input_type)
 
 empty_terms <- function() data.frame(
   ID=character(), Description=character(), setSize=integer(), enrichmentScore=numeric(), NES=numeric(),

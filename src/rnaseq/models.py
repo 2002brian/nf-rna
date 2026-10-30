@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
 
@@ -307,6 +307,19 @@ ENRICHMENT_METHOD_LABELS = {
 # The only organisms with a locked OrgDb in the downstream runtime.
 ANNOTATION_DATABASES = {"Homo sapiens": "org.Hs.eg.db", "Mus musculus": "org.Mm.eg.db"}
 GENE_ID_TYPES = ("ENSEMBL", "ENTREZID", "SYMBOL")
+
+
+def deg_gene_annotation(species: str, annotation: dict[str, Any] | None) -> dict[str, str | None]:
+    """OrgDb settings for L2 DEG annotation, independent of the enrichment selection.
+
+    The annotation block's ``input_id_type`` is used when present; otherwise the
+    R backend infers ENSEMBL/ENTREZID from the gene IDs or leaves symbols NA.
+    """
+
+    return {
+        "orgdb_package": ANNOTATION_DATABASES.get(species),
+        "input_id_type": (annotation or {}).get("input_id_type"),
+    }
 
 
 def default_annotation(species: "Species", input_id_type: str) -> dict[str, str]:

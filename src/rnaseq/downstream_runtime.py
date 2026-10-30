@@ -45,7 +45,7 @@ INSTALLER_GENERATED = frozenset({"INSTALLER", "REQUESTED", "direct_url.json", "R
 CANONICAL_WHEEL_TIMESTAMP = (2020, 2, 2, 0, 0, 0)
 LOCKS_PACKAGE = "rnaseq.workflows"
 REQUIRED_R_PACKAGES = (
-    "DESeq2", "tximport", "clusterProfiler", "AnnotationDbi", "org.Hs.eg.db",
+    "DESeq2", "apeglm", "ashr", "tximport", "clusterProfiler", "AnnotationDbi", "org.Hs.eg.db",
     "org.Mm.eg.db", "ggplot2", "pheatmap", "yaml", "jsonlite",
     # Locked via clusterProfiler -> enrichplot; L1 uses it directly for PCA labels.
     "ggrepel",

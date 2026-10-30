@@ -14,7 +14,7 @@ import yaml
 
 from rnaseq.design_matrix import residual_degrees_of_freedom_message
 from rnaseq.figure_settings import resolve_run_figure_settings
-from rnaseq.models import ANNOTATION_DATABASES, describe_enrichment, normalize_enrichment_selection
+from rnaseq.models import ANNOTATION_DATABASES, deg_gene_annotation, describe_enrichment, normalize_enrichment_selection
 
 
 FILTER = {"rule": "remove genes with total count < 10 after all-zero removal", "minimum_total_count": 10}
@@ -361,6 +361,7 @@ def l2_config(contract_path: Path, inputs: Path, l1: Path, output: Path) -> dict
         "contrasts": contrasts,
         "l1_vst": str(l1 / "vst.tsv"),
         "heatmap_top_n": 50,
+        "gene_annotation": deg_gene_annotation(project["organism"]["species"], project.get("annotation")),
         "figure_style": resolve_run_figure_settings(contract, project),
         "runtime": _runtime_provenance(contract, "l2_analysis.R", "L2"),
     }
