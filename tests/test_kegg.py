@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from conftest import base_config, require_rscript
+from conftest import base_config, require_r_packages, require_rscript
 from rnaseq.errors import DownstreamExecutionError
 from rnaseq.kegg import KEGG_CODES, KeggResourceAdapter, execute_kegg, prepare_kegg
 from rnaseq.l2 import prepare_l2
@@ -214,7 +214,7 @@ def test_kegg_snapshot_resolution_prefers_the_latest_and_rejects_tampered_files(
     import hashlib
     import subprocess
 
-    require_rscript()
+    require_r_packages("jsonlite", "openssl")  # kegg_snapshot.R reads manifest.json and verifies SHA-256 with them
     root = tmp_path / "snapshots"
     for snapshot_id, retrieved in (("hsa_old", "2026-01-01T00:00:00Z"), ("hsa_new", "2026-06-01T00:00:00Z")):
         target = root / snapshot_id

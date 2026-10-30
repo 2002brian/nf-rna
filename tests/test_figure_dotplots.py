@@ -142,7 +142,8 @@ def test_empty_term_sets_are_a_caller_decision_and_the_dotplot_helpers_are_not_r
 
 @pytest.fixture(scope="module")
 def generate():
-    require_r_packages("DESeq2", "clusterProfiler", "org.Mm.eg.db", "ggplot2", "jsonlite", "systemfonts")
+    # openssl: the KEGG backend verifies the fixture snapshot's SHA-256 manifest
+    require_r_packages("DESeq2", "clusterProfiler", "org.Mm.eg.db", "ggplot2", "jsonlite", "systemfonts", "openssl")
     return _load("generate_runs")
 
 

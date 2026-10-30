@@ -61,6 +61,12 @@ def _local_kegg_snapshot(root: Path) -> Path:
     return root
 
 
+def _require_backend_r(script: str) -> None:
+    # The KEGG backend verifies the local snapshot's SHA-256 manifest with openssl.
+    kegg = ("openssl",) if script == "kegg_analysis.R" else ()
+    require_r_packages("jsonlite", "AnnotationDbi", "clusterProfiler", "ggplot2", "org.Mm.eg.db", *kegg)
+
+
 def _run_backend(tmp_path: Path, script: str, mode: str | None) -> dict:
     inputs = tmp_path / "inputs"
     inputs.mkdir()
@@ -99,7 +105,7 @@ def _run_backend(tmp_path: Path, script: str, mode: str | None) -> dict:
 
 @pytest.mark.parametrize(("script", "mode"), (("go_analysis.R", None), ("kegg_analysis.R", "ora")), ids=["go-ora", "kegg-ora"])
 def test_ora_backends_block_only_below_minimum_mapping_rate(tmp_path, script, mode):
-    require_r_packages("jsonlite", "AnnotationDbi", "clusterProfiler", "ggplot2", "org.Mm.eg.db")
+    _require_backend_r(script)
     summary = _run_backend(tmp_path, script, mode)
     by_contrast = {item["contrast_id"]: item for item in summary["contrasts"]}
     for name, (rate, status) in RATES.items():
@@ -121,7 +127,7 @@ def test_ora_backends_block_only_below_minimum_mapping_rate(tmp_path, script, mo
 
 @pytest.mark.parametrize(("script", "mode"), (("gsea_analysis.R", None), ("kegg_analysis.R", "gsea")), ids=["go-gsea", "kegg-gsea"])
 def test_gsea_backends_block_only_below_minimum_mapping_rate(tmp_path, script, mode):
-    require_r_packages("jsonlite", "AnnotationDbi", "clusterProfiler", "ggplot2", "org.Mm.eg.db")
+    _require_backend_r(script)
     summary = _run_backend(tmp_path, script, mode)
     assert summary["annotation"]["warning_threshold"] == 0.70
     assert summary["annotation"]["blocking_threshold"] == 0.50
