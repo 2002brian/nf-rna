@@ -2,9 +2,9 @@
 
 All notable changes to this project are documented here.
 
-## 1.5.0 — Unreleased
+## 1.5.0 — 2026-10-30
 
-Development version (branch `feature/v1.5.0`). Not released.
+Scientific-engine release: publication-ready DEG outputs and a new enrichment significance contract. **GO/KEGG ORA and GSEA now call a term significant when the Benjamini–Hochberg adjusted p-value (p.adjust) is ≤ 0.05.** KEGG gene sets come from a SHA-256-verified local snapshot; **pin `annotation.enrichment.kegg.snapshot` for results you will publish.** DESeq2 statistics and the DEG definition are unchanged from v1.4.1. Results produced with v1.4.x are not recomputed and keep their v1.4 semantics.
 
 ### Changed — enrichment significance semantics
 
@@ -30,9 +30,15 @@ Development version (branch `feature/v1.5.0`). Not released.
 - GO GSEA no longer emits "object not found" warnings from its cleanup code (results unchanged).
 - `rnaseq.go/gsea/kegg.execute_*` (Python entry points) now build the R backend configuration with the same function as the Nextflow path, including the contrast numerator/denominator. They no longer read summary fields the R backends stopped writing.
 
+### Documentation and tooling
+
+- `examples/gsea_two_group` no longer sets the retired cutoff fields and uses `resource_provider: kegg_rest_snapshot`.
+- `tools/figure_review/compare_runs.py --expected-changes FILE` gates a release-to-release comparison on a declared, reasoned list of intended changes (changed figure kinds, new figures by ID pattern and kind, added formats); any undeclared difference or removed figure fails. `tools/figure_review/expectations/v1.4.1-to-v1.5.0.json` declares the v1.5.0 changes.
+
 ### Runtime
 
-- The downstream lock adds `bioconductor-apeglm` and `r-ashr` (Phase 1). Enrichment additionally uses enrichplot, KEGGREST, GOSemSim, GO.db and openssl, which were already locked as clusterProfiler dependencies and are now probed by the runtime check.
+- The supported runtime is unchanged: Linux x86-64, including Windows WSL2. The osx-arm64 downstream lock is maintained as an unqualified candidate and is not a supported platform.
+- The downstream lock adds `bioconductor-apeglm` and `r-ashr` (Phase 1); the first run provisions the new downstream environment. Enrichment additionally uses enrichplot, KEGGREST, GOSemSim, GO.db and openssl, which were already locked as clusterProfiler dependencies and are now probed by the runtime check.
 
 ## 1.4.1 — 2026-10-29
 

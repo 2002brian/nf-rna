@@ -1,0 +1,19 @@
+{
+  "from": "v1.4.1",
+  "to": "v1.5.0",
+  "changed_kinds": {
+    "volcano": "x axis is log2FoldChange_shrunk (apeglm/ashr), top DEGs labelled by symbol; source data gains annotation and shrunken-LFC columns (Phase 1)",
+    "DEG heatmap": "rows labelled by symbol; heatmap_genes.tsv gains a symbol column (Phase 1)",
+    "ORA dotplot": "v1.5 significance (p.adjust BH <= 0.05 instead of pvalue <= 0.05 and qvalue <= 0.2) and ORA universe (padj-non-NA genes intersected with the gene-set database) change the significant terms drawn",
+    "GSEA dotplot": "v1.5 significance (p.adjust BH <= 0.05), nPermSimple = 10000 with set.seed + seed = TRUE, and KEGG gene sets from a snapshot change NES/p-values and the terms drawn"
+  },
+  "new_figures": [
+    {"pattern": "/ma_plot$", "kind": "MA plot", "reason": "new MA plot of log10(baseMean) vs shrunken LFC (Phase 1)"},
+    {"pattern": "/running_score/(positive|negative)_[0-9]+_", "kind": "GSEA running-score plot", "reason": "new GSEA running-score plots for up to 5 significant sets per NES sign (Phase 2)"},
+    {"pattern": "/dotplot(_[A-Z]{2})?_simplified$", "kind": "ORA dotplot", "reason": "new GO ORA dotplot after simplify(cutoff = 0.7) (Phase 2)"},
+    {"pattern": "/dotplot_simplified$", "kind": "GSEA dotplot", "reason": "new GO GSEA dotplot after simplify(cutoff = 0.7) (Phase 2)"}
+  ],
+  "added_formats": {
+    "png_raster": "300 dpi PNG beside the vector PDF for DEG and enrichment figures (Phase 1/2)"
+  }
+}

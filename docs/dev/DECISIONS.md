@@ -63,3 +63,12 @@ Non-blocking implementation choices, recorded as they are made.
 | Report: simplified GO ORA dotplots only for the `significant` foreground, and simplified GO GSEA dotplots per ontology. Running-score plots: ranks 1–2 per NES sign, per GO ontology and for KEGG. Missing figures are shown as "unavailable — reason", using the backend's recorded reason when there is one. | Keeps the report readable; every figure remains in the delivery `figures/`. |
 | The GO GSEA `on.exit` cleanup removes only objects that still exist (`rm(list = intersect(..., ls()))`). | The success path already removed them; the warnings were noise. Tables are byte-identical. |
 | Two preflight tests set `XDG_CACHE_HOME` to an empty temporary directory. | They assumed no KEGG snapshot exists, which now depends on the machine. |
+
+## v1.5.0 finalization (2026-10-30)
+
+| Decision | Reason |
+|---|---|
+| Release date 2026-10-30 in CHANGELOG and CITATION.cff, set in the finalization commit before tagging. | Same practice as `f69058e` (v1.4.1); the release-metadata guard requires the CHANGELOG heading and `date-released` to agree. |
+| osx-arm64 is documented as an unqualified candidate lock, not a release blocker. | The only supported runtime is Linux x86-64/WSL2 (`docs/runtime.md`, `execution_backend()`); macOS would need its own native qualification in a release that targets it. |
+| `compare_runs.py --expected-changes` with a versioned JSON (`expectations/v1.4.1-to-v1.5.0.json`), instead of widening `--require-identical-except`. | Every allowed difference is listed with a reason (changed kinds, new figures by ID pattern and kind, added formats). Unlisted kinds must stay identical (or differ only by a declared added format with identical pixels, PDF, TIFF and source data), and removed figures always fail. |
+| `examples/gsea_two_group` drops the retired cutoff fields and uses `kegg_rest_snapshot`, with a commented pin line instead of a real snapshot ID. | Snapshot IDs are machine-local; a hard-coded ID would make the example fail validation on other machines. |

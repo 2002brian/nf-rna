@@ -13,6 +13,12 @@ whether the source-data tables are byte-identical.
 The output is deterministic (no timestamps), so the report itself can be diffed.
 
     compare_runs.py --legacy RUN_A --candidate RUN_B --out REPORT_DIR
+
+Comparing two releases, ``--expected-changes FILE`` (JSON, see
+``expectations/``) gates on a declared list of intended changes, each with its
+reason: figure kinds whose content may change, new figures matched by ID pattern
+and kind, and added output formats.  Everything not declared must be identical,
+and a figure missing from the candidate always fails.
 """
 
 from __future__ import annotations
@@ -348,6 +354,7 @@ def compare(legacy_root: Path, candidate_root: Path, out: Path) -> dict:
     assets.mkdir(parents=True)
     report = {"legacy_root": str(legacy_root), "candidate_root": str(candidate_root),
               "only_in_legacy": sorted(set(legacy) - set(candidate)), "only_in_candidate": sorted(set(candidate) - set(legacy)), "figures": []}
+    report["only_in_candidate_kinds"] = {key: str(candidate[key]["figure"].get("kind") or "") for key in report["only_in_candidate"]}
     if legacy:
         report["legacy_context"] = run_context(next(iter(legacy.values())))
     if candidate:
@@ -486,6 +493,55 @@ def gate_failures(report: dict, kinds: list[str]) -> list[str]:
     return failures
 
 
+def expectation_failures(report: dict, expected: dict) -> tuple[list[str], list[str]]:
+    """Gate a release-to-release comparison on declared, reasoned changes.
+
+    Returns (failures, notes).  Nothing outside the declaration may change:
+    * a figure only in the legacy run fails (removed figure);
+    * a figure only in the candidate passes only if a ``new_figures`` entry matches its ID (regex) and kind;
+    * a matched figure of a ``changed_kinds`` kind may differ in content, but must still embed its declared
+      font, keep ink off the edge and keep a complete legend;
+    * any other matched figure must be identical, or differ only by ``added_formats`` (identical pixels,
+      PDF content, TIFF, size and source data).
+    """
+
+    changed = {kind.lower(): reason for kind, reason in (expected.get("changed_kinds") or {}).items()}
+    added = expected.get("added_formats") or {}
+    new_rules = expected.get("new_figures") or []
+    failures = [f"removed figure: {key}" for key in report["only_in_legacy"]]
+    notes: list[str] = []
+    for key in report["only_in_candidate"]:
+        kind = report.get("only_in_candidate_kinds", {}).get(key, "")
+        rule = next((r for r in new_rules if re.search(r["pattern"], key) and r.get("kind", kind) == kind), None)
+        if rule is None:
+            failures.append(f"unexpected new figure: {key} ({kind})")
+        else:
+            notes.append(f"new figure {key} ({kind}): {rule['reason']}")
+    for record in report["figures"]:
+        key, kind = record["figure"], str(record["candidate"].get("kind") or "")
+        if record["status"] == "identical":
+            continue
+        if kind.lower() in changed:
+            notes.append(f"changed {key} ({kind}): {changed[kind.lower()]}")
+            if not record["font"]["candidate"]["pdf_matches_declared"]:
+                failures.append(f"{key}: embedded PDF font does not match the declared font")
+            if record["clipping"]["candidate_edge_ink_px"]:
+                failures.append(f"{key}: ink on the figure edge (possible clipping)")
+            legend = (record.get("legend") or {}).get("candidate")
+            if legend and legend["verified"] and not legend["complete"]:
+                failures.append(f"{key}: legend/labels incomplete in the PDF: {legend['missing']}")
+            continue
+        legacy_formats, candidate_formats = set(record["legacy"]["formats"]), set(record["candidate"]["formats"])
+        extra = candidate_formats - legacy_formats
+        format_only = (record["pixels"]["identical"] and record.get("pdf_content_identical") is True and record.get("tiff_identical") is not False
+                       and record["source_data"]["identical"] and record.get("same_size_mm") and legacy_formats <= candidate_formats and extra <= set(added))
+        if format_only and extra:
+            notes.append(f"formats added to {key} ({kind}): " + "; ".join(f"{name}: {added[name]}" for name in sorted(extra)))
+        else:
+            failures.append(f"{key} ({kind}): unexpected change ({record['status']})")
+    return failures, notes
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--legacy", type=Path, required=True, help="root of the legacy-preset run (searched for figure_manifest.json)")
@@ -494,6 +550,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--require-identical", action="store_true", help="exit 1 unless every figure is identical and nothing is unmatched")
     parser.add_argument("--require-identical-except", metavar="KIND", nargs="+", help="exit 1 unless every figure whose manifest kind is NOT listed is identical, nothing is unmatched, "
                         "every listed figure carries identical source data and an embedded PDF font that matches its declared font")
+    parser.add_argument("--expected-changes", type=Path, metavar="FILE", help="JSON declaration of intended changes between two releases (see expectations/); "
+                        "exit 1 on any undeclared difference or removed figure")
     args = parser.parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=True)
     report = compare(args.legacy.resolve(), args.candidate.resolve(), args.out)
@@ -504,6 +562,15 @@ def main(argv: list[str] | None = None) -> int:
             print("GATE FAILURE:", line)
     summary = report["summary"]
     print(f"matched {summary['matched_figures']} figures: {summary['by_status']}; unmatched {summary['unmatched']}; report: {args.out / 'report.html'}")
+    if args.expected_changes:
+        failures, notes = expectation_failures(report, json.loads(args.expected_changes.read_text(encoding="utf-8")))
+        for line in notes:
+            print("EXPECTED:", line)
+        for line in failures:
+            print("GATE FAILURE:", line)
+        print(f"expected-changes gate: {'PASS' if not failures else 'FAIL'} ({len(notes)} declared changes, {len(failures)} failures)")
+        if failures:
+            return 1
     if args.require_identical_except:
         return 1 if gate_failures(report, args.require_identical_except) else 0
     return 1 if args.require_identical and (summary["by_status"].keys() - {"identical"} or summary["unmatched"]) else 0

@@ -266,3 +266,29 @@ def test_pdf_layout_repeat_groups_pdfs_by_content_not_by_date(tmp_path):
 
     groups = repeat.group_by_content([pdf("a.pdf", "200", "20261015120000"), pdf("b.pdf", "200", "20261015120001"), pdf("c.pdf", "170", "20261015120000")])
     assert sorted(len(files) for files in groups.values()) == [1, 2]
+
+
+def test_release_expectations_gate_only_passes_declared_changes():
+    compare = _load("compare_runs")
+    expected = json.loads((Path(__file__).parents[1] / "tools" / "figure_review" / "expectations" / "v1.4.1-to-v1.5.0.json").read_text(encoding="utf-8"))
+
+    def record(key, kind, status, *, pixels=True, source=True, legacy=("pdf", "png", "tiff"), candidate=("pdf", "png", "png_raster", "tiff")):
+        return {"figure": key, "status": status, "legacy": {"kind": kind, "formats": list(legacy)}, "candidate": {"kind": kind, "formats": list(candidate)},
+                "pixels": {"identical": pixels}, "pdf_content_identical": pixels, "tiff_identical": pixels, "same_size_mm": True,
+                "source_data": {"identical": source}, "font": {"candidate": {"pdf_matches_declared": True}}, "clipping": {"candidate_edge_ink_px": 0}, "legend": {}}
+
+    report = {"only_in_legacy": [], "only_in_candidate": ["a/l2/c/ma_plot", "a/gsea_go/c/BP/running_score/positive_1_GO_1"],
+              "only_in_candidate_kinds": {"a/l2/c/ma_plot": "MA plot", "a/gsea_go/c/BP/running_score/positive_1_GO_1": "GSEA running-score plot"},
+              "figures": [record("a/l2/c/volcano", "volcano", "layout differs", pixels=False, source=False),
+                          record("a/l1/pca", "PCA", "layout differs"),  # identical content, only png_raster added
+                          record("a/l1/boxplot", "sample expression distribution boxplot", "identical", candidate=("pdf", "png", "tiff"))]}
+    failures, notes = compare.expectation_failures(report, expected)
+    assert failures == [] and len(notes) == 4
+    # Undeclared content change, removed figure and undeclared new figure all fail.
+    report["figures"].append(record("a/l1/correlation", "sample correlation heatmap", "layout differs", pixels=False))
+    report["only_in_legacy"].append("a/l1/old_plot")
+    report["only_in_candidate"].append("a/l1/new_plot")
+    report["only_in_candidate_kinds"]["a/l1/new_plot"] = "PCA"
+    failures, _notes = compare.expectation_failures(report, expected)
+    assert failures == ["removed figure: a/l1/old_plot", "unexpected new figure: a/l1/new_plot (PCA)",
+                        "a/l1/correlation (sample correlation heatmap): unexpected change (layout differs)"]

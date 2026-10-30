@@ -32,31 +32,27 @@ annotation:
   # GSEA blocks only below this threshold; 0.50–0.70 is an auditable warning.
   minimum_mapping_rate: 0.50
   minimum_mapped_foreground: 5
+  # v1.5: every GO/KEGG ORA and GSEA term is significant when p.adjust (BH) <= 0.05;
+  # pvalue/qvalue/padj cutoff fields are no longer used and are omitted here.
   enrichment:
     go:
-      pvalue_cutoff: 0.05
-      qvalue_cutoff: 0.2
       p_adjust_method: BH
     gsea:
       minimum_ranked_genes: 50
       min_gs_size: 10
       max_gs_size: 500
-      pvalue_cutoff: 0.05
-      padj_cutoff: 0.05
       p_adjust_method: BH
       seed: 1
     kegg:
-      resource_provider: online_kegg_rest_via_clusterprofiler
+      resource_provider: kegg_rest_snapshot
+      # For published results pin the local KEGG snapshot that `rnaseq validate` reports:
+      # snapshot: <snapshot ID>
       ora:
-        pvalue_cutoff: 0.05
-        qvalue_cutoff: 0.2
         p_adjust_method: BH
         min_gs_size: 10
         max_gs_size: 500
       gsea:
         minimum_ranked_genes: 50
-        pvalue_cutoff: 0.05
-        padj_cutoff: 0.05
         p_adjust_method: BH
         min_gs_size: 10
         max_gs_size: 500

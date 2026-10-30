@@ -77,7 +77,7 @@ Per L2 run: `normalized_counts.tsv` — `gene_id`, `symbol`, then one column per
 
 ## Enrichment significance (semantics v1.5)
 
-All four enrichment analyses — GO ORA, KEGG ORA, GO GSEA and KEGG GSEA — call a gene set **significant when `p.adjust <= 0.05`**, where `p.adjust` is the Benjamini–Hochberg adjusted p-value. This is fixed; it is not configurable.
+All four enrichment analyses — GO ORA, KEGG ORA, GO GSEA and KEGG GSEA — call a gene set **significant when `p.adjust <= 0.05`**, where `p.adjust` is the Benjamini–Hochberg adjusted p-value. From v1.5.0 this is the primary, and only, enrichment significance criterion; it is fixed and not configurable.
 
 - **clusterProfiler's return condition vs nf-rna's decision.** clusterProfiler is always called with `pAdjustMethod = "BH"`, `pvalueCutoff = 1` and `qvalueCutoff = 1` (GSEA has no q-value cutoff), so it returns every term it evaluated. nf-rna then adds a `significant` column (`TRUE` exactly when `p.adjust` is not NA and `p.adjust <= 0.05`). `pvalue`, `p.adjust` and `qvalue` are all kept. Evaluated terms are those whose gene set falls within `minGSSize`..`maxGSSize`; for ORA, a term also needs at least one foreground gene.
 - **Tables.** Every all-terms table carries the `significant` column and keeps the non-significant terms: `GO_<ont>_all_terms.tsv`, `kegg_all_terms.tsv` and GSEA `all_terms.tsv`. The significant tables are the rows where it is `TRUE`: `GO_<ont>.tsv`, `kegg.tsv`, GSEA `significant.tsv`, and the `positive_enrichment.tsv` / `negative_enrichment.tsv` split by NES sign.
