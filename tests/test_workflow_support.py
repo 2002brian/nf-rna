@@ -17,7 +17,7 @@ from rnaseq.planner import generate_plan
 from rnaseq.service import create_case_run, freeze_case_inputs, resolve_downstream_inputs
 from rnaseq.validators import validate_project
 from rnaseq.workflow_support import (
-    _experimental_design_html, _samples, _source_import_label, _validated_design_variable_types, enrichment_config,
+    _experimental_design_html, _reference_quantification_html, _samples, _source_import_label, _validated_design_variable_types, enrichment_config,
     l1_config, l2_config, report,
 )
 
@@ -32,6 +32,19 @@ from rnaseq.workflow_support import (
 )
 def test_report_source_labels_match_actual_import(source, label):
     assert _source_import_label(source) == label
+
+
+@pytest.mark.parametrize(("source", "quantification", "reference", "expected"), [
+    ("salmon_tximport", None, {"source": "igenomes", "genome": "GRCh38"}, "Quantification: salmon; layout paired_end; strandedness auto"),
+    ("featurecounts_raw_counts", {"method": "hisat2_featurecounts"}, {"source": "local", "root": "/refs/GRCh38", "manifest": "reference_manifest.yaml"}, "Quantification: hisat2_featurecounts;"),
+])
+def test_report_reference_section_describes_the_fastq_route(source, quantification, reference, expected):
+    project = {"input": {"type": "fastq", "layout": "paired_end", "preprocessing": "raw"}, "reference": reference,
+               "upstream": {"engine": "nfcore_rnaseq", "strandedness": "auto", **({"quantification": quantification} if quantification else {})},
+               "annotation": {"input_id_type": "ENSEMBL", "organism": "Homo sapiens"}}
+    text = "".join(_reference_quantification_html({"source": {"type": source}}, project))
+    assert expected in text and f"Reference: source {reference['source']}" in text
+    assert "none used by nf-rna" not in text
 
 
 ROOT = Path(__file__).parents[1]
