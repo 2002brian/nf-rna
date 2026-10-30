@@ -216,7 +216,7 @@ def test_raw_count_project_rejects_reuse_upstream_before_running(monkeypatch, tm
 # ---------------------------------------------------------------- user documentation
 
 
-DOCS = ("README.md", "README_zh-TW.md", "docs/quickstart.md", "docs/runtime.md")
+DOCS = ("README_latest.md", "README_zh-TW.md", "docs/quickstart.md", "docs/runtime.md")
 ROOT = Path(__file__).parents[1]
 
 
@@ -254,13 +254,13 @@ def test_every_documented_rnaseq_command_and_option_exists():
 def test_documented_fastq_sample_id_example_matches_the_parser():
     match = FASTQ_NAME_PATTERN.fullmatch("Ctrl1_S1_L001_R1_001.fastq.gz")
     assert match is not None and match.group("sample") == "Ctrl1_S1"
-    for name in ("README.md", "README_zh-TW.md", "docs/quickstart.md"):
+    for name in ("README_latest.md", "README_zh-TW.md", "docs/quickstart.md"):
         text = (ROOT / name).read_text(encoding="utf-8")
         assert "Ctrl1_S1_L001_R1_001.fastq.gz" in text and "`Ctrl1_S1`" in text, name
 
 
 def test_docs_no_longer_claim_the_l1_to_l2_journey_needs_the_development_version():
-    for name in ("README.md", "README_zh-TW.md"):
+    for name in ("README_latest.md", "README_zh-TW.md"):
         text = (ROOT / name).read_text(encoding="utf-8")
         assert "requires the development version" not in text and "需要 `main` 上的開發版本" not in text, name
     assert "v1.3.0" not in (ROOT / "docs" / "runtime.md").read_text(encoding="utf-8").split("## Historical")[0]

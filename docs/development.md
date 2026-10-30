@@ -12,7 +12,7 @@ conda activate nf-rna
 python -m pip install -e '.[dev]'
 ```
 
-The shared Conda environment provides the development R stack for real-R tests. Contributors use editable installation so source changes are immediately visible; production users should use the non-editable, release-pinned installation in the [README](../README.md).
+The shared Conda environment provides the development R stack for real-R tests. Contributors use editable installation so source changes are immediately visible; production users should use the non-editable, release-pinned installation in the [README](../README_latest.md).
 
 ## Development runs
 
