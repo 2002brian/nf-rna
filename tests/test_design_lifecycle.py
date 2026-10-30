@@ -579,16 +579,14 @@ def test_design_rolls_back_if_the_final_l2_validation_fails(monkeypatch, tmp_pat
     root = _ready(tmp_path, "proj")
     before = {name: (root / name).read_bytes() for name in ("project.yaml", "contrasts.csv")}
     real = validate_project
-    calls = {"count": 0}
 
-    def flaky(path):
-        calls["count"] += 1
+    def failing(path):
         report = real(path)
-        if calls["count"] == 2:
-            report.error("forced", "forced failure")
+        report.error("forced", "forced failure")
         return report
 
-    monkeypatch.setattr("rnaseq.cli.validate_project", flaky)
+    # The post-write validation of the shared design transaction fails.
+    monkeypatch.setattr("rnaseq.validators.validate_project", failing)
     result = _design(root, "--yes")
     assert result.exit_code == 1 and "nothing was changed" in result.output
     assert before == {name: (root / name).read_bytes() for name in before}
@@ -622,7 +620,7 @@ def test_design_rolls_back_if_the_plan_cannot_be_refreshed(monkeypatch, tmp_path
     def broken(_report):
         raise OSError("disk full")
 
-    monkeypatch.setattr("rnaseq.cli.generate_plan", broken)
+    monkeypatch.setattr("rnaseq.planner.generate_plan", broken)
     result = _design(root, "--yes")
     assert result.exit_code == 1 and "nothing was changed" in result.output
     assert before == {name: (root / name).read_bytes() for name in before}

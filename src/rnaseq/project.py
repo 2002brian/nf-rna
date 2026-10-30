@@ -5,7 +5,9 @@ from __future__ import annotations
 import shutil
 import tempfile
 import csv
+import io
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -345,6 +347,72 @@ def _read_fastq_samplesheet(path: Path) -> tuple[tuple[ImportedFastq, ...], Sequ
     return tuple(imported), layout, strands.pop()
 
 
+def _copy_imported_fastq(records: tuple[ImportedFastq, ...], samplesheet: Path, root: Path, fastq_dir: Path) -> None:
+    for record in records:
+        _copy_file(record.fastq_1, fastq_dir / record.fastq_1.name)
+        if record.fastq_2 is not None:
+            _copy_file(record.fastq_2, fastq_dir / record.fastq_2.name)
+    _copy_file(samplesheet, root / "planning" / "imported_fastq_samplesheet.csv")
+
+
+def fastq_samplesheet_text(records: Iterable[Any], strandedness: str) -> str:
+    """A portable samplesheet (``sample,fastq_1,fastq_2,strandedness``) for discovered FASTQs.
+
+    ``records`` are :class:`rnaseq.validators.FastqRecord` values, so sample IDs
+    and R1/R2 pairing follow the validator's FASTQ naming rule.
+    """
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(FASTQ_SAMPLESHEET_HEADER)
+    for record in records:
+        writer.writerow([record.sample_id, str(record.fastq_1), str(record.fastq_2) if record.fastq_2 else "", strandedness])
+    return buffer.getvalue()
+
+
+def import_fastq_samplesheet(project_dir: Path | str, samplesheet: Path | str) -> tuple[ImportedFastq, ...]:
+    """Copy the FASTQs of a samplesheet into an existing project's FASTQ input directory.
+
+    The same rules as ``rnaseq new --fastq-samplesheet`` apply; in addition the
+    layout and strandedness must match project.yaml, and existing FASTQ files
+    are never overwritten.
+    """
+
+    loaded = load_project(project_dir)
+    config = loaded.config
+    if config.input.type is not InputType.FASTQ:
+        raise ProjectCreationError("This project takes a raw-count matrix, not FASTQ files.")
+    source = Path(samplesheet).expanduser().resolve()
+    records, layout, strandedness = _read_fastq_samplesheet(source)
+    if config.input.layout is not None and layout is not config.input.layout:
+        raise ProjectCreationError(f"The samplesheet is {layout.value}, but project.yaml declares {config.input.layout.value}.")
+    if strandedness != config.upstream.strandedness:
+        raise ProjectCreationError(
+            f"The samplesheet strandedness {strandedness!r} differs from project.yaml upstream.strandedness {config.upstream.strandedness!r}."
+        )
+    target = loaded.input_path
+    existing = sorted(item.name for item in target.iterdir() if item.is_file() and not item.name.startswith("._")) if target.is_dir() else []
+    if existing:
+        raise ProjectCreationError(f"{target} already contains {len(existing)} file(s); remove them before importing another samplesheet.")
+    _copy_imported_fastq(records, source, loaded.root, target)
+    return records
+
+
+def import_count_matrix(project_dir: Path | str, counts_file: Path | str, *, replace: bool = False) -> Path:
+    """Copy a raw-count matrix to an existing project's configured input path (as ``rnaseq new --counts``)."""
+
+    loaded = load_project(project_dir)
+    if loaded.config.input.type is not InputType.RAW_COUNTS:
+        raise ProjectCreationError("This project takes FASTQ input, not a count matrix.")
+    source = Path(counts_file).expanduser().resolve()
+    if not source.is_file():
+        raise ProjectCreationError(f"Imported count matrix is not a file: {source}")
+    if loaded.input_path.exists() and not replace:
+        raise ProjectCreationError(f"{loaded.input_path} already exists; replace it explicitly.")
+    _copy_file(source, loaded.input_path)
+    return loaded.input_path
+
+
 def create_project(
     *,
     project_name: str,
@@ -460,12 +528,8 @@ def create_project(
             (staging / "contrasts.csv").write_text(_template_text("contrasts.csv"), encoding="utf-8", newline="\n")
         if source_counts is not None:
             _copy_file(source_counts, staging / "input" / "counts.csv")
-        for record in imported_fastq:
-            _copy_file(record.fastq_1, staging / "input" / "fastq" / record.fastq_1.name)
-            if record.fastq_2 is not None:
-                _copy_file(record.fastq_2, staging / "input" / "fastq" / record.fastq_2.name)
         if source_fastq_samplesheet is not None:
-            _copy_file(source_fastq_samplesheet, staging / "planning" / "imported_fastq_samplesheet.csv")
+            _copy_imported_fastq(imported_fastq, source_fastq_samplesheet, staging, staging / "input" / "fastq")
         for source, _key, relative in custom_reference_assets:
             target_reference = staging / relative
             if source.is_dir():

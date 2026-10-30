@@ -250,6 +250,24 @@ New projects use hardware-aware automatic CPU/memory limits (`execution.max_cpus
 
 The wizard creates a project scaffold; it does not infer scientific inputs. FASTQ projects also need an execution-ready reference. Register an existing checksum-bound managed reference with `rnaseq reference register /absolute/reference-root`, or configure a supported reference route. See the [detailed Quick Start](docs/quickstart.md).
 
+## Browser GUI (optional)
+
+`rnaseq gui` starts a Streamlit GUI for the same workflow: create a project, add the count matrix or FASTQ files, edit the sample metadata, compose contrasts, validate, and start and follow L1/L2 runs. It calls the same validators, design and run services as the CLI; runs started from the GUI are ordinary `rnaseq run` runs. Result browsing is not part of this version; open the run's `delivery/` folder.
+
+```bash
+pip install -e '.[gui]'          # from a source checkout; or: pip install 'nf-rna[gui]'
+tmux new -s nf-rna-gui           # keeps the GUI running after you log out
+rnaseq gui                       # http://127.0.0.1:8501 (--port to change)
+```
+
+The GUI listens on 127.0.0.1 only. From your laptop, forward the port over SSH and open http://127.0.0.1:8501:
+
+```bash
+ssh -N -L 8501:127.0.0.1:8501 user@server
+```
+
+Runs continue when the browser or the GUI is closed, and one GUI run can be active at a time. Without the `gui` extra the CLI is unchanged and `rnaseq gui` prints the install command. Pages, folders the GUI may open (`~/.config/nf-rna/gui.yaml`), and an optional `systemd --user` service: [docs/gui.md](docs/gui.md).
+
 ## Covariate-aware DESeq2 designs
 
 New schema 1.3 projects declare the type of every additive formula variable. Categorical variables are fitted as R factors; continuous variables are finite numeric adjustment covariates. Existing schema 1.0–1.2 projects remain readable with their historical categorical/clearly numeric behavior.
@@ -282,6 +300,7 @@ For formal analyses, install an explicit release tag. `rnaseq doctor PROJECT` re
 
 - [Detailed Quick Start and v1.0.0 compatibility](docs/quickstart.md)
 - [Runtime and reproducibility contract](docs/runtime.md)
+- [Browser GUI](docs/gui.md)
 - [Scientific contract](docs/scientific_contract.md)
 - [Architecture](docs/architecture.md)
 

@@ -22,9 +22,11 @@ from rnaseq.execution import (
 from rnaseq.service import RunTermination, execute_retry_service_run, execute_service_run, preflight_reuse_upstream, prepare_service_run, sanitize_completed_delivery, validate_case_id
 from rnaseq.models import ANNOTATION_DATABASES, DEFAULT_L2_ENRICHMENT, GENE_ID_TYPES, DesignType, FastqPreprocessing, InputType, PIPELINE_VERSION, Preset, SequencingLayout, Species, default_annotation, describe_enrichment
 from rnaseq.planner import generate_plan
-from rnaseq.resource_policy import AUTO, GIB, DetectedResources, resolve_policy
-from rnaseq.design_matrix import residual_degrees_of_freedom_message
-from rnaseq.design_setup import DesignSetupError, build_proposal, rollback_design, write_design
+from rnaseq.resource_policy import AUTO
+from rnaseq.design_setup import (
+    DesignRejected, DesignSetupError, apply_design, build_proposal, design_blockers, design_enrichment_selection,
+    design_needs_gene_id_type, residual_df_blocker, resolve_design_enrichment,
+)
 from rnaseq.project import create_project, derive_design, resolve_enrichment_defaults
 from rnaseq.references import (
     LocalReferenceError,
@@ -39,6 +41,12 @@ from rnaseq.references import (
     register_local_reference,
 )
 from rnaseq.validators import ValidationReport, contingency_table, design_dimensions, validate_project
+from rnaseq.wizard import (
+    DEFAULT_PAIR_ID, DESIGN_CHOICES, GENE_ID_TYPE_CHOICES, INPUT_TYPE_CHOICES, LAYOUT_CHOICES, METHOD_CHOICES,
+    PREPROCESSING_CHOICES, REFERENCE_SOURCE_CHOICES, SPECIES_CHOICES, default_reference_source, default_strandedness,
+    managed_reference_settings, preset_choices, reference_options, resource_suggestion, species_value,
+    strandedness_choices,
+)
 
 app = typer.Typer(
     name="rnaseq",
@@ -479,31 +487,6 @@ def _registered_reference_choice(species: Species, backend: str) -> LocalReferen
         typer.echo(f"Please choose a number from 1 to {len(candidates)}.")
 
 
-def _reference_options(
-    *, source: str, species: Species, method: str, local_root: Path | None,
-    local_manifest: str | None, fasta: Path | None, gtf: Path | None,
-    transcript_fasta: Path | None, salmon_index: Path | None, hisat2_index: Path | None,
-) -> dict[str, object]:
-    if source == "igenomes":
-        if method != "salmon":
-            raise ProjectCreationError("iGenomes is supported only by the Salmon backend; choose local or custom for HISAT2 + featureCounts.")
-        return {"source": "igenomes", "genome": "GRCh38" if species is Species.HUMAN else "GRCm39"}
-    if source == "local":
-        if local_root is None:
-            raise ProjectCreationError("Managed local reference requires --reference-root.")
-        return {"source": "local", "root": str(local_root.expanduser().resolve()), "manifest": local_manifest or "reference_manifest.yaml"}
-    if fasta is None or gtf is None:
-        raise ProjectCreationError("Custom reference requires --reference-fasta and --reference-gtf.")
-    reference: dict[str, object] = {"source": "custom", "fasta": str(fasta), "gtf": str(gtf)}
-    if transcript_fasta is not None:
-        reference["transcript_fasta"] = str(transcript_fasta)
-    if salmon_index is not None:
-        reference["salmon_index"] = str(salmon_index)
-    if hisat2_index is not None:
-        reference["hisat2_index"] = str(hisat2_index)
-    return reference
-
-
 def _reference_source(explicit: str | None, method: str, *, local_flags: list[str], custom_flags: list[str]) -> str:
     """Resolve the FASTQ reference source without ever ignoring a reference flag.
 
@@ -564,13 +547,6 @@ def _metadata_fields(path: Path) -> tuple[dict[str, list[str]], list[str]]:
     if not fields:
         raise ProjectCreationError("Imported metadata has no fields beyond sample_id.")
     return values, fields
-
-
-GENE_ID_TYPE_CHOICES = [
-    ("ENSEMBL", "Ensembl gene IDs, e.g. ENSMUSG00000000001 (Ensembl GTF / managed references)"),
-    ("ENTREZID", "NCBI Entrez gene IDs (numeric)"),
-    ("SYMBOL", "Official gene symbols"),
-]
 
 
 def _enrichment_selection(enabled: bool | None) -> tuple[str, ...] | None:
@@ -635,30 +611,22 @@ def new_project(
         if not noninteractive:
             name = typer.prompt("Project name")
             destination = Path(typer.prompt("Destination directory", default="."))
-            species = _wizard_choice("Species", [("human", "Homo sapiens"), ("mouse", "Mus musculus")], default="human")
-            input_type = _wizard_choice("Input type", [("fastq", "Reads requiring upstream processing"), ("raw_counts", "Integer gene-level raw-count matrix")], default="fastq")
+            species = _wizard_choice("Species", SPECIES_CHOICES, default="human")
+            input_type = _wizard_choice("Input type", INPUT_TYPE_CHOICES, default="fastq")
             # Ordinary interactive creation is deliberately scaffold-first.
             # Importing is an explicit, reproducible flags-only operation.
             scaffold = True
             if input_type == "fastq":
-                layout = _wizard_choice("Sequencing layout", [("paired_end", "R1 and R2 per lane"), ("single_end", "R1 only")], default="paired_end")
-                preprocessing = _wizard_choice("FASTQ preprocessing", [("raw", "Run adapter/quality trimming"), ("pretrimmed", "Keep supplied reads; skip trimming")], default="raw")
-                method = _wizard_choice("Quantification backend", [("salmon", "nf-core/rnaseq pseudoalignment (default)"), ("hisat2_featurecounts", "HISAT2 alignment plus gene-level featureCounts")], default="salmon")
-                strand_choices = [("auto", "infer with Salmon"), ("unstranded", "no stranded protocol"), ("forward", "forward stranded"), ("reverse", "reverse stranded")]
-                if method == "hisat2_featurecounts":
-                    strand_choices = strand_choices[1:]
-                strandedness = _wizard_choice("Strandedness", strand_choices, default="auto" if method == "salmon" else "unstranded")
-                selected_managed_reference = _registered_reference_choice(
-                    Species.HUMAN if species == "human" else Species.MOUSE, method
-                )
+                layout = _wizard_choice("Sequencing layout", LAYOUT_CHOICES, default="paired_end")
+                preprocessing = _wizard_choice("FASTQ preprocessing", PREPROCESSING_CHOICES, default="raw")
+                method = _wizard_choice("Quantification backend", METHOD_CHOICES, default="salmon")
+                strandedness = _wizard_choice("Strandedness", strandedness_choices(method), default=default_strandedness(method))
+                selected_managed_reference = _registered_reference_choice(species_value(species), method)
                 if selected_managed_reference is not None:
                     reference_source = "local"
-                    reference_root = selected_managed_reference.root
-                    reference_manifest = str(
-                        selected_managed_reference.manifest_path.relative_to(selected_managed_reference.root)
-                    )
+                    reference_root, reference_manifest = managed_reference_settings(selected_managed_reference)
                 else:
-                    reference_source = _wizard_choice("Reference", [("igenomes", "managed iGenomes convenience route (Salmon only)"), ("local", "checksum-bound managed local reference"), ("custom", "copy supported custom assets into the project")], default="igenomes" if method == "salmon" else "local")
+                    reference_source = _wizard_choice("Reference", REFERENCE_SOURCE_CHOICES, default=default_reference_source(method))
                 if reference_source == "local" and selected_managed_reference is None:
                     reference_root = Path(typer.prompt("Managed reference root"))
                     reference_manifest = typer.prompt("Reference manifest", default="reference_manifest.yaml")
@@ -667,13 +635,10 @@ def new_project(
                     reference_gtf = Path(typer.prompt("Custom annotation GTF"))
                     if method == "hisat2_featurecounts":
                         reference_hisat2_index = Path(typer.prompt("Prepared HISAT2 index directory (blank if not built)", default="")) if typer.confirm("Is a HISAT2 index already prepared?", default=False) else None
-            if input_type == "fastq":
-                preset = _wizard_choice("Analysis scope", [("qc", "Quantification + technical QC only"), ("L1", "Expression-level QC and exploratory analysis (differential expression is set up later with `rnaseq design`)"), ("L2", "L1 plus differential expression and functional enrichment (GO ORA, KEGG ORA, GO + KEGG GSEA)")], default="L1")
-            else:
-                preset = _wizard_choice("Analysis scope", [("L1", "Expression-level QC and exploratory analysis (differential expression is set up later with `rnaseq design`)"), ("L2", "L1 plus differential expression and functional enrichment (GO ORA, KEGG ORA, GO + KEGG GSEA)")], default="L1")
-            design_type = "two_group" if preset == "qc" else _wizard_choice("Experimental design", [("two_group", "Unpaired two-level condition"), ("paired_two_group", "Biologically paired two-level condition"), ("multi_group", "At least three condition levels")], default="two_group")
+            preset = _wizard_choice("Analysis scope", preset_choices(input_type), default="L1")
+            design_type = "two_group" if preset == "qc" else _wizard_choice("Experimental design", DESIGN_CHOICES, default="two_group")
             if design_type == "paired_two_group":
-                pair_id = typer.prompt("Pairing metadata column", default="patient")
+                pair_id = typer.prompt("Pairing metadata column", default=DEFAULT_PAIR_ID)
             if preset != "qc":
                 # Only what cannot be read from the completed metadata is asked
                 # here: condition levels, batch levels and contrasts are
@@ -685,18 +650,13 @@ def new_project(
                 if preset == "L1" or enrichment:
                     # Asked, never assumed: the annotation contract maps these
                     # identifiers to Entrez IDs for GO/KEGG.
-                    organism = (Species.HUMAN if species == "human" else Species.MOUSE).value
+                    organism = species_value(species).value
                     typer.echo(f"Annotation database for {organism}: {ANNOTATION_DATABASES[organism]}")
                     gene_id_type = _wizard_choice("Gene identifier type in the count matrix", GENE_ID_TYPE_CHOICES, default="ENSEMBL")
-            capacity = detect_local_resource_capacity()
-            preview = resolve_policy(AUTO, AUTO, DetectedResources(
-                capacity.logical_cpus,
-                capacity.total_memory_gib * GIB if capacity.total_memory_gib is not None else None,
-            ))
-            suggested_cpus, suggested_memory = preview.requested_cpus, preview.requested_memory_gib
+            suggestion = resource_suggestion(detect_local_resource_capacity())
             typer.echo("\nLocal execution resources\n-------------------------")
-            typer.echo(f"Detected: {capacity.logical_cpus or 'unavailable'} logical CPUs / {capacity.available_memory_gib or capacity.total_memory_gib or 'unavailable'} GiB memory")
-            typer.echo(f"auto on this machine: {suggested_cpus} CPUs / {suggested_memory} GiB memory (resolved again on each run's machine)")
+            typer.echo(f"Detected: {suggestion.logical_cpus or 'unavailable'} logical CPUs / {suggestion.memory_gib or 'unavailable'} GiB memory")
+            typer.echo(f"auto on this machine: {suggestion.auto_cpus} CPUs / {suggestion.auto_memory_gib} GiB memory (resolved again on each run's machine)")
             typer.echo("Enter 'auto' to size limits from the running machine, or a number to fix a deliberate limit.")
             cpus = _wizard_positive_integer("CPU limit", default=AUTO, allow_auto=True)
             memory_gb = _wizard_positive_integer("Memory limit in GiB", default=AUTO, allow_auto=True)
@@ -814,7 +774,7 @@ def new_project(
                 local_flags=[flag for flag, value in (("--reference-root", reference_root), ("--reference-manifest", reference_manifest)) if value is not None],
                 custom_flags=[flag for flag, value in (("--reference-fasta", reference_fasta), ("--reference-gtf", reference_gtf), ("--reference-transcript-fasta", reference_transcript_fasta), ("--reference-salmon-index", reference_salmon_index), ("--reference-hisat2-index", reference_hisat2_index)) if value is not None],
             )
-            reference = _reference_options(source=source, species=normalized_species, method=normalized_method, local_root=reference_root, local_manifest=reference_manifest, fasta=reference_fasta, gtf=reference_gtf, transcript_fasta=reference_transcript_fasta, salmon_index=reference_salmon_index, hisat2_index=reference_hisat2_index)
+            reference = reference_options(source=source, species=normalized_species, method=normalized_method, local_root=reference_root, local_manifest=reference_manifest, fasta=reference_fasta, gtf=reference_gtf, transcript_fasta=reference_transcript_fasta, salmon_index=reference_salmon_index, hisat2_index=reference_hisat2_index)
         if execution_profile not in {None, "local"}:
             raise ProjectCreationError("Only --execution-profile local is supported.")
         selected_cpus, selected_memory = cpus or AUTO, memory_gb or AUTO
@@ -965,49 +925,16 @@ def _design_enrichment(
 ) -> tuple[tuple[str, ...] | None, dict[str, str] | None]:
     """Decide the enrichment selection and annotation written by `rnaseq design`.
 
-    Moving to L2 selects every supported method; a project already at L2 keeps
-    its recorded selection unless a flag says otherwise.  ``None`` means
-    "leave project.yaml unchanged".
+    Interactively, a missing gene identifier type is asked for instead of
+    failing; the decision itself is :func:`resolve_design_enrichment`.
     """
 
-    if enabled is not None:
-        selection: tuple[str, ...] | None = DEFAULT_L2_ENRICHMENT if enabled else ()
-    elif config.project.preset is Preset.L2:
-        selection = None
-    else:
-        selection = DEFAULT_L2_ENRICHMENT
-    normalized = gene_id_type.upper() if gene_id_type else None
-    existing = config.annotation
-    if existing is not None and normalized is not None and existing.input_id_type != normalized:
-        raise DesignSetupError(
-            f"project.yaml already declares annotation.input_id_type {existing.input_id_type}; "
-            "edit project.yaml to change it."
-        )
-    needs_annotation = bool(selection) and existing is None
-    if needs_annotation and config.organism.species.value not in ANNOTATION_DATABASES:
-        raise DesignSetupError(
-            f"Functional enrichment supports only {', '.join(ANNOTATION_DATABASES)} "
-            f"(organism.species is {config.organism.species.value!r}); re-run with --no-enrichment."
-        )
-    if needs_annotation and normalized is None:
-        if not interactive:
-            raise DesignSetupError(
-                "L2 enables GO ORA, KEGG ORA, and preranked GSEA (GO and KEGG) by default, which need the gene "
-                "identifier type used by the count matrix. Re-run with --gene-id-type ENSEMBL, ENTREZID, or SYMBOL "
-                "(Ensembl GTF/managed references use ENSEMBL), or opt out with --no-enrichment."
-            )
+    selection = design_enrichment_selection(config, enabled)
+    if interactive and gene_id_type is None and design_needs_gene_id_type(config, selection):
         typer.echo(f"Functional enrichment (default for L2): {describe_enrichment(DEFAULT_L2_ENRICHMENT)}")
-        database = ANNOTATION_DATABASES.get(config.organism.species.value)
-        if database is not None:
-            typer.echo(f"Annotation database for {config.organism.species.value}: {database}")
-        normalized = _wizard_choice("Gene identifier type in the count matrix", GENE_ID_TYPE_CHOICES, default="ENSEMBL")
-    annotation = None
-    if existing is None and normalized is not None:
-        try:
-            annotation = default_annotation(config.organism.species, normalized)
-        except ValueError as exc:
-            raise DesignSetupError(str(exc)) from exc
-    return selection, annotation
+        typer.echo(f"Annotation database for {config.organism.species.value}: {ANNOTATION_DATABASES[config.organism.species.value]}")
+        gene_id_type = _wizard_choice("Gene identifier type in the count matrix", GENE_ID_TYPE_CHOICES, default="ENSEMBL")
+    return resolve_design_enrichment(config, enabled, gene_id_type)
 
 
 @app.command("design")
@@ -1031,9 +958,7 @@ def design_command(
         if config.project.preset is Preset.QC:
             typer.echo("ERROR: This project's scope is QC-only; there is no statistical design to configure.", err=True)
             raise typer.Exit(code=1)
-        # An L2 project whose contrasts are still empty is exactly what this
-        # command completes, so that one finding is expected here.
-        blocking = [issue for issue in report.errors if issue.code != "missing_contrast_rows"]
+        blocking = design_blockers(report)
         if blocking:
             typer.echo("ERROR: The metadata/design is not valid yet; fix the following and re-run `rnaseq design`:", err=True)
             for issue in blocking:
@@ -1052,8 +977,7 @@ def design_command(
         proposal = build_proposal(report, condition_order=order, swap=swap)
         selected_enrichment, new_annotation = _design_enrichment(config, enrichment, gene_id_type, interactive=not yes)
         _show_design_summary(report, proposal)
-        # The validator only warns (L1 QC stays available); L2 cannot run without residual degrees of freedom.
-        no_df = residual_degrees_of_freedom_message(report.metadata.rows, config.design.formula, dict(report.design_variable_types)) if report.metadata else None
+        no_df = residual_df_blocker(report)
         if no_df is not None:
             raise DesignSetupError(no_df + " Add replicates or simplify the design before configuring L2.")
         if existing:
@@ -1082,26 +1006,14 @@ def design_command(
                     break
                 typer.echo("No changes were written. Use --condition-order to change the order, or edit contrasts.csv.")
                 return
-        loaded = report.loaded
-        assert loaded is not None
-        previous = write_design(loaded.root, loaded.config_path, loaded.contrasts_path, proposal, enrichment=selected_enrichment, annotation=new_annotation)
-        after = validate_project(project_dir)
-        if not after.is_valid:
-            rollback_design(loaded.config_path, loaded.contrasts_path, previous)
-            typer.echo("ERROR: The resulting L2 project failed validation; nothing was changed:", err=True)
-            for issue in after.errors:
-                typer.echo(f"  - {issue.message}", err=True)
-            raise typer.Exit(code=1)
-        # `run` refuses stale planning artifacts, and the configuration and contrasts
-        # just changed, so refresh them here rather than leaving a failing next step.
-        try:
-            generate_plan(after)
-        except (ValueError, OSError) as exc:
-            rollback_design(loaded.config_path, loaded.contrasts_path, previous)
-            typer.echo(f"ERROR: Planning artifacts could not be refreshed ({exc}); nothing was changed.", err=True)
-            raise typer.Exit(code=1) from exc
+        after = apply_design(report, proposal, enrichment=selected_enrichment, annotation=new_annotation)
     except typer.Exit:
         raise
+    except DesignRejected as exc:
+        typer.echo(f"ERROR: {exc.args[0].removesuffix('.')}:", err=True)
+        for issue in exc.issues:
+            typer.echo(f"  - {issue.message}", err=True)
+        raise typer.Exit(code=1) from exc
     except (DesignSetupError, ProjectCreationError) as exc:
         typer.echo(f"ERROR: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -1417,6 +1329,21 @@ def analyze_command(
         err=True,
     )
     raise typer.Exit(code=2)
+
+
+@app.command("gui")
+def gui_command(
+    port: int = typer.Option(8501, "--port", min=1, max=65535, help="Local port; the GUI listens on 127.0.0.1 only."),
+) -> None:
+    """Start the browser GUI on 127.0.0.1 (needs the optional 'gui' extra)."""
+
+    from rnaseq.gui import GUI_ADDRESS, INSTALL_HINT, launch, streamlit_available
+
+    if not streamlit_available():
+        typer.echo(f"ERROR: the GUI needs the optional 'gui' extra (Streamlit). Install it with: {INSTALL_HINT}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"nf-rna GUI on http://{GUI_ADDRESS}:{port}  (from another machine: ssh -L {port}:127.0.0.1:{port} <server>)")
+    launch(port)
 
 
 @app.command("doctor")

@@ -1,0 +1,20 @@
+# Example systemd --user unit for the nf-rna GUI. Not installed or enabled
+# automatically; see docs/gui.md ("Running the GUI as a user service").
+# Adjust the paths to your installation before use.
+[Unit]
+Description=nf-rna GUI (Streamlit on 127.0.0.1:8501)
+
+[Service]
+Type=simple
+# The analysis tools (nextflow, conda, java) must be on PATH; runs started
+# from the GUI inherit it.
+Environment=PATH=%h/bin:%h/miniforge3/envs/nf-rna/bin:%h/miniforge3/condabin:/usr/local/bin:/usr/bin:/bin
+# Optional: a project-scoped Conda configuration. gui.yaml `condarc:` does the
+# same for runs, so this line is usually not needed.
+# Environment=CONDARC=%h/nf-rna-work/conda/condarc.yml
+ExecStart=%h/miniforge3/envs/nf-rna/bin/rnaseq gui --port 8501
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

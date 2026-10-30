@@ -481,6 +481,21 @@ def shutil_which(name: str) -> str | None:
     return shutil.which(name)
 
 
+def planned_runtime_prefix() -> tuple[Path, bool]:
+    """The prefix the next run would use and whether it is already provisioned.
+
+    Selects the wheel exactly as :func:`ensure_downstream_runtime` does (the
+    build is deterministic), but creates no Conda environment.
+    """
+
+    target = native_platform()
+    lock_sha = _lock_checksum(lock_path_for_platform(target))
+    root = _runtime_root().resolve()
+    wheel, _revision, _origin = _runtime_wheel(root)
+    prefix = runtime_prefix(root, target, lock_sha, _sha256(wheel))
+    return prefix, (prefix / "runtime" / "nf-rna-wheel.json").is_file()
+
+
 def ensure_downstream_runtime() -> DownstreamRuntime:
     """Create or verify the cached non-editable Conda runtime after confirmation."""
 

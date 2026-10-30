@@ -248,6 +248,24 @@ run ID 請取自 `rnaseq status . --all` 中 SUCCESS 那一列的 RUN 欄位（�
 
 wizard 只建立 project scaffold，不會推測科學輸入。FASTQ 專案還需要 execution-ready reference；可用 `rnaseq reference register /absolute/reference-root` 註冊既有的 checksum-bound managed reference，或設定支援的 reference route。詳細內容請見 [Quick Start](docs/quickstart.md)。
 
+## 瀏覽器 GUI（選用）
+
+`rnaseq gui` 會啟動 Streamlit GUI，涵蓋同一套流程：建立專案、加入 count matrix 或 FASTQ、編輯樣本 metadata、設定 contrasts、validate，以及啟動並監看 L1/L2 run。GUI 呼叫與 CLI 相同的 validators、design 與 run services；從 GUI 啟動的 run 就是一般的 `rnaseq run`。本版不含結果瀏覽，請開啟 run 的 `delivery/` 資料夾。
+
+```bash
+pip install -e '.[gui]'          # 從 source checkout 安裝；或 pip install 'nf-rna[gui]'
+tmux new -s nf-rna-gui           # 登出後 GUI 仍持續執行
+rnaseq gui                       # http://127.0.0.1:8501（可用 --port 修改）
+```
+
+GUI 只監聽 127.0.0.1。從筆電透過 SSH 轉送 port，再開啟 http://127.0.0.1:8501：
+
+```bash
+ssh -N -L 8501:127.0.0.1:8501 user@server
+```
+
+關閉瀏覽器或 GUI 不會中止 run；GUI 同時只允許一個進行中的 run。未安裝 `gui` extra 時 CLI 完全不變，`rnaseq gui` 會顯示安裝指令。各頁面說明、GUI 可開啟的資料夾（`~/.config/nf-rna/gui.yaml`）與選用的 `systemd --user` service：[docs/gui.md](docs/gui.md)。
+
 ## 支援 covariate 的 DESeq2 design
 
 新的 schema 1.3 專案會明確宣告每個 additive formula variable 的型別。`categorical` 在 R 中會成為 factor；`continuous` 則是必須為有限數值的調整 covariate。既有 schema 1.0–1.2 專案仍可讀取，並保留原本的 categorical／明確數值行為。
@@ -280,6 +298,7 @@ design:
 
 - [Detailed Quick Start and v1.0.0 compatibility](docs/quickstart.md)
 - [Runtime and reproducibility contract](docs/runtime.md)
+- [Browser GUI](docs/gui.md)
 - [Scientific contract](docs/scientific_contract.md)
 - [Architecture](docs/architecture.md)
 

@@ -28,9 +28,10 @@ from pathlib import Path
 
 import yaml
 
-from rnaseq.models import DesignType, Preset, ProjectConfig
+from rnaseq.design_matrix import residual_degrees_of_freedom_message
+from rnaseq.models import ANNOTATION_DATABASES, DEFAULT_L2_ENRICHMENT, DesignType, Preset, ProjectConfig, default_annotation
 from rnaseq.project import derive_design
-from rnaseq.validators import CONTRAST_HEADER, ContrastDefinition, MetadataSummary, ValidationReport, condition_factor
+from rnaseq.validators import CONTRAST_HEADER, ContrastDefinition, MetadataSummary, ValidationIssue, ValidationReport, condition_factor
 
 CONTRAST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -263,3 +264,128 @@ def rollback_design(config_path: Path, contrasts_path: Path, previous: tuple[str
 
 def design_is_paired(config: ProjectConfig) -> bool:
     return config.design.type is DesignType.PAIRED_TWO_GROUP
+
+
+class DesignRejected(DesignSetupError):
+    """The written design failed project validation and was rolled back."""
+
+    def __init__(self, issues: list[ValidationIssue]) -> None:
+        super().__init__("The resulting L2 project failed validation; nothing was changed.")
+        self.issues = issues
+
+
+def design_blockers(report: ValidationReport) -> list[ValidationIssue]:
+    """Validation errors that prevent configuring contrasts.
+
+    An L2 project whose contrasts are still empty is exactly what the design
+    step completes, so that one finding is expected and not blocking.
+    """
+
+    return [issue for issue in report.errors if issue.code != "missing_contrast_rows"]
+
+
+def residual_df_blocker(report: ValidationReport) -> str | None:
+    """The validator only warns (L1 QC stays available); L2 cannot run without residual degrees of freedom."""
+
+    if report.metadata is None or report.config is None:
+        return None
+    return residual_degrees_of_freedom_message(report.metadata.rows, report.config.design.formula, dict(report.design_variable_types))
+
+
+def design_enrichment_selection(config: ProjectConfig, enabled: bool | None) -> tuple[str, ...] | None:
+    """Moving to L2 selects every supported method; a project already at L2 keeps its selection.
+
+    ``None`` means "leave project.yaml unchanged".
+    """
+
+    if enabled is not None:
+        return DEFAULT_L2_ENRICHMENT if enabled else ()
+    return None if config.project.preset is Preset.L2 else DEFAULT_L2_ENRICHMENT
+
+
+def design_needs_gene_id_type(config: ProjectConfig, selection: tuple[str, ...] | None) -> bool:
+    """Whether enrichment needs an annotation contract that only a gene ID type can supply."""
+
+    return bool(selection) and config.annotation is None and config.organism.species.value in ANNOTATION_DATABASES
+
+
+def resolve_design_enrichment(
+    config: ProjectConfig, enabled: bool | None, gene_id_type: str | None,
+) -> tuple[tuple[str, ...] | None, dict[str, str] | None]:
+    """Decide the enrichment selection and annotation written with the design."""
+
+    selection = design_enrichment_selection(config, enabled)
+    normalized = gene_id_type.upper() if gene_id_type else None
+    existing = config.annotation
+    if existing is not None and normalized is not None and existing.input_id_type != normalized:
+        raise DesignSetupError(
+            f"project.yaml already declares annotation.input_id_type {existing.input_id_type}; "
+            "edit project.yaml to change it."
+        )
+    needs_annotation = bool(selection) and existing is None
+    if needs_annotation and config.organism.species.value not in ANNOTATION_DATABASES:
+        raise DesignSetupError(
+            f"Functional enrichment supports only {', '.join(ANNOTATION_DATABASES)} "
+            f"(organism.species is {config.organism.species.value!r}); re-run with --no-enrichment."
+        )
+    if needs_annotation and normalized is None:
+        raise DesignSetupError(
+            "L2 enables GO ORA, KEGG ORA, and preranked GSEA (GO and KEGG) by default, which need the gene "
+            "identifier type used by the count matrix. Re-run with --gene-id-type ENSEMBL, ENTREZID, or SYMBOL "
+            "(Ensembl GTF/managed references use ENSEMBL), or opt out with --no-enrichment."
+        )
+    annotation = None
+    if existing is None and normalized is not None:
+        try:
+            annotation = default_annotation(config.organism.species, normalized)
+        except ValueError as exc:
+            raise DesignSetupError(str(exc)) from exc
+    return selection, annotation
+
+
+def apply_design(
+    report: ValidationReport, proposal: DesignProposal, *,
+    enrichment: tuple[str, ...] | None = None, annotation: dict[str, str] | None = None,
+) -> ValidationReport:
+    """Write contrasts and the frozen design, re-validate, and refresh the planning artifacts.
+
+    Any failure restores the previous project.yaml and contrasts.csv.  ``run``
+    refuses stale planning artifacts, so they are refreshed here (equivalent
+    to ``rnaseq plan``) rather than leaving a failing next step.
+    """
+
+    from rnaseq.planner import generate_plan
+    from rnaseq.validators import validate_project
+
+    loaded = report.loaded
+    if loaded is None:
+        raise DesignSetupError("The project configuration could not be read.")
+    previous = write_design(loaded.root, loaded.config_path, loaded.contrasts_path, proposal, enrichment=enrichment, annotation=annotation)
+    after = validate_project(report.project_dir)
+    if not after.is_valid:
+        rollback_design(loaded.config_path, loaded.contrasts_path, previous)
+        raise DesignRejected(after.errors)
+    try:
+        generate_plan(after)
+    except (ValueError, OSError) as exc:
+        rollback_design(loaded.config_path, loaded.contrasts_path, previous)
+        raise DesignSetupError(f"Planning artifacts could not be refreshed ({exc}); nothing was changed.") from exc
+    return after
+
+
+def pin_kegg_snapshot(config_path: Path, snapshot_id: str) -> None:
+    """Record ``annotation.enrichment.kegg.snapshot`` in project.yaml, leaving other text intact."""
+
+    text = config_path.read_text(encoding="utf-8")
+    parsed = yaml.safe_load(text)
+    annotation = parsed.get("annotation") if isinstance(parsed, dict) else None
+    if not isinstance(annotation, dict):
+        raise DesignSetupError("project.yaml has no annotation contract; KEGG enrichment is not configured.")
+    enrichment = annotation.setdefault("enrichment", {})
+    kegg = enrichment.setdefault("kegg", {}) if isinstance(enrichment, dict) else None
+    if not isinstance(kegg, dict):
+        raise DesignSetupError("annotation.enrichment in project.yaml is not a mapping.")
+    kegg["snapshot"] = snapshot_id
+    edited = _set_top_level_block(text, "annotation", annotation, before="analysis")
+    ProjectConfig.model_validate(yaml.safe_load(edited))
+    _atomic_write(config_path, edited)
