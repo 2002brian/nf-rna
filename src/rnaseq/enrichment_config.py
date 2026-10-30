@@ -7,6 +7,7 @@ and the Python entry points (``rnaseq.go/gsea/kegg.execute_*``) build their
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any, Iterable
@@ -31,6 +32,29 @@ def kegg_snapshot_available(organism_code: str, snapshot: str | None) -> bool:
     if snapshot:
         return (root / snapshot / "manifest.json").is_file()
     return root.is_dir() and any((child / "manifest.json").is_file() for child in root.iterdir() if not child.name.startswith("."))
+
+
+def latest_kegg_snapshot(organism_code: str) -> tuple[str, dict[str, Any]] | None:
+    """The snapshot an unpinned KEGG analysis would use: latest ``retrieved_at_utc``, then ID.
+
+    Mirrors ``nf_rna_latest_snapshot`` in ``kegg_snapshot.R``.
+    """
+
+    root = kegg_snapshot_root(organism_code)
+    found = []
+    for child in sorted(root.iterdir()) if root.is_dir() else ():
+        if child.name.startswith(".") or not (child / "manifest.json").is_file():
+            continue
+        try:
+            manifest = json.loads((child / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(manifest, dict):
+            found.append((str(manifest.get("retrieved_at_utc") or ""), child.name, manifest))
+    if not found:
+        return None
+    _stamp, snapshot_id, manifest = max(found, key=lambda item: (item[0], item[1]))
+    return snapshot_id, manifest
 
 
 def backend_config(

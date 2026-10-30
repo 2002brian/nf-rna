@@ -46,7 +46,7 @@ L1 提供表現品質控制與探索。L2 必須明確選擇：它會對已宣�
 - **Upstream count data：** FASTQ 專案保留 upstream QC 與 Salmon/tximport 或 featureCounts 的 count handoff；count-matrix 專案保留已驗證的 imported count source。
 - **L1 QC：** filtering 與 normalization 記錄、用於 visualization 的 transformed expression、PCA、sample correlation，以及 QC table 與 figure。兩張逐樣本 boxplot 用來比較樣本分布：`boxplot_log2_raw_counts`（normalization 前的 log2(raw count + 1)，呈現定序深度與組成差異）與 `boxplot_vst`（PCA 與 correlation 使用的 blind VST 值，呈現 normalization 後樣本是否對齊）。每個樣本的 Tukey box 統計值記錄於 `sample_distribution_qc.tsv`。圖中數值一律未做 batch correction。
 - **L2 結果：** 選擇 L2 時，針對每個已宣告 contrast 的 DESeq2 result，以及相關 table 與 figure。
-- **Enrichment：** 在 L2 可獨立啟用 GO ORA、KEGG ORA 與 preranked GO（BP、MF、CC）/KEGG GSEA；ORA 使用每個 contrast 已成功 mapping 的 statistically tested-gene universe。
+- **Enrichment：** 在 L2 可獨立啟用 GO ORA、KEGG ORA 與 preranked GO（BP、MF、CC）/KEGG GSEA。自 v1.5 起，term 以 p.adjust（Benjamini-Hochberg）≤ 0.05 判定為顯著；ORA universe 為 DESeq2 padj 非 NA 的基因，mapping 為 Entrez 後再與 gene-set 資料庫取交集。KEGG gene set 來自本機的 KEGG REST snapshot（`~/.cache/nf-rna/genesets/kegg/`）；未固定（pin）時使用最新的本機 snapshot，`rnaseq validate` 會標示為「未固定」。**要發表的結果，請在 `project.yaml` 以 `annotation.enrichment.kegg.snapshot: <snapshot ID>` 固定 snapshot**（ID 由 `rnaseq validate` 顯示，並記錄於 KEGG provenance）。
 - **Delivery：** technical HTML report，以及包含 figure、table、methods/version record、provenance 與 delivery manifest 的 curated delivery package。
 
 ## 系統需求

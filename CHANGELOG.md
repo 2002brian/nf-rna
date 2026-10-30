@@ -22,8 +22,12 @@ Development version (branch `feature/v1.5.0`). Not released.
 - Every enrichment figure is also written as a PNG at the profile's raster dpi (`_300dpi.png`) beside the vector PDF. When nothing is significant, no figure is drawn and the summary says why.
 - L2 (Phase 1): DEG tables gain `symbol`, `description`, group means of normalized counts and `log2FoldChange_shrunk` (apeglm, ashr fallback, never `normal`). Also new: `normalized_counts.tsv`, per-contrast `contrast_metadata.json`, an MA plot, symbol-labelled volcano and heatmap, and 300 dpi PNGs. The DEG definition and every DESeq2 statistic are unchanged.
 
+- `rnaseq validate` and the run log (`logs/rnaseq.log`) warn when `project.yaml` sets the legacy `pvalue_cutoff`/`qvalue_cutoff`/`padj_cutoff` enrichment fields, which no longer select terms (warning, not error). For an unpinned KEGG analysis they name the snapshot that will be used and mark it "not pinned"; a pinned snapshot that does not exist is a validation error. Pin `annotation.enrichment.kegg.snapshot` for published results.
+- `report.html` shows the MA plot, the simplified GO dotplots (GO ORA of the significant DE genes; GO GSEA) and up to two running-score plots per NES sign for GO and KEGG GSEA. A figure that does not exist is shown as "unavailable" with its reason.
+
 ### Fixed
 
+- GO GSEA no longer emits "object not found" warnings from its cleanup code (results unchanged).
 - `rnaseq.go/gsea/kegg.execute_*` (Python entry points) now build the R backend configuration with the same function as the Nextflow path, including the contrast numerator/denominator. They no longer read summary fields the R backends stopped writing.
 
 ### Runtime

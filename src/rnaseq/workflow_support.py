@@ -388,6 +388,44 @@ def _image_html(path: Path, caption: str) -> str:
     )
 
 
+def _image_or_unavailable(path: Path, caption: str, reason: str) -> str:
+    """A report figure, or an explicit "unavailable" line with its reason (never an empty frame)."""
+
+    if path.is_file():
+        return _image_html(path, caption)
+    return f"<p class='figure-unavailable'><strong>{escape(caption)}: unavailable</strong> &mdash; {escape(reason)}</p>"
+
+
+def _figure_reason(record: Any, key: str, fallback: str) -> str:
+    """The backend's recorded reason for a figure it did not draw."""
+
+    value = (record.get("figures") or {}).get(key) if isinstance(record, dict) else None
+    if isinstance(value, dict):
+        value = value.get("reason")
+    return str(value) if isinstance(value, str) and value and value != "drawn" else fallback
+
+
+def _running_score_html(directory: Path, record: Any, label: str, per_sign: int = 2) -> list[str]:
+    """Up to ``per_sign`` running-score plots per NES sign (the backend draws them ranked by p.adjust)."""
+
+    running = (record.get("figures") or {}).get("running_score") if isinstance(record, dict) else None
+    running = running if isinstance(running, dict) else {}
+    parts = []
+    for sign, word in (("positive", "positive NES"), ("negative", "negative NES")):
+        found = [path for rank in range(1, per_sign + 1) for path in sorted(directory.glob(f"running_score/{sign}_{rank}_*.png")) if not path.name.endswith("dpi.png")]
+        if found:
+            parts.extend(_image_html(path, f"{label} running-score plot ({word}, rank {path.name.split('_')[1]} by adjusted P)") for path in found)
+            continue
+        if running.get("reason"):
+            reason = str(running["reason"])
+        elif running:
+            reason = f"no significant gene set with {word} (p.adjust <= 0.05)"
+        else:
+            reason = "no running-score plots in these results (produced from nf-rna v1.5)"
+        parts.append(_image_or_unavailable(directory / "running_score" / f"{sign}.png", f"{label} running-score plot ({word})", reason))
+    return parts
+
+
 def _top_table_html(path: Path, columns: tuple[str, ...], *, top_n: int = 10) -> str:
     if not path.is_file():
         return "<p>Complete TSV was not produced.</p>"
@@ -748,6 +786,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
             f"<li>Client tables: <code>tables/l2/contrasts/{escape(contrast_id)}/</code></li>"
             "</ul>",
             _image_html(root / "volcano.png", f"Volcano plot: {contrast_id}"),
+            _image_or_unavailable(root / "ma_plot.png", f"MA plot: {contrast_id}", "ma_plot.png was not produced (L2 results from before nf-rna v1.5)"),
             _image_html(root / "heatmap.png", f"DEG heatmap: {contrast_id}"),
         ])
 
@@ -788,6 +827,14 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
                 for foreground, outcome in (item.get("foregrounds") or {}).items():
                     if not isinstance(outcome, dict):
                         continue
+                    if module == "go" and foreground == "significant":
+                        # Redundancy-reduced GO terms of the all-DEG foreground; the full results are in the tables.
+                        for ontology, record in (outcome.get("ontologies") or {"BP": {}, "MF": {}, "CC": {}}).items():
+                            sections.append(_image_or_unavailable(
+                                root / contrast["contrast_id"] / foreground / f"dotplot_{ontology}_simplified.png",
+                                f"GO {ontology} ORA, significant DE genes, simplified (cutoff 0.7): {contrast['contrast_id']}",
+                                _figure_reason(record, "dotplot_simplified", str(outcome.get("reason") or "not produced by this GO ORA backend")),
+                            ))
                     sections.append(
                         f"<p>{escape(str(foreground))}: state <strong>{escape(str(outcome.get('status', 'not available')))}</strong>; "
                         f"foreground genes {_value(outcome, 'foreground_significant_genes')}; mapped foreground genes {_value(outcome, 'successfully_mapped_foreground_genes')}; "
@@ -870,6 +917,9 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
                     f"<li>Client tables: <code>tables/l2/enrichment/gsea_go/{escape(contrast_id)}/{ontology}/</code></li>"
                     "</ul>",
                     _image_html(root / "dotplot.png", f"GO {ontology} dotplot: {contrast_id}"),
+                    _image_or_unavailable(root / "dotplot_simplified.png", f"GO {ontology} dotplot, simplified (cutoff 0.7): {contrast_id}",
+                                          _figure_reason(outcome, "dotplot_simplified", "not produced by this GO GSEA backend")),
+                    *_running_score_html(root, outcome, f"GO {ontology} GSEA"),
                     _top_table_html(terms, ("ID", "Description", "NES", "pvalue", "p.adjust")),
                 ])
             kegg_terms = kegg_root / contrast_id / "all_terms.tsv"
@@ -886,6 +936,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
                 f"<li>Client tables: <code>tables/l2/enrichment/gsea_kegg/{escape(contrast_id)}/</code></li>"
                 "</ul>",
                 _image_html(kegg_root / contrast_id / "dotplot.png", f"KEGG GSEA dotplot: {contrast_id}"),
+                *_running_score_html(kegg_root / contrast_id, kegg_item, "KEGG GSEA"),
                 _top_table_html(kegg_terms, ("ID", "Description", "NES", "pvalue", "p.adjust")),
             ])
     if not selected:

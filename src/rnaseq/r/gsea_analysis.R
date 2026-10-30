@@ -62,7 +62,8 @@ map_ranked_sources <- function(source, stat) {
 run_ontology <- function(gene_list, ranked_mapping, ontology, root, contrast, lookup) {
   directory <- file.path(root, ontology); dir.create(directory, recursive=TRUE, showWarnings=FALSE)
   result <- raw <- terms <- significant <- positive <- negative <- top <- p <- core_audit <- filtered <- NULL
-  on.exit({ rm(result, raw, terms, significant, positive, negative, top, p, core_audit, filtered); gc(verbose=FALSE) }, add=TRUE)
+  # The success path already removes these; on.exit releases whatever an error left behind.
+  on.exit({ rm(list=intersect(c("result", "raw", "terms", "significant", "positive", "negative", "top", "p", "core_audit", "filtered"), ls())); gc(verbose=FALSE) }, add=TRUE)
   tryCatch({
     set.seed(as.integer(gsea_cfg$seed))
     result <- suppressMessages(gseGO(

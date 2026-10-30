@@ -84,6 +84,8 @@ DESIGN_WARNING_CODES = frozenset({
     "partially_confounded_batch", "batch_level_single_sample", "limited_replication",
     "no_residual_degrees_of_freedom", "unused_batch_column", "inferred_continuous_design_variable",
 })
+# Enrichment warnings repeated in the run's own log (logs/rnaseq.log).
+ENRICHMENT_WARNING_CODES = frozenset({"legacy_enrichment_cutoff", "kegg_snapshot_not_pinned"})
 CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 RUN_ID_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}\+[0-9]{4}(?:-[0-9]{2,3})?$")
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -2298,6 +2300,9 @@ def _execute_service_run(
 ) -> CaseRun:
     workspace = resolve_execution_workspace(run.case_id, run.run_id)
     _log_resources(run, resources)
+    for issue in report.warnings:
+        if issue.code in ENRICHMENT_WARNING_CODES:
+            _log_event(run, f"WARNING: {issue.message}")
     frozen = freeze_case_inputs(report, run, profile=profile, command=command, resources=resources)
     assert report.config is not None
     runtime = None if report.config.project.preset is Preset.QC else ensure_downstream_runtime()

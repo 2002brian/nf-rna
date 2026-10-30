@@ -278,8 +278,9 @@ def _annotated(selection: list[str]) -> ProjectConfig:
     return ProjectConfig.model_validate(config)
 
 
-def test_enrichment_preflight_probes_kegg_only_when_a_kegg_backend_is_selected(monkeypatch):
+def test_enrichment_preflight_probes_kegg_only_when_a_kegg_backend_is_selected(monkeypatch, tmp_path):
     calls: list[str] = []
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))  # no local KEGG snapshot
     monkeypatch.setattr("rnaseq.service.kegg_rest_preflight", lambda code, **_: calls.append(code))
     _enrichment_preflight(_annotated([]))
     _enrichment_preflight(_annotated(["go"]))
@@ -287,11 +288,19 @@ def test_enrichment_preflight_probes_kegg_only_when_a_kegg_backend_is_selected(m
     _enrichment_preflight(_annotated(["gsea"]))
     _enrichment_preflight(_annotated(ALL_METHODS))
     assert calls == ["mmu", "mmu"]
+    # With a local snapshot, KEGG no longer needs the network.
+    snapshot = tmp_path / "nf-rna" / "genesets" / "kegg" / "mmu" / "mmu_fixture"
+    snapshot.mkdir(parents=True)
+    (snapshot / "manifest.json").write_text("{}", encoding="utf-8")
+    _enrichment_preflight(_annotated(ALL_METHODS))
+    assert calls == ["mmu", "mmu"]
 
 
 @pytest.mark.real_kegg_preflight
-def test_unreachable_kegg_fails_preflight_with_the_remedy(monkeypatch):
+def test_unreachable_kegg_fails_preflight_with_the_remedy(monkeypatch, tmp_path):
     from urllib.error import URLError
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))  # no local KEGG snapshot
 
     def offline(*_args, **_kwargs):
         raise URLError("no route to host")
@@ -454,3 +463,59 @@ def test_delivery_readme_summarizes_design_warnings_and_status(tmp_path):
 
     (tmp_path / "frozen" / "downstream_contract.json").write_text(json.dumps({"analysis_level": "L1"}), encoding="utf-8")
     assert _delivery_readme_analysis_summary(Run()) == ""
+
+
+# ------------------------------------------------------------- v1.5 enrichment warnings
+
+
+def _enrichment_project(project_factory, *, enrichment: dict | None = None, selection: list[str] = ALL_METHODS):
+    config = base_config()
+    config["schema_version"] = "1.3"
+    config["design"]["variables"] = {"condition": "categorical"}
+    config["annotation"] = {"organism": "Mus musculus", "input_id_type": "ENTREZID", **({"enrichment": enrichment} if enrichment else {})}
+    config["analysis"] = {"enrichment": selection}
+    return validate_project(project_factory(config=config))
+
+
+def test_legacy_cutoff_fields_warn_but_do_not_fail_validation(project_factory, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    report = _enrichment_project(project_factory, enrichment={"go": {"qvalue_cutoff": 0.1}, "kegg": {"gsea": {"padj_cutoff": 0.01}}}, selection=["go"])
+    warnings = [issue for issue in report.warnings if issue.code == "legacy_enrichment_cutoff"]
+    assert report.is_valid and len(warnings) == 1
+    assert "annotation.enrichment.go.qvalue_cutoff, annotation.enrichment.kegg.gsea.padj_cutoff" in warnings[0].message
+    assert "p.adjust (Benjamini-Hochberg) <= 0.05" in warnings[0].message
+    assert not [issue for issue in _enrichment_project(project_factory, selection=["go"]).warnings if issue.code == "legacy_enrichment_cutoff"]
+
+
+def test_unpinned_kegg_snapshot_is_named_and_a_missing_pinned_one_is_an_error(project_factory, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    report = _enrichment_project(project_factory)
+    [warning] = [issue for issue in report.warnings if issue.code == "kegg_snapshot_not_pinned"]
+    assert "no local snapshot exists" in warning.message
+    root = tmp_path / "nf-rna" / "genesets" / "kegg" / "mmu"
+    for snapshot_id, stamp in (("mmu_a", "2026-01-01T00:00:00Z"), ("mmu_b", "2026-05-01T00:00:00Z")):
+        (root / snapshot_id).mkdir(parents=True)
+        (root / snapshot_id / "manifest.json").write_text(json.dumps({"retrieved_at_utc": stamp, "kegg_release": "KEGG pathway database: Last update 2026/04/30"}), encoding="utf-8")
+    [warning] = [issue for issue in _enrichment_project(project_factory).warnings if issue.code == "kegg_snapshot_not_pinned"]
+    assert warning.message.startswith("KEGG snapshot: mmu_b (not pinned") and "annotation.enrichment.kegg.snapshot: mmu_b" in warning.message
+    pinned = _enrichment_project(project_factory, enrichment={"kegg": {"snapshot": "mmu_a"}})
+    assert not [issue for issue in pinned.warnings if issue.code == "kegg_snapshot_not_pinned"] and pinned.is_valid
+    missing = _enrichment_project(project_factory, enrichment={"kegg": {"snapshot": "mmu_absent"}})
+    assert [issue.code for issue in missing.errors] == ["kegg_snapshot_missing"]
+    assert not [issue for issue in _enrichment_project(project_factory, selection=["go"]).warnings if issue.code == "kegg_snapshot_not_pinned"]
+
+
+def test_report_figures_are_shown_or_explicitly_unavailable_with_a_reason(tmp_path):
+    from rnaseq.workflow_support import _image_or_unavailable, _running_score_html
+
+    line = _image_or_unavailable(tmp_path / "ma_plot.png", "MA plot: c", "ma_plot.png was not produced")
+    assert "MA plot: c: unavailable" in line and "ma_plot.png was not produced" in line and "<img" not in line
+    record = {"figures": {"running_score": {"drawn": 0, "reason": "no significant gene sets (p.adjust <= 0.05)"}}}
+    parts = _running_score_html(tmp_path, record, "KEGG GSEA")
+    assert len(parts) == 2 and all("unavailable" in part and "no significant gene sets" in part for part in parts)
+    (tmp_path / "running_score").mkdir()
+    for name in ("positive_1_A.png", "positive_1_A_300dpi.png", "positive_2_B.png", "positive_3_C.png"):
+        (tmp_path / "running_score" / name).write_bytes(b"\x89PNG")
+    parts = _running_score_html(tmp_path, {"figures": {"running_score": {"drawn": 3, "positive": 3, "negative": 0}}}, "KEGG GSEA")
+    assert sum("<img" in part for part in parts) == 2 and "positive_3_C" not in "".join(parts)
+    assert "no significant gene set with negative NES" in parts[-1]

@@ -52,3 +52,14 @@ Non-blocking implementation choices, recorded as they are made.
 | The Python `execute_*` entry points and `workflow_support.enrichment_config` both use `rnaseq.enrichment_config.backend_config`. | Fixes the missing contrast levels; the two paths can no longer drift. |
 | The version is now the development version `1.5.0` (`__init__.py`, CITATION.cff without `date-released`) and CHANGELOG has `1.5.0 — Unreleased`. | The specification requires a v1.5.0 development CHANGELOG entry, and the release-metadata guard accepts an `Unreleased` heading only with the matching development version. No tag or release. |
 | The offline KEGG figure-review fixture writes a synthetic snapshot and replaces `enricher()`/`GSEA()` (GSEA returns a synthetic `gseaResult`). | The network touch points moved from `url()`/`enrichKEGG`/`gseKEGG` to the snapshot download; the fixture must still need no network. |
+
+## v1.5.0 release prep (2026-10-30)
+
+| Decision | Reason |
+|---|---|
+| A legacy cutoff field is reported only when it is written in project.yaml (pydantic `model_fields_set`), in one `legacy_enrichment_cutoff` warning naming every such field. | Defaults are not the user's choice, and the wizard never writes these fields, so new projects do not warn. |
+| `kegg_snapshot_not_pinned` is a warning only when KEGG ORA or GSEA is selected. It names the snapshot that `kegg_snapshot.R` would choose (`latest_kegg_snapshot` mirrors `nf_rna_latest_snapshot`), or says that none exists yet. A pinned snapshot missing locally is the error `kegg_snapshot_missing`. | Validation can only predict the choice; the backend records the snapshot actually used. A missing pinned snapshot would fail the run preflight anyway. |
+| These two warnings are repeated in `logs/rnaseq.log` at run start (`ENRICHMENT_WARNING_CODES`). | They concern the reproducibility of that specific run. |
+| Report: simplified GO ORA dotplots only for the `significant` foreground, and simplified GO GSEA dotplots per ontology. Running-score plots: ranks 1–2 per NES sign, per GO ontology and for KEGG. Missing figures are shown as "unavailable — reason", using the backend's recorded reason when there is one. | Keeps the report readable; every figure remains in the delivery `figures/`. |
+| The GO GSEA `on.exit` cleanup removes only objects that still exist (`rm(list = intersect(..., ls()))`). | The success path already removed them; the warnings were noise. Tables are byte-identical. |
+| Two preflight tests set `XDG_CACHE_HOME` to an empty temporary directory. | They assumed no KEGG snapshot exists, which now depends on the machine. |

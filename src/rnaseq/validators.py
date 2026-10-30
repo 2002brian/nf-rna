@@ -21,6 +21,7 @@ from rnaseq.models import (
     Preset,
     ProjectConfig,
     SequencingLayout,
+    production_enrichment_backends,
 )
 from rnaseq.project import LoadedProject, load_project
 from rnaseq.references import (
@@ -1215,6 +1216,55 @@ def _validate_production_reference(report: ValidationReport) -> None:
         report.error("production_hisat2_runtime_unvalidated", "Production acceptance requires validated HISAT2 index-builder/runtime compatibility.")
 
 
+LEGACY_ENRICHMENT_CUTOFFS = ("pvalue_cutoff", "qvalue_cutoff", "padj_cutoff")
+
+
+def _warn_enrichment_contract(report: ValidationReport) -> None:
+    """v1.5 enrichment: ignored legacy cutoffs and the KEGG snapshot an unpinned project uses."""
+
+    from rnaseq.enrichment_config import KEGG_CODES, kegg_snapshot_root, latest_kegg_snapshot
+
+    config = report.config
+    annotation = config.annotation
+    if annotation is None:
+        return
+    enrichment = annotation.enrichment
+    sections = (("go", enrichment.go), ("gsea", enrichment.gsea), ("kegg.ora", enrichment.kegg.ora), ("kegg.gsea", enrichment.kegg.gsea))
+    legacy = [f"annotation.enrichment.{name}.{field}" for name, section in sections for field in LEGACY_ENRICHMENT_CUTOFFS if field in section.model_fields_set]
+    if legacy:
+        report.warning(
+            "legacy_enrichment_cutoff",
+            f"{', '.join(legacy)} {'is' if len(legacy) == 1 else 'are'} set in project.yaml but no longer affect{'s' if len(legacy) == 1 else ''} term selection: "
+            "since nf-rna v1.5 a GO/KEGG ORA or GSEA term is significant when p.adjust (Benjamini-Hochberg) <= 0.05. "
+            "The fields are still accepted; remove them to silence this warning.",
+        )
+    backends = production_enrichment_backends(config.analysis.enrichment if config.analysis else ())
+    code = KEGG_CODES.get(annotation.organism)
+    if not ({"kegg", "gsea-kegg"} & set(backends)) or code is None:
+        return
+    pinned = enrichment.kegg.snapshot
+    root = kegg_snapshot_root(code)
+    if pinned:
+        if not (root / pinned / "manifest.json").is_file():
+            report.error("kegg_snapshot_missing", f"Configured KEGG snapshot {pinned!r} (annotation.enrichment.kegg.snapshot) does not exist under {root}.")
+        return
+    latest = latest_kegg_snapshot(code)
+    if latest is None:
+        report.warning(
+            "kegg_snapshot_not_pinned",
+            f"KEGG snapshot: not pinned, and no local snapshot exists under {root}; the first KEGG run downloads one from KEGG REST "
+            "and later runs reuse the latest. For publication, pin it afterwards with annotation.enrichment.kegg.snapshot: <snapshot ID>.",
+        )
+        return
+    snapshot_id, manifest = latest
+    report.warning(
+        "kegg_snapshot_not_pinned",
+        f"KEGG snapshot: {snapshot_id} (not pinned; the latest local snapshot, retrieved {manifest.get('retrieved_at_utc', 'unknown')}, "
+        f"{manifest.get('kegg_release') or 'KEGG release not recorded'}). A newer snapshot would change KEGG results. "
+        f"For publication, pin it in project.yaml: annotation.enrichment.kegg.snapshot: {snapshot_id}",
+    )
+
+
 def validate_project(project_dir: Path | str) -> ValidationReport:
     """Validate a project without modifying any project input."""
 
@@ -1225,6 +1275,7 @@ def validate_project(project_dir: Path | str) -> ValidationReport:
         report.error("invalid_project_config", str(exc))
         return report
 
+    _warn_enrichment_contract(report)
     report.formula_variables = parse_formula(report.config.design.formula, report)
     if report.config.input.type is InputType.RAW_COUNTS:
         report.counts = validate_counts(report.loaded.input_path, report)
