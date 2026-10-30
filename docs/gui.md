@@ -232,6 +232,15 @@ and `~/.cache/nf-rna/gui/logs/<id>.log` (the command's own output, which
 exists before the run's log folder does). These files are what the GUI uses to
 find its runs again after a restart; the analysis state stays in the run.
 
+## Known limitations (v1.6.0)
+
+- One user, one machine: the server listens on 127.0.0.1, there are no accounts, and one GUI run can be active at a time.
+- Verified end to end on raw-count projects. FASTQ recognition and import were verified, but a FASTQ run has not been started or browsed from the GUI; the MultiQC download is tested only with fixtures.
+- The `systemd` launcher was verified from a GUI started in a terminal with `launcher: systemd`; running the GUI itself as the example service was not tested.
+- With the `process` launcher, SIGKILL of `rnaseq` leaves its Nextflow child running (SIGTERM stops both).
+- Legacy (pre-v1.5) enrichment display was verified with test fixtures only.
+- FASTQ copying blocks the Input page until it finishes; other covariates, `rnaseq retry` and `rnaseq clean` are CLI-only; delivery zips accumulate in `~/.cache/nf-rna/gui/packages/`.
+
 ## Running the GUI as a user service
 
 `docs/systemd/nf-rna-gui.service` is an example; adjust the paths, then:

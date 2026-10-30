@@ -10,13 +10,15 @@
 > publish.** Results produced with v1.4.x are not recomputed and keep their
 > earlier semantics; do not compare enrichment results across that boundary
 > without re-running. Details: the
-> [1.5.0 CHANGELOG entry](https://github.com/2002brian/nf-rna/blob/main/CHANGELOG.md#150--2026-10-30).
+> [1.5.0 CHANGELOG entry](https://github.com/2002brian/nf-rna/blob/v1.6.0/CHANGELOG.md#150--2026-10-30).
 
 v1.6.0 adds an optional local browser GUI and includes the v1.5.1 test fixes
 (v1.5.1 was not released separately). DESeq2, GO/KEGG ORA, GSEA, the "v1.5"
-significance semantics, the downstream Conda lock, the Nextflow workflows, the R
-scripts and every result table and figure are unchanged from v1.5.0; v1.5.x
-results do not need to be recomputed.
+significance semantics, the downstream Conda lock, the Nextflow workflows and the R
+scripts are unchanged from v1.5.0. An airway L2 rerun with v1.6.0 gives
+byte-identical result tables (135/135), PNG and TIFF figures; PDFs differ only
+in their embedded creation date. v1.5.x results do not need to be recomputed.
+Full list of changes: [CHANGELOG](https://github.com/2002brian/nf-rna/blob/v1.6.0/CHANGELOG.md#160--2026-10-30).
 
 ## Browser GUI
 
@@ -57,7 +59,8 @@ Software versions and provenance sections, for CLI users too.
 ## Install
 
 Supported runtime: Linux x86-64 or Windows WSL2 with Conda, Java 17+ and
-Nextflow (see `docs/runtime.md`). nf-rna is installed from the Git tag:
+Nextflow (see [docs/runtime.md](https://github.com/2002brian/nf-rna/blob/v1.6.0/docs/runtime.md)). nf-rna is not on PyPI; it is
+installed from the Git tag, which lets every run record its source commit:
 
 ```bash
 conda create --yes --name nf-rna python=3.11
@@ -77,5 +80,18 @@ ssh -N -L 8501:127.0.0.1:8501 user@server     # then open http://127.0.0.1:8501
 ```
 
 The first run of v1.6.0 provisions a new downstream environment from the
-unchanged lock (several minutes). See `docs/gui.md` for the GUI settings
-(`~/.config/nf-rna/gui.yaml`) and an optional `systemd --user` service.
+unchanged lock (several minutes). See [docs/gui.md](https://github.com/2002brian/nf-rna/blob/v1.6.0/docs/gui.md) for the GUI
+settings (`~/.config/nf-rna/gui.yaml`) and an optional `systemd --user` service.
+
+## Known limitations
+
+- Single user, local: the GUI listens on 127.0.0.1 only and runs one GUI-started
+  analysis at a time.
+- Verified end to end on raw-count projects. For FASTQ projects, file
+  recognition and import were verified in the GUI; starting and browsing a
+  FASTQ run from the GUI was not part of this release's acceptance.
+- Running the GUI itself as the example `systemd --user` service was not tested
+  (the `systemd` run launcher was tested from a terminal-started GUI).
+- Display of pre-v1.5 (legacy) enrichment output was tested with fixtures only.
+- Other covariates than `batch`/pairing, `rnaseq retry` and `rnaseq clean`
+  remain CLI-only.

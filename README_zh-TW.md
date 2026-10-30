@@ -62,7 +62,7 @@ L1 提供表現品質控制與探索。L2 必須明確選擇：它會對已宣�
 
 ## 安裝
 
-> **本 README 說明 `v1.6.0`**（見 [CHANGELOG](CHANGELOG.md)）：新增選用的瀏覽器 GUI，並包含 v1.5.1 的測試修正（v1.5.1 未單獨 tag）。分析內容與 `v1.5.0` 完全相同。**從 `v1.4.x` 升級：** v1.5.0 變更了 enrichment 顯著性判定（見 [1.5.0 變更](CHANGELOG.md#150--2026-10-30)）：DEG 表格加入 gene symbol、normalized count 組平均與 shrunken log2 fold change，新增 MA plot 與 300 dpi 圖檔；GO/KEGG ORA 與 GSEA 的顯著性改為 Benjamini-Hochberg adjusted p-value ≤ 0.05，KEGG gene set 來自本機 snapshot，發表用結果請固定（pin）該 snapshot。DESeq2 統計量與 DEG 定義與 `v1.4.1` 相同；以 `v1.4.x` 產生的結果維持原本的 enrichment 判定方式。若使用較早的 release，請參考該 release tag 的 README。若想使用開發版本，請依照 [Development installation](docs/development.md)。
+> **最新的穩定 release：`v1.6.0`。** 本 README 說明此版本（見 [CHANGELOG](CHANGELOG.md#160--2026-10-30)）：新增選用的瀏覽器 GUI，並包含 v1.5.1 的測試修正（v1.5.1 未單獨 tag）。分析內容與 `v1.5.0` 完全相同。**從 `v1.4.x` 升級：** v1.5.0 變更了 enrichment 顯著性判定（見 [1.5.0 變更](CHANGELOG.md#150--2026-10-30)）：DEG 表格加入 gene symbol、normalized count 組平均與 shrunken log2 fold change，新增 MA plot 與 300 dpi 圖檔；GO/KEGG ORA 與 GSEA 的顯著性改為 Benjamini-Hochberg adjusted p-value ≤ 0.05，KEGG gene set 來自本機 snapshot，發表用結果請固定（pin）該 snapshot。DESeq2 統計量與 DEG 定義與 `v1.4.1` 相同；以 `v1.4.x` 產生的結果維持原本的 enrichment 判定方式。若使用較早的 release，請參考該 release tag 的 README。若想使用開發版本，請依照 [Development installation](docs/development.md)。
 
 nf-rna 沒有 PyPI distribution。請從 Git tag 安裝已發布的 CLI。從 Git 安裝時，
 pip 會記錄精確的 source commit，而每次 run 都必須記錄它；若安裝方式沒有 commit

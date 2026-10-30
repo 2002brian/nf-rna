@@ -127,3 +127,14 @@ Non-blocking implementation choices, recorded as they are made.
 | Version 1.6.0 with `1.6.0 — Unreleased` and no `date-released`; v1.5.1 is not tagged and its CHANGELOG entry stays as a historical section that 1.6.0 links to. | Release-metadata guard; the finalize commit sets the date. |
 | GUI install instructions use `"nf-rna[gui] @ git+https://github.com/2002brian/nf-rna.git@vX.Y.Z"`, not `pip install 'nf-rna[gui]'`. | nf-rna is not published on PyPI; the 6a text named a package index install that does not exist. |
 | Phase 6b browser acceptance is `scripts/dev/gui_results_acceptance.py`; the unavailable and L1-only views were checked on truncated copies of the GUI-L2-002 run in `~/nf-rna-work/testdata/gui6b-fixtures/`, deleted afterwards. | Spec allows a fixture or a truncated project copy; no real run was modified. |
+
+## v1.6.0 finalization (2026-10-30)
+
+| Decision | Reason |
+|---|---|
+| Release date 2026-10-30 in CHANGELOG and CITATION.cff, set in the finalization commit before tagging. | Same practice as v1.5.0; the release-metadata guard requires both to agree. |
+| The 1.5.1 CHANGELOG section keeps its heading and date and says it was never tagged; 1.6.0 links to it. | Keeps the `#151--2026-10-30` anchor that other docs use; v1.5.1 was prepared but its changes ship in v1.6.0. |
+| Known limitations (raw-count-only end-to-end GUI verification, untested GUI-as-service, process-launcher SIGKILL, legacy display tested with fixtures) are listed in CHANGELOG, release notes and docs/gui.md. | Release documents must not claim what was not verified. |
+| The release notes link to files at the `v1.6.0` tag. | Links stay valid after `main` moves on. |
+| The 14 no-GUI-venv failures were compared with `main` by re-running only `tests/test_figure_*.py` on `9a7352b` in a temporary worktree (same venv), not the whole suite. | Phase 6a kept no `main` log; the three files contain all 14 and give the identical set on both commits. |
+| Screenshots stay in the sdist. | Not distributed through PyPI; removing them would need a packaging change at release time. |

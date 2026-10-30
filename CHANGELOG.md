@@ -2,11 +2,11 @@
 
 All notable changes to this project are documented here.
 
-## 1.6.0 — Unreleased
+## 1.6.0 — 2026-10-30
 
 **This release includes the v1.5.1 test fixes**: v1.5.1 was prepared but not tagged separately, so its changes ship in v1.6.0 (see [1.5.1](#151--2026-10-30)). **Upgrading from v1.4.x: the enrichment significance semantics changed in v1.5.0.** GO/KEGG ORA and GSEA call a term significant when the Benjamini–Hochberg adjusted p-value is ≤ 0.05, the ORA universe changed, and KEGG gene sets come from a local snapshot that you should pin for published results; read the [1.5.0 notes](#150--2026-10-30) before comparing results across versions. v1.4.x results are not recomputed and keep their v1.4 semantics.
 
-v1.6.0 adds an optional local browser GUI. DESeq2, GO/KEGG ORA, GSEA, the significance semantics ("v1.5"), the downstream Conda lock, the Nextflow workflows, the R scripts and every result table and figure are unchanged from v1.5.0/v1.5.1; v1.5.x results do not need to be recomputed.
+v1.6.0 adds an optional local browser GUI. DESeq2, GO/KEGG ORA, GSEA, the significance semantics ("v1.5"), the downstream Conda lock, the Nextflow workflows, the R scripts and every result table and figure are unchanged from v1.5.0/v1.5.1 (an airway L2 rerun gives byte-identical tables, PNG and TIFF files; PDFs differ only in their embedded creation date); v1.5.x results do not need to be recomputed.
 
 ### Added — browser GUI (`rnaseq gui`, optional `gui` extra)
 
@@ -26,7 +26,18 @@ v1.6.0 adds an optional local browser GUI. DESeq2, GO/KEGG ORA, GSEA, the signif
 
 - The downstream lock is unchanged. The runtime environment is keyed by lock and nf-rna build, so the first v1.6.0 run provisions a fresh downstream environment from the same lock.
 
+### Known limitations
+
+- The GUI is a single-user, local tool: one active GUI run at a time, loopback only, no accounts.
+- Verified end to end on raw-count projects (airway, L2 with GO/KEGG ORA and GSEA). FASTQ projects: file recognition and import were verified in the GUI, but no FASTQ run was started or browsed from the GUI for this release; the MultiQC download and the FASTQ wording of the report's *Reference and quantification* section are covered by unit tests only.
+- The `systemd` launcher was verified with `launcher: systemd` from a GUI started in a terminal; the GUI running as the example `systemd --user` service was not tested. With the detached-process launcher, killing `rnaseq` with SIGKILL leaves its Nextflow child running (a normal stop is clean).
+- Display of pre-v1.5 (legacy) enrichment output was verified with test fixtures only.
+- Copying FASTQ files into a project blocks that page until the copy finishes. Covariates other than `batch` and the pairing column, `rnaseq retry` and `rnaseq clean` remain CLI-only.
+- Delivery zips prepared by the GUI stay in `~/.cache/nf-rna/gui/packages/` until removed by hand.
+
 ## 1.5.1 — 2026-10-30
+
+**Not released separately**: v1.5.1 was prepared but never tagged; its changes ship in v1.6.0.
 
 Maintenance release. It fixes how three R-dependent tests decide whether they can run; nothing that nf-rna installs or executes has changed. DESeq2, GO/KEGG ORA, GSEA, the enrichment significance semantics ("v1.5"), the downstream Conda lock, the Nextflow workflows and every result table are identical to v1.5.0. Results produced with v1.5.0 do not need to be recomputed.
 
