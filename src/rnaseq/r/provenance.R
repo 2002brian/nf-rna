@@ -10,7 +10,7 @@ nf_rna_package_versions <- function(packages) {
 }
 
 nf_rna_normalized_config <- function(value, key=NULL) {
-  path_keys <- c("output_dir", "counts", "metadata", "tx2gene", "quant_sf", "l1_vst", "all_genes", "significant", "up", "down")
+  path_keys <- c("output_dir", "counts", "metadata", "tx2gene", "quant_sf", "l1_vst", "all_genes", "significant", "up", "down", "snapshot_root")
   if (!is.null(key) && key %in% path_keys) return(NULL)
   if (is.list(value)) {
     keys <- names(value)

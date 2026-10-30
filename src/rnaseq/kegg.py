@@ -13,27 +13,27 @@ from typing import Any, Literal
 import yaml
 
 from rnaseq.downstream import _write
+from rnaseq.enrichment_config import KEGG_CODES, backend_config, kegg_snapshot_root
 from rnaseq.errors import DownstreamExecutionError
 from rnaseq.go import ORGDB
 from rnaseq.l2 import PreparedL2, prepare_l2
 from rnaseq.models import AnnotationConfig
 from rnaseq.validators import ValidationReport
 
-KEGG_CODES = {"Homo sapiens": "hsa", "Mus musculus": "mmu"}
 KEGG_STATES = {"SUCCESS", "BLOCKED", "NETWORK_UNAVAILABLE", "NOT_APPLICABLE", "NO_SIGNIFICANT_TERMS", "FAILED"}
 KeggMode = Literal["ora", "gsea"]
 
 
 @dataclass(frozen=True)
 class KeggResourceAdapter:
-    """The sole M4B-3 provider: live KEGG REST, consumed by clusterProfiler."""
+    """KEGG gene sets from a local snapshot of KEGG REST (created once, then reused)."""
 
     organism_code: str
-    provider: str = "online_kegg_rest_via_clusterprofiler"
+    provider: str = "kegg_rest_snapshot"
 
     @property
-    def probe_endpoint(self) -> str:
-        return f"https://rest.kegg.jp/list/pathway/{self.organism_code}"
+    def snapshot_root(self) -> Path:
+        return kegg_snapshot_root(self.organism_code)
 
 
 @dataclass(frozen=True)
@@ -98,15 +98,19 @@ def prepare_kegg(report: ValidationReport, *, run_id: str | None, mode: KeggMode
 
 def _report(mode: KeggMode, summary: dict[str, Any], adapter: KeggResourceAdapter) -> str:
     title = "# KEGG over-representation analysis" if mode == "ora" else "# KEGG preranked GSEA"
-    lines = [title, "", f"Status: {summary['status']}", "", f"- KEGG organism code: `{adapter.organism_code}`", f"- Resource provider: `{adapter.provider}`", "- KEGG resources are externally retrieved and may change over time.", "- No biological interpretation is generated.", ""]
+    source = summary.get("gene_set_source") or {}
+    lines = [title, "", f"Status: {summary['status']}", "", f"- KEGG organism code: `{adapter.organism_code}`", f"- Resource provider: `{adapter.provider}`",
+             f"- KEGG snapshot: `{source.get('snapshot_id', 'none')}` ({source.get('kegg_release', 'release not recorded')}; retrieved {source.get('retrieved_at_utc', 'not recorded')})",
+             f"- Significance (semantics {summary.get('significance_semantics', 'not recorded')}): {summary.get('significance', {}).get('rule', 'not recorded')}",
+             "- No biological interpretation is generated.", ""]
     if summary["status"] in {"BLOCKED", "NETWORK_UNAVAILABLE"}:
         lines.extend([summary.get("reason", "KEGG resource or mapping guardrail prevented execution."), ""])
     for contrast in summary.get("contrasts", []):
         lines.append(f"## {contrast['contrast_id']}")
         if mode == "ora":
-            lines.append(f"- Tested mapped KEGG universe: {contrast.get('universe_size', 0)}")
+            lines.append(f"- KEGG ORA universe: {contrast.get('universe_size', 0)}")
             for name, values in contrast.get("foregrounds", {}).items():
-                lines.append(f"- {name}: {values['status']}; foreground={values['unique_target_genes']}; pathways={values['pathway_count']}")
+                lines.append(f"- {name}: {values.get('status')}; foreground={values.get('unique_target_genes', 0)}; pathways tested={values.get('tested_terms', 0)}; significant={values.get('significant_terms', 0)}")
         else:
             rank = contrast.get("ranking", {})
             lines.append(f"- Ranked genes: {rank.get('final_ranked_genes', 0)}; positive={rank.get('positive_stats', 0)}; negative={rank.get('negative_stats', 0)}")
@@ -128,26 +132,11 @@ def execute_kegg(prepared: PreparedKegg) -> KeggResult:
     state_path = output / state_name
     started = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     _state(state_path, status="RUNNING", started_at=started, completed_at=None)
-    contrasts = []
-    for contrast in prepared.l2.contrasts:
-        root = prepared.l2.output_dir / "contrasts" / contrast.contrast_id
-        contrasts.append({
-            "contrast_id": contrast.contrast_id,
-            "all_genes": str(root / "all_genes.tsv"),
-            "significant": str(root / "significant.tsv"),
-            "up": str(root / "upregulated.tsv"),
-            "down": str(root / "downregulated.tsv"),
-            "go_gsea_ranked": str(prepared.l2.output_dir / "enrichment" / "gsea_go" / contrast.contrast_id / "ranked_gene_list.tsv"),
-        })
-    cfg = {
-        "mode": prepared.mode,
-        "output_dir": str(output.resolve()),
-        "annotation": prepared.annotation.model_dump(),
-        "orgdb_package": ORGDB[prepared.annotation.organism],
-        "kegg": {"organism_code": prepared.adapter.organism_code, "provider": prepared.adapter.provider, "probe_endpoint": prepared.adapter.probe_endpoint},
-        "contrasts": contrasts,
-        "figure_style": dict(prepared.l2.l1.figures),
-    }
+    cfg = backend_config(
+        "kegg" if prepared.mode == "ora" else "gsea-kegg", annotation=prepared.annotation.model_dump(),
+        contrasts=[vars(contrast) for contrast in prepared.l2.contrasts], l2_dir=prepared.l2.output_dir, output_dir=output.resolve(),
+        figure_style=dict(prepared.l2.l1.figures),
+    )
     _write(output / "backend_config.json", json.dumps(cfg, indent=2, sort_keys=True) + "\n")
     script = resources.files("rnaseq.r").joinpath("kegg_analysis.R")
     summary_name = "kegg_backend_summary.json" if prepared.mode == "ora" else "gsea_kegg_backend_summary.json"
@@ -175,25 +164,19 @@ def execute_kegg(prepared: PreparedKegg) -> KeggResult:
         "input_id_namespace": prepared.annotation.input_id_type,
         "target_id_namespace": "ENTREZID / ncbi-geneid",
         "resource_provider": prepared.adapter.provider,
-        "resource_probe_endpoint": prepared.adapter.probe_endpoint,
-        "retrieval": summary.get("resource"),
+        "gene_set_source": summary.get("gene_set_source"),
         "clusterProfiler_version": summary.get("clusterProfiler_version"),
         "r_version": summary.get("r_version"),
         "annotation_database": summary.get("annotation_database"),
         "annotation_database_version": summary.get("annotation_database_version"),
         "annotation_qc_status": summary.get("annotation_qc_status"),
         "annotation": prepared.annotation.model_dump(),
-        "clusterprofiler_calculation_pvalue_cutoff": 1 if prepared.mode == "gsea" else None,
-        "nf_rna_significance_policy": (
-            "finite p.adjust <= configured padj_cutoff and finite pvalue <= configured pvalue_cutoff"
-            if prepared.mode == "gsea" else None
-        ),
-        "all_terms_semantics": (
-            "terms successfully evaluated and returned by gseKEGG under configured structural gene-set constraints before nf-rna significance filtering"
-            if prepared.mode == "gsea" else None
-        ),
+        "clusterprofiler_calculation_cutoffs": {"pvalueCutoff": 1, "qvalueCutoff": 1},
+        "significance_semantics": summary.get("significance_semantics"),
+        "nf_rna_significance_policy": summary.get("significance", {}).get("rule"),
+        "gsea_settings": summary.get("gsea"),
         "mapping_policy": "local AnnotationDbi Entrez mapping; one-to-many retained; duplicate KEGG targets deduplicated deterministically",
-        "warning": "KEGG results may vary when the external KEGG resource changes.",
+        "warning": "KEGG results are reproducible for the recorded snapshot; a different snapshot can give different results.",
         "contrasts": summary.get("contrasts", []),
         "automatic_sample_removal": False,
     }

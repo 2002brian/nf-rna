@@ -168,8 +168,11 @@ def test_the_offline_kegg_fixture_exercises_both_plotting_paths_without_network(
         manifest = json.loads((run / backend / "figure_manifest.json").read_text())
         assert manifest["figure_style"]["standard_figures_drawn"] == ["dotplot"]
         for figure in manifest["figures"]:
+            if figure["kind"] == "GSEA running-score plot":  # not a standard-preset figure type
+                assert [item["format"] for item in figure["files"]] == ["png", "png_raster", "pdf"]
+                continue
             assert figure["figure_style"]["font"] == "Arimo"
-            assert [item["format"] for item in figure["files"]] == ["png", "tiff", "pdf"]
+            assert [item["format"] for item in figure["files"]] == ["png", "png_raster", "tiff", "pdf"]
             assert figure["term_order"] and figure["layout"]["label_lines"] >= 1
 
 
@@ -191,9 +194,10 @@ def test_kegg_legacy_and_standard_share_source_data_and_term_order_and_standard_
     legacy = _kegg_run(generate, tmp_path, "long", None, "legacy", monkeypatch)
     standard = _kegg_run(generate, tmp_path, "long", {"preset": "standard", "profile": "general"}, "standard", monkeypatch)
     report = compare.compare(legacy, standard, tmp_path / "report")
-    assert report["summary"]["matched_figures"] == 4 and report["summary"]["unmatched"] == 0
+    # 4 dotplots plus the running-score plots, which stay identical across presets (not a standard figure type)
+    assert report["summary"]["matched_figures"] == 4 + len(list((legacy / "gsea_kegg").rglob("running_score/*.pdf"))) and report["summary"]["unmatched"] == 0
     assert compare.gate_failures(report, ["ORA dotplot", "GSEA dotplot"]) == []
-    for record in report["figures"]:
+    for record in (r for r in report["figures"] if "running_score" not in r["figure"]):
         assert record["source_data"]["identical"] is True
         assert record["terms"]["order_identical"] is True and record["terms"]["drawn_matches_source"] is True
         assert record["clipping"]["candidate_edge_ink_px"] == 0

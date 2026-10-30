@@ -47,12 +47,24 @@ def _contrast_files(root: Path, name: str, mapped: int) -> dict[str, str]:
     }
 
 
+def _local_kegg_snapshot(root: Path) -> Path:
+    """A tiny local KEGG snapshot, so the KEGG backend never contacts KEGG."""
+
+    import hashlib
+
+    snapshot = root / "fixture_snapshot"
+    snapshot.mkdir(parents=True)
+    (snapshot / "TERM2GENE.tsv").write_text("term\tgene\n" + "".join(f"mmu00010\t{gene}\n" for gene in MAPPED), encoding="utf-8")
+    (snapshot / "TERM2NAME.tsv").write_text("term\tname\nmmu00010\tGlycolysis / Gluconeogenesis\n", encoding="utf-8")
+    files = {name: {"sha256": hashlib.sha256((snapshot / name).read_bytes()).hexdigest()} for name in ("TERM2GENE.tsv", "TERM2NAME.tsv")}
+    (snapshot / "manifest.json").write_text(json.dumps({"snapshot_id": "fixture_snapshot", "retrieved_at_utc": "1970-01-01T00:00:00Z", "files": files}), encoding="utf-8")
+    return root
+
+
 def _run_backend(tmp_path: Path, script: str, mode: str | None) -> dict:
     inputs = tmp_path / "inputs"
     inputs.mkdir()
     contrasts = [_contrast_files(inputs, name, round(rate * 10)) for name, (rate, _status) in RATES.items()]
-    probe = tmp_path / "probe.txt"
-    probe.write_text("path:mmu00010\tGlycolysis / Gluconeogenesis\n", encoding="utf-8")
     # Gates placed after mapping QC make "QC passed, backend continued" observable
     # without running a full enrichment or contacting KEGG.
     unreachable = 1000
@@ -73,7 +85,7 @@ def _run_backend(tmp_path: Path, script: str, mode: str | None) -> dict:
         },
     }
     if mode is not None:
-        config.update({"mode": mode, "kegg": {"organism_code": "mmu", "provider": "online_kegg_rest_via_clusterprofiler", "probe_endpoint": probe.as_uri()}})
+        config.update({"mode": mode, "kegg": {"organism_code": "mmu", "provider": "kegg_rest_snapshot", "snapshot": "fixture_snapshot", "snapshot_root": str(_local_kegg_snapshot(tmp_path / "snapshots"))}})
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(config), encoding="utf-8")
     result = subprocess.run(["Rscript", str(R_ROOT / script), "--config", str(config_path)], capture_output=True, text=True, check=False)

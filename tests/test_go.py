@@ -108,6 +108,46 @@ def test_go_terminal_nonerror_states_remain_distinguishable(monkeypatch, project
     assert json.loads(result.state_path.read_text(encoding="utf-8"))["status"] == status
 
 
+def test_python_entry_point_uses_the_nextflow_backend_config(monkeypatch, project_factory):
+    """Regression: execute_go passes the contrast levels (as enrichment_config does) and reads only v1.5 summary fields."""
+
+    from rnaseq.enrichment_config import backend_config
+
+    config = base_config()
+    config["annotation"] = _annotation()
+    root = project_factory(config=config)
+    l2 = prepare_l2(validate_project(root), run_id=None)
+    l2.output_dir.mkdir(parents=True)
+    (l2.output_dir / "l2_state.json").write_text(json.dumps({"status": "SUCCESS"}), encoding="utf-8")
+    contrast = l2.output_dir / "contrasts" / "Treatment_vs_Control"
+    contrast.mkdir(parents=True)
+    for name in ("all_genes.tsv", "significant.tsv", "upregulated.tsv", "downregulated.tsv"):
+        (contrast / name).write_text("gene_id\nGeneA\n", encoding="utf-8")
+    prepared = prepare_go(validate_project(root), run_id=None)
+    monkeypatch.setattr("rnaseq.go._check_go_runtime", lambda _organism: None)
+
+    def fake_backend(arguments, **_kwargs):
+        output = Path(arguments[-1]).parent
+        annotation = output.parent.parent / "annotation"
+        annotation.mkdir(exist_ok=True)
+        (annotation / "gene_mapping.tsv").write_text("original_gene_id\nGeneA\n", encoding="utf-8")
+        summary = {"status": "NO_SIGNIFICANT_TERMS", "significance_semantics": "v1.5", "significance": {"rule": "significant = p.adjust (BH) <= 0.05"},
+                   "contrasts": [{"contrast_id": "Treatment_vs_Control", "universe": {"padj_non_na_genes": 1, "mapping_rate": 1.0},
+                                  "foregrounds": {"significant": {"status": "NO_SIGNIFICANT_TERMS", "ontologies": {"BP": {"evaluated_term_count": 3, "significant_term_count": 0}}}}}]}
+        (output / "go_backend_summary.json").write_text(json.dumps(summary), encoding="utf-8")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("rnaseq.go.subprocess.run", fake_backend)
+    result = execute_go(prepared)
+    assert result.status == "NO_SIGNIFICANT_TERMS"
+    written = json.loads((prepared.output_dir / "backend_config.json").read_text(encoding="utf-8"))
+    assert written["contrasts"][0]["numerator"] == "Treatment" and written["contrasts"][0]["denominator"] == "Control"
+    expected = backend_config("go", annotation=prepared.annotation.model_dump(), contrasts=[{"contrast_id": "Treatment_vs_Control", "numerator": "Treatment", "denominator": "Control"}],
+                              l2_dir=prepared.l2.output_dir, output_dir=prepared.output_dir.resolve(), figure_style=dict(prepared.l2.l1.figures))
+    assert written == json.loads(json.dumps(expected))
+    assert "significance_semantics: v1.5" in (prepared.output_dir / "go_provenance.yaml").read_text(encoding="utf-8")
+
+
 def test_go_backend_failure_records_failed_state(monkeypatch, project_factory):
     config = base_config()
     config["annotation"] = _annotation()
@@ -136,8 +176,8 @@ def test_annotation_package_maps_real_entrez_symbol_and_ensembl_suffix():
     assert result.returncode == 0, result.stderr
 
 
-def test_go_ora_uses_finite_pvalue_mapped_universe_and_emits_not_applicable_schema(tmp_path):
-    """ORA excludes every nonfinite p-value but retains finite p-value/NA padj rows."""
+def test_go_ora_universe_is_padj_non_na_and_emits_not_applicable_schema(tmp_path):
+    """v1.5: the ORA universe is the padj-non-NA genes; a finite p-value with NA padj is excluded."""
 
     import subprocess
 
@@ -149,7 +189,7 @@ def test_go_ora_uses_finite_pvalue_mapped_universe_and_emits_not_applicable_sche
         "gene_id\tpvalue\tpadj\n11303\t0.01\tNA\n11304\t0.02\t0.04\n11305\tNA\tNA\n11306\tNaN\tNA\n11307\tInf\tNA\n11308\t-Inf\tNA\n",
         encoding="utf-8",
     )
-    significant.write_text("gene_id\n11303\n", encoding="utf-8")
+    significant.write_text("gene_id\n11304\n", encoding="utf-8")
     empty.write_text("gene_id\n", encoding="utf-8")
     output = tmp_path / "go"
     config = {
@@ -165,18 +205,17 @@ def test_go_ora_uses_finite_pvalue_mapped_universe_and_emits_not_applicable_sche
     assert result.returncode == 0, result.stderr
     summary = json.loads((output / "go_backend_summary.json").read_text(encoding="utf-8"))
     universe = summary["contrasts"][0]["universe"]
-    assert universe["statistically_tested_genes"] == 2
-    assert universe["pvalue_na_excluded_genes"] == 1
-    assert universe["pvalue_nan_excluded_genes"] == 1
-    assert universe["pvalue_infinite_excluded_genes"] == 2
-    assert universe["pvalue_nonfinite_excluded_genes"] == 4
-    assert universe["successfully_mapped_tested_genes"] == 2
+    assert universe["finite_pvalue_genes"] == 2
+    assert universe["padj_non_na_genes"] == 1
+    assert universe["padj_na_excluded_genes"] == 5
+    assert universe["successfully_mapped_tested_genes"] == 1
+    assert summary["significance_semantics"] == "v1.5"
     for foreground in ("significant", "up", "down"):
         outcome = summary["contrasts"][0]["foregrounds"][foreground]
         assert outcome["status"] == "NOT_APPLICABLE"
         assert outcome["evaluated_term_count"] == outcome["significant_term_count"] == 0
         for ontology in ("BP", "MF", "CC"):
-            for name in (f"GO_{ontology}_all_terms.tsv", f"GO_{ontology}.tsv", f"GO_{ontology}_gene_members.tsv"):
+            for name in (f"GO_{ontology}_all_terms.tsv", f"GO_{ontology}.tsv", f"GO_{ontology}_gene_members.tsv", f"GO_{ontology}_members.tsv"):
                 lines = (output / "fixture" / foreground / name).read_text(encoding="utf-8").splitlines()
                 assert len(lines) == 1
     assert (output / "scientific_provenance.json").is_file()
@@ -223,7 +262,7 @@ def test_go_ora_dotplots_identify_comparison_and_foreground_from_contrast_metada
         assert record["foreground"] == "significant"
         assert record["contrast"] == {"contrast_id": "Misleading_vs_Id", "numerator": "133Gy", "denominator": "22Gy"}
         assert "Misleading" not in record["subtitle"]
-        assert {entry["format"] for entry in record["files"]} == {"png", "tiff", "pdf"}
+        assert {entry["format"] for entry in record["files"]} == {"png", "png_raster", "tiff", "pdf"}
         for entry in record["files"]:
             assert (output / entry["path"]).stat().st_size > 0
 

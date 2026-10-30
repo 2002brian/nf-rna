@@ -67,6 +67,7 @@ from rnaseq.execution import (
     ResourceContract,
     LOCAL_RESOURCE_CEILING,
 )
+from rnaseq.enrichment_config import kegg_snapshot_available, kegg_snapshot_root
 from rnaseq.downstream_runtime import (
     DownstreamRuntime, downstream_runtime_preflight, ensure_downstream_runtime, native_platform, runtime_source_revision,
 )
@@ -1630,7 +1631,7 @@ def assemble_delivery(run: CaseRun) -> Path:
             copy_declared(path, figures[suffix] / relative)
         elif suffix in {".tsv", ".csv"}:
             copy_declared(path, tables / relative)
-        elif path.name in {"scientific_provenance.json", "r_session_info.txt", "figure_manifest.json", "contrast_metadata.json"}:
+        elif path.name in {"scientific_provenance.json", "r_session_info.txt", "figure_manifest.json", "contrast_metadata.json", "kegg_snapshot_manifest.json"}:
             # These are module-produced scientific records, not task logs.
             copy_declared(path, delivery / "methods_and_versions" / relative)
     handoff = run.run_dir / "frozen" / "upstream_handoff_manifest.yaml"
@@ -1731,7 +1732,7 @@ def kegg_rest_preflight(organism_code: str, *, timeout: float = 15.0) -> None:
     if not first.strip():
         raise ExecutionPreflightError(
             f"KEGG REST ({endpoint}) is unreachable: {error}. KEGG ORA and KEGG GSEA (part of 'gsea') use the "
-            "online KEGG resource. Restore network access before running, or remove 'kegg' and 'gsea' from "
+            "KEGG REST once to create a local KEGG gene-set snapshot, and none exists yet. Restore network access before running, or remove 'kegg' and 'gsea' from "
             "analysis.enrichment (removing 'gsea' also removes GO GSEA)."
         )
 
@@ -1745,7 +1746,13 @@ def _enrichment_preflight(config: ProjectConfig) -> None:
     if config.annotation is None:  # also rejected by the project model
         raise ExecutionPreflightError("analysis.enrichment requires an explicit annotation contract in project.yaml.")
     if {"kegg", "gsea-kegg"} & set(backends):
-        kegg_rest_preflight(KEGG_ORGANISM_CODES[config.annotation.organism])
+        code = KEGG_ORGANISM_CODES[config.annotation.organism]
+        snapshot = config.annotation.enrichment.kegg.snapshot
+        if snapshot and not kegg_snapshot_available(code, snapshot):
+            raise ExecutionPreflightError(f"Configured KEGG snapshot {snapshot!r} does not exist under {kegg_snapshot_root(code)}.")
+        # A local snapshot makes KEGG independent of the network; only creating one needs KEGG REST.
+        if not kegg_snapshot_available(code, snapshot):
+            kegg_rest_preflight(code)
 
 
 def _backend_preflight(report: ValidationReport) -> None:

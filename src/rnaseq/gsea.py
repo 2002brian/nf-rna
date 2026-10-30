@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 
 from rnaseq.downstream import _write
+from rnaseq.enrichment_config import backend_config
 from rnaseq.errors import DownstreamExecutionError
 from rnaseq.go import ORGDB, _check_go_runtime
 from rnaseq.l2 import PreparedL2, prepare_l2
@@ -78,8 +79,9 @@ def _gsea_report(summary: dict[str, Any], annotation: AnnotationConfig) -> str:
         "- Tied statistics are not perturbed; the ranked vector uses Entrez ID as a deterministic secondary sort key before fgsea.",
         f"- Minimum ranked genes: {annotation.enrichment.gsea.minimum_ranked_genes}",
         f"- Gene-set size: {annotation.enrichment.gsea.min_gs_size}–{annotation.enrichment.gsea.max_gs_size}",
-        f"- Thresholds: pvalue <= {annotation.enrichment.gsea.pvalue_cutoff}; adjusted p <= {annotation.enrichment.gsea.padj_cutoff}; adjustment {annotation.enrichment.gsea.p_adjust_method}",
-        "- `all_terms.tsv` contains every structurally eligible term successfully evaluated and returned by gseGO with calculation pvalueCutoff=1; `significant.tsv` applies nf-rna's configured p-value and adjusted-p filters to those rows.",
+        f"- Significance (semantics {summary.get('significance_semantics', 'not recorded')}): {summary.get('significance', {}).get('rule', 'not recorded')}",
+        f"- fgsea: seed {annotation.enrichment.gsea.seed} (set.seed + seed = TRUE), nPermSimple {summary.get('gsea', {}).get('nPermSimple', 'not recorded')}, eps 0",
+        "- `all_terms.tsv` contains every structurally eligible term evaluated and returned by gseGO with pvalueCutoff=1, with a `significant` column; `significant.tsv` holds the rows where it is TRUE.",
         "- BP, MF, and CC are run separately with completed ontology objects released before the next ontology. No biological interpretation is generated.", "",
     ])
     if summary["status"] == "BLOCKED":
@@ -111,20 +113,10 @@ def execute_gsea(prepared: PreparedGsea) -> GseaResult:
     state_path = output / "gsea_state.json"
     started = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     _state(state_path, status="RUNNING", started_at=started, completed_at=None)
-    contrasts = [
-        {
-            "contrast_id": contrast.contrast_id,
-            "all_genes": str(prepared.l2.output_dir / "contrasts" / contrast.contrast_id / "all_genes.tsv"),
-        }
-        for contrast in prepared.l2.contrasts
-    ]
-    cfg = {
-        "output_dir": str(output.resolve()),
-        "annotation": prepared.annotation.model_dump(),
-        "orgdb_package": ORGDB[prepared.annotation.organism],
-        "contrasts": contrasts,
-        "figure_style": dict(prepared.l2.l1.figures),
-    }
+    cfg = backend_config(
+        "gsea-go", annotation=prepared.annotation.model_dump(), contrasts=[vars(contrast) for contrast in prepared.l2.contrasts],
+        l2_dir=prepared.l2.output_dir, output_dir=output.resolve(), figure_style=dict(prepared.l2.l1.figures),
+    )
     _write(output / "backend_config.json", json.dumps(cfg, indent=2, sort_keys=True) + "\n")
     script = resources.files("rnaseq.r").joinpath("gsea_analysis.R")
     try:
@@ -172,7 +164,10 @@ def execute_gsea(prepared: PreparedGsea) -> GseaResult:
         "memory_lifecycle": "BP, MF, and CC run sequentially; result objects and intermediates are released and garbage-collected after each ontology",
         "gsea_parameters": prepared.annotation.enrichment.gsea.model_dump(),
         "clusterprofiler_calculation_pvalue_cutoff": 1,
-        "nf_rna_significance_policy": "finite p.adjust <= configured padj_cutoff and finite pvalue <= configured pvalue_cutoff",
+        "significance_semantics": summary.get("significance_semantics"),
+        "nf_rna_significance_policy": summary.get("significance", {}).get("rule"),
+        "gsea_settings": summary.get("gsea"),
+        "gene_set_source": summary.get("gene_set_source"),
         "all_terms_semantics": "terms successfully evaluated and returned by gseGO under configured structural gene-set constraints before nf-rna significance filtering",
         "ontologies": ["BP", "MF", "CC"],
         "automatic_sample_removal": False,

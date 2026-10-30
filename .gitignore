@@ -126,6 +126,12 @@ tests/fixtures/hisat2_paired_raw_v2/reference/hisat2/
 # A bundled Salmon index is never a public source fixture, even when tiny.
 examples/nfcore_smoke_test/reference/salmon.tar.gz
 
+# KEGG gene-set snapshots live in the user cache (~/.cache/nf-rna/genesets); KEGG data never enters the repository.
+genesets/
+**/genesets/
+TERM2GENE.tsv
+TERM2NAME.tsv
+
 # R local/session artifacts
 .Rhistory
 .RData

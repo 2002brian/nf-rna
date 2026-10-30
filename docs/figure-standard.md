@@ -190,6 +190,15 @@ Only the displayed y range and breaks change. `pca_scores.tsv` and `pca_variance
 * Since v1.5.0 the volcano and MA plot draw `log2FoldChange_shrunk` (raw LFC only as a labelled
   fallback when shrinkage failed), label the top 10 DEGs by symbol, and DEG heatmap rows are labelled
   by symbol; see `docs/scientific_contract.md`. Colours and significance are unchanged.
+* Since v1.5.0 every enrichment dotplot (ORA and GSEA, including the GO `*_simplified` dotplots) also
+  writes `png_raster`. Dotplot selection and the GSEA colour limits follow the v1.5 significance rule
+  (`p.adjust <= 0.05`; colour limits [0, 0.05]).
+* Since v1.5.0, GSEA running-score plots (`running_score/<sign>_<n>_<ID>`, kind
+  "GSEA running-score plot") are drawn with `enrichplot::gseaplot2` through
+  `nf_rna_gsea_running_score` in PNG preview, `png_raster` and PDF. They are not a standard-preset
+  figure type (not in `NF_RNA_STANDARD_FIGURES`): they use the run's context, so they are identical
+  under the legacy and standard presets. The colour comes from `nf_rna_enrichment_mark`, the base size
+  from the profile, and the size is double column × 0.7.
 * File names and paths, the three formats and the source-data tables
   (`*_source_data.tsv`, `pca_scores.tsv`, `all_genes.tsv`, …) do not depend on the
   preset or profile.

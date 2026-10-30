@@ -225,9 +225,16 @@ class KeggGseaConfig(StrictModel):
 
 
 class KeggConfig(StrictModel):
-    """Online-only KEGG contract; no provider fallback is implemented."""
+    """KEGG gene sets come from one local snapshot of KEGG REST per analysis.
 
-    resource_provider: Literal["online_kegg_rest_via_clusterprofiler"] = "online_kegg_rest_via_clusterprofiler"
+    ``snapshot`` names a snapshot under the nf-rna gene-set cache; without it
+    the latest existing snapshot is used, and one is created only when none
+    exists.  ``online_kegg_rest_via_clusterprofiler`` is the pre-v1.5 name,
+    still accepted in existing projects; both values use the snapshot.
+    """
+
+    resource_provider: Literal["kegg_rest_snapshot", "online_kegg_rest_via_clusterprofiler"] = "kegg_rest_snapshot"
+    snapshot: StrictStr | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
     ora: KeggOraConfig = Field(default_factory=KeggOraConfig)
     gsea: KeggGseaConfig = Field(default_factory=KeggGseaConfig)
 

@@ -853,6 +853,7 @@ nf_rna_fit_dotplot <- function(context, make, labels, subtitle=NULL, x_label=NUL
 
 nf_rna_draw <- function(figure) {
   if (inherits(figure, "ggplot")) print(figure)
+  else if (inherits(figure, "gglist")) print(figure)  # enrichplot::gseaplot2 stacked panels
   else if (inherits(figure, "pheatmap")) { grid::grid.newpage(); grid::grid.draw(figure$gtable) }
   else if (inherits(figure, "gtable") || inherits(figure, "grob")) { grid::grid.newpage(); grid::grid.draw(figure) }
   else if (is.function(figure)) figure()
@@ -1083,7 +1084,7 @@ nf_rna_ora_subtitle <- function(context, contrast, foreground, width_mm=context$
 nf_rna_write_source_table <- function(table, path) write.table(table, path, sep="\t", quote=FALSE, row.names=FALSE, na="NA")
 
 # Over-representation dotplot of an already selected, ordered term subset.
-nf_rna_ora_dotplot <- function(context, top, x_label, path_stem, output_root, meta=list(), subtitle=NULL) {
+nf_rna_ora_dotplot <- function(context, top, x_label, path_stem, output_root, meta=list(), subtitle=NULL, formats=c("png", "tiff", "pdf")) {
   context <- nf_rna_figure_scope(context, "dotplot")  # standard preset when requested, else the context unchanged
   standard <- identical(context$preset, "standard")
   labels <- nf_rna_display_labels(top$Description)
@@ -1121,12 +1122,12 @@ nf_rna_ora_dotplot <- function(context, top, x_label, path_stem, output_root, me
     display=list(padj_zero_floor=.Machine$double.xmin, capped_points=sum(top$capped)),
     labels=sprintf("term descriptions wrapped to 45 characters, at most 2 lines; %d truncated; full ID/Description in the source-data table", sum(attr(labels, "truncated"))),
     source_data=list(nf_rna_source_data(source_path, output_root, "plotted terms with full IDs and descriptions"))),
-    if (standard) list(layout=fit$layout, term_order=as.list(top$ID), mark_colour=nf_rna_enrichment_mark(context)), meta))
+    if (standard) list(layout=fit$layout, term_order=as.list(top$ID), mark_colour=nf_rna_enrichment_mark(context)), meta), formats=formats)
 }
 
 # Preranked GSEA dotplot.  The colour scale for adjusted P has fixed limits
 # [0, padj_cutoff] so that plots with the same cutoff are directly comparable.
-nf_rna_gsea_dotplot <- function(context, top, contrast, padj_cutoff, p_adjust_method, path_stem, output_root, meta=list()) {
+nf_rna_gsea_dotplot <- function(context, top, contrast, padj_cutoff, p_adjust_method, path_stem, output_root, meta=list(), formats=c("png", "tiff", "pdf")) {
   context <- nf_rna_figure_scope(context, "dotplot")  # standard preset when requested, else the context unchanged
   standard <- identical(context$preset, "standard")
   top <- top[order(-top$NES, top$ID), , drop=FALSE]
@@ -1163,5 +1164,21 @@ nf_rna_gsea_dotplot <- function(context, top, contrast, padj_cutoff, p_adjust_me
     size="gene set size (setSize)", display_order="NES descending",
     labels=sprintf("term descriptions wrapped to 45 characters, at most 2 lines; %d truncated; full ID/Description in the source-data table", sum(attr(labels, "truncated"))),
     source_data=list(nf_rna_source_data(source_path, output_root, "plotted terms with full IDs, NES, adjusted P and leading edge"))),
-    if (standard) list(layout=fit$layout, term_order=as.list(top$ID), enrichment_colours=as.list(nf_rna_enrichment_colours(context))), meta))
+    if (standard) list(layout=fit$layout, term_order=as.list(top$ID), enrichment_colours=as.list(nf_rna_enrichment_colours(context))), meta), formats=formats)
+}
+
+# GSEA running-score plot (enrichplot::gseaplot2) for one gene set, drawn from
+# the gseaResult of the analysis itself, so it shows the ranked list that was
+# tested.  Not a standard-preset figure type: drawn with the run's context.
+nf_rna_gsea_running_score <- function(context, result, term, contrast, path_stem, output_root, meta=list(), formats=c("png", "png_raster", "pdf")) {
+  profile <- context$profile
+  title <- sprintf("%s\nNES = %.2f, adjusted P = %s", paste(nf_rna_wrap_text(sprintf("%s %s", term$ID, term$Description), 70), collapse="\n"),
+                   term$NES, format(signif(term$p.adjust, 3), scientific=TRUE))
+  p <- enrichplot::gseaplot2(result, geneSetID=term$ID, title=title, color=nf_rna_enrichment_mark(context), base_size=profile$base_pt)
+  width_mm <- profile$double_col_mm; height_mm <- min(profile$max_height_mm, 0.7 * width_mm)
+  nf_rna_save_figure(context, p, path_stem, width_mm, height_mm, output_root, c(list(
+    kind="GSEA running-score plot", gene_set=list(ID=term$ID, Description=term$Description, NES=term$NES, p.adjust=term$p.adjust),
+    contrast=contrast[intersect(c("contrast_id", "numerator", "denominator"), names(contrast))],
+    panels="running enrichment score; positions of gene-set members in the ranked list; ranked metric (DESeq2 Wald stat)",
+    ranked_list="the geneList stored in the gseaResult of this analysis"), meta), formats=formats)
 }

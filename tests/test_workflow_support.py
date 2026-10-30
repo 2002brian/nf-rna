@@ -51,6 +51,7 @@ def _annotation() -> dict[str, object]:
             "gsea": {"minimum_ranked_genes": 61, "min_gs_size": 11, "max_gs_size": 321, "pvalue_cutoff": 0.041, "padj_cutoff": 0.049, "p_adjust_method": "BH", "seed": 9},
             "kegg": {
                 "resource_provider": "online_kegg_rest_via_clusterprofiler",
+                "snapshot": None,
                 "ora": {"pvalue_cutoff": 0.021, "qvalue_cutoff": 0.19, "p_adjust_method": "BH", "min_gs_size": 12, "max_gs_size": 322},
                 "gsea": {"minimum_ranked_genes": 62, "pvalue_cutoff": 0.91, "padj_cutoff": 0.039, "p_adjust_method": "BH", "min_gs_size": 13, "max_gs_size": 323, "seed": 10},
             },
@@ -472,7 +473,8 @@ def test_schema_11_freezes_complete_annotation_and_enrichment_bridge_is_determin
 
     assert configs["gsea-go"]["annotation"]["enrichment"]["gsea"] == _annotation()["enrichment"]["gsea"]
     assert configs["gsea-kegg"]["annotation"]["enrichment"]["kegg"]["gsea"] == _annotation()["enrichment"]["kegg"]["gsea"]
-    assert configs["gsea-kegg"]["kegg"]["provider"] == "online_kegg_rest_via_clusterprofiler"
+    assert configs["gsea-kegg"]["kegg"]["provider"] == "kegg_rest_snapshot"  # the legacy provider value is an alias of the snapshot provider
+    assert configs["gsea-kegg"]["kegg"]["snapshot_root"].endswith("nf-rna/genesets/kegg/mmu")
     assert configs["gsea-kegg"]["kegg"]["organism_code"] == "mmu"
 
 
@@ -622,23 +624,21 @@ def _render_enrichment_report(
     return (output / "report.html").read_text(encoding="utf-8")
 
 
-def test_report_states_go_and_kegg_ora_significance_rule_from_frozen_contract(project_factory):
-    # Differs from the staged project.yaml (GO 0.031/0.17, KEGG 0.021/0.19): the frozen contract is the source.
+def test_report_states_the_v15_ora_significance_rule_not_the_legacy_cutoffs(project_factory):
+    # v1.5 semantics: p.adjust (BH) <= 0.05; the configured pvalue/qvalue cutoffs are not selection criteria.
     text = _render_enrichment_report(project_factory, ["go", "kegg"], {"go": (0.013, 0.11), "kegg": (0.007, 0.13)})
     go_section = text[text.index("<h3>GO ORA</h3>"):text.index("<h3>KEGG ORA</h3>")]
     kegg_section = text[text.index("<h3>KEGG ORA</h3>"):]
-    assert "Significant terms: raw p-value &le; 0.013 and q-value &le; 0.11." in go_section
-    assert "Significant terms: raw p-value &le; 0.007 and q-value &le; 0.13." in kegg_section
     for section in (go_section, kegg_section):
-        assert "(p.adjust, BH) is reported but is not a selection criterion" in section
-    assert "0.031" not in text and "0.021" not in text
+        assert "Significant terms: adjusted p-value (p.adjust, Benjamini-Hochberg) &le; 0.05 (significance semantics v1.5)." in section
+    assert "raw p-value &le;" not in text and "0.013" not in text and "0.11" not in text
+    assert "pvalue &le; 0.05 and qvalue &le; 0.2 for ORA" in text  # the pre-v1.5 rule is documented in Methods
 
 
 def test_report_states_only_the_enabled_ora_module_rule(project_factory):
     text = _render_enrichment_report(project_factory, ["kegg"])
     assert "<h3>GO ORA</h3>" not in text
-    assert text.count("Significant terms: raw p-value") == 1
-    assert "Significant terms: raw p-value &le; 0.021 and q-value &le; 0.19." in text
+    assert text.count("Significant terms: adjusted p-value") == 1
 
 
 def test_gsea_only_report_does_not_present_the_ora_rule(project_factory):

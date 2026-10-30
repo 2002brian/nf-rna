@@ -148,21 +148,22 @@ def test_go_and_kegg_share_dual_threshold_mapping_qc(mapping_rate, status):
         assert "mapping_qc" in script
 
 
-def test_go_and_kegg_calculate_all_evaluated_terms_then_share_nf_rna_filtering():
+def test_go_and_kegg_calculate_all_evaluated_terms_then_share_v15_significance():
     import subprocess
 
     require_rscript()
     r_root = Path(__file__).parents[1] / "src" / "rnaseq" / "r"
-    code = f'''source("{r_root / "gsea_term_filtering.R"}")
-empty <- data.frame(ID=character(), Description=character(), setSize=integer(), enrichmentScore=numeric(), NES=numeric(), pvalue=numeric(), p.adjust=numeric(), qvalue=numeric(), rank=integer(), leading_edge=character(), core_enrichment=character(), stringsAsFactors=FALSE)
-raw <- data.frame(ID=sprintf("TERM:%03d", 1:100), Description="fixture", setSize=10L, enrichmentScore=1, NES=c(rep(1, 10), rep(-1, 10), rep(1, 80)), pvalue=c(rep(0.01, 20), rep(0.50, 80)), p.adjust=c(rep(0.01, 20), rep(0.20, 80)), qvalue=0.1, rank=1:100, leading_edge="tags", core_enrichment="1", stringsAsFactors=FALSE)
-out <- gsea_term_tables(raw, empty, pvalue_cutoff=0.05, padj_cutoff=0.05)
-stopifnot(nrow(out$terms) == 100L, nrow(out$significant) == 20L, nrow(out$positive) == 10L, nrow(out$negative) == 10L, any(out$terms$p.adjust > 0.05), !any(out$significant$p.adjust > 0.05))
+    code = f'''source("{r_root / "enrichment_common.R"}"); source("{r_root / "gsea_term_filtering.R"}")
+empty <- data.frame(ID=character(), Description=character(), setSize=integer(), enrichmentScore=numeric(), NES=numeric(), pvalue=numeric(), p.adjust=numeric(), qvalue=numeric(), rank=integer(), leading_edge=character(), core_enrichment=character(), significant=logical(), stringsAsFactors=FALSE)
+raw <- data.frame(ID=sprintf("TERM:%03d", 1:100), Description="fixture", setSize=10L, enrichmentScore=1, NES=c(rep(1, 10), rep(-1, 10), rep(1, 80)), pvalue=c(rep(0.01, 20), rep(0.50, 80)), p.adjust=c(rep(0.01, 19), 0.05, rep(0.20, 79), NA), qvalue=0.1, rank=1:100, leading_edge="tags", core_enrichment="1", stringsAsFactors=FALSE)
+out <- gsea_term_tables(raw, empty)
+stopifnot(nrow(out$terms) == 100L, nrow(out$significant) == 20L, nrow(out$positive) == 10L, nrow(out$negative) == 10L,
+          identical(out$terms$significant, !is.na(out$terms$p.adjust) & out$terms$p.adjust <= 0.05), all(out$significant$significant))
 '''
     result = subprocess.run(["Rscript", "-e", code], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
 
-    for name, call in (("gsea_analysis.R", "gseGO("), ("kegg_analysis.R", "gseKEGG(")):
+    for name, call in (("gsea_analysis.R", "gseGO("), ("kegg_analysis.R", "GSEA(")):
         script = (r_root / name).read_text(encoding="utf-8")
         assert 'source(file.path(dirname(normalizePath(script_file)), "gsea_term_filtering.R"))' in script
         assert "pvalueCutoff=1" in script

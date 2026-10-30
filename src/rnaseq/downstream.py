@@ -88,7 +88,7 @@ def r_runtime_checks() -> tuple[RuntimeCheck, ...]:
         detail = (result.stderr or result.stdout).strip() or "Rscript --version failed."
         return (RuntimeCheck("Rscript", "NOT FOUND", detail),)
     checks = [RuntimeCheck("Rscript", "FOUND", (result.stdout or result.stderr).strip())]
-    for package in ("DESeq2", "apeglm", "ashr", "tximport", "ggplot2", "pheatmap", "yaml", "jsonlite", "clusterProfiler", "AnnotationDbi", "org.Hs.eg.db", "org.Mm.eg.db"):
+    for package in ("DESeq2", "apeglm", "ashr", "tximport", "ggplot2", "pheatmap", "yaml", "jsonlite", "clusterProfiler", "AnnotationDbi", "org.Hs.eg.db", "org.Mm.eg.db", "enrichplot", "KEGGREST", "GOSemSim", "GO.db", "openssl"):
         probe = _capture(["Rscript", "-e", f"quit(status=if (requireNamespace('{package}', quietly=TRUE)) 0 else 1)"])
         checks.append(RuntimeCheck(package, "FOUND" if probe.returncode == 0 else "NOT FOUND", "available" if probe.returncode == 0 else "required for L1"))
     return tuple(checks)

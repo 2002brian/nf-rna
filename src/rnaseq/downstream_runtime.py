@@ -49,6 +49,9 @@ REQUIRED_R_PACKAGES = (
     "org.Mm.eg.db", "ggplot2", "pheatmap", "yaml", "jsonlite",
     # Locked via clusterProfiler -> enrichplot; L1 uses it directly for PCA labels.
     "ggrepel",
+    # Locked as clusterProfiler dependencies; enrichment uses them directly
+    # (running-score plots, KEGG snapshots, GO simplify, snapshot SHA-256).
+    "enrichplot", "KEGGREST", "GOSemSim", "GO.db", "openssl",
 )
 
 

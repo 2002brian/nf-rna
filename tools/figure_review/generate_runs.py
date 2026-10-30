@@ -63,6 +63,28 @@ KEGG_GSEA = {**GSEA_CONFIG, "padj_cutoff": 0.05}
 HERE = Path(__file__).resolve().parent
 
 
+def _synthetic_kegg_snapshot(base: Path) -> Path:
+    """A SYNTHETIC KEGG snapshot for the offline fixture: real pathway names, synthetic gene links."""
+
+    import hashlib
+
+    root = base / "kegg_snapshots"
+    target = root / "synthetic_fixture"
+    target.mkdir(parents=True)
+    pathways = [line.split("\t") for line in (HERE / "fixtures" / "kegg_list_pathway_mmu.txt").read_text(encoding="utf-8").splitlines() if line]
+    genes = [line.split("\t")[0] for line in (base / "all_genes.tsv").read_text(encoding="utf-8").splitlines()[1:]]
+    names = [(pid.removeprefix("path:"), name.removesuffix(" - Mus musculus (house mouse)")) for pid, name in pathways]
+    pairs = [(pid, gene) for index, (pid, _name) in enumerate(names) for gene in genes[index::len(names)]]
+    (target / "TERM2GENE.tsv").write_text("term\tgene\n" + "".join(f"{a}\t{b}\n" for a, b in pairs), encoding="utf-8")
+    (target / "TERM2NAME.tsv").write_text("term\tname\n" + "".join(f"{a}\t{b}\n" for a, b in names), encoding="utf-8")
+    files = {name: {"sha256": hashlib.sha256((target / name).read_bytes()).hexdigest()} for name in ("TERM2GENE.tsv", "TERM2NAME.tsv")}
+    manifest = {"schema": "nf-rna.kegg-snapshot.v1", "snapshot_id": "synthetic_fixture", "organism": "mmu", "retrieved_at_utc": "1970-01-01T00:00:00Z",
+                "kegg_release": "SYNTHETIC offline fixture; not KEGG data", "source_urls": {}, "files": files,
+                "pathways": len(names), "genes": len(set(genes))}
+    (target / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return root
+
+
 def run_enrichment(out: Path, figures: dict | None, kegg_scenario: str | None = None, only_kegg: bool = False, empty: bool = False) -> dict[str, int]:
     base = out / "enrichment"
     base.mkdir(parents=True)
@@ -104,7 +126,12 @@ def run_enrichment(out: Path, figures: dict | None, kegg_scenario: str | None = 
         (base / "kegg_down.tsv").write_text("\n".join([rows[0], *rows[half:]]) + "\n", encoding="utf-8")
         kegg_contrast = {**contrast, "up": f"{base}/kegg_up.tsv", "down": f"{base}/kegg_down.tsv"}
         kegg_annotation = {**annotation, "gene_symbol_output": True, "enrichment": {"kegg": {"ora": KEGG_ORA, "gsea": KEGG_GSEA}}}
-        kegg_resource = {"organism_code": "mmu", "provider": "KEGG REST" if kegg_scenario == "live" else "KEGG REST (offline fixture)", "probe_endpoint": "https://rest.kegg.jp/list/pathway/mmu"}
+        if kegg_scenario == "live":
+            from rnaseq.enrichment_config import kegg_snapshot_root
+
+            kegg_resource = {"organism_code": "mmu", "provider": "kegg_rest_snapshot", "snapshot": None, "snapshot_root": str(kegg_snapshot_root("mmu"))}
+        else:
+            kegg_resource = {"organism_code": "mmu", "provider": "kegg_rest_snapshot", "snapshot": "synthetic_fixture", "snapshot_root": str(_synthetic_kegg_snapshot(base))}
         for name, mode in (("kegg", "ora"), ("gsea_kegg", "gsea")):
             configs[name] = ("kegg_analysis.R", {"mode": mode, "output_dir": f"{base}/{name}", "orgdb_package": "org.Mm.eg.db", "annotation": kegg_annotation, "kegg": kegg_resource,
                                                  "contrasts": [kegg_contrast], "runtime": runtime("kegg_analysis.R")})

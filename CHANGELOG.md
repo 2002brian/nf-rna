@@ -2,6 +2,34 @@
 
 All notable changes to this project are documented here.
 
+## 1.5.0 — Unreleased
+
+Development version (branch `feature/v1.5.0`). Not released.
+
+### Changed — enrichment significance semantics
+
+- **Enrichment significance semantics have changed (semantics "v1.5").** GO ORA, KEGG ORA, GO GSEA and KEGG GSEA now all call a term significant when `p.adjust` (Benjamini–Hochberg) `<= 0.05`. clusterProfiler is called with `pvalueCutoff = 1` and `qvalueCutoff = 1`, and nf-rna adds a `significant` column to every all-terms table. In v1.4.x, ORA used `pvalue <= 0.05 AND qvalue <= 0.2` (p.adjust not used) and GSEA used `p.adjust <= 0.05 AND pvalue <= 0.05`. Existing results are not recomputed; new summaries and provenance record `significance_semantics: "v1.5"`. The `pvalue_cutoff`/`qvalue_cutoff`/`padj_cutoff` fields of `annotation.enrichment` are still accepted but no longer select terms.
+- **ORA universe.** The ORA universe is now the genes with a non-NA DESeq2 padj, mapped to Entrez and intersected with the gene-set database (each GO ontology, or the KEGG snapshot). It was every gene with a finite p-value. Universe sizes, the Entrez mapping rate and clusterProfiler's BgRatio N are recorded per foreground.
+- **KEGG gene sets come from a local snapshot.** KEGG REST is downloaded once (KEGGREST) into `~/.cache/nf-rna/genesets/kegg/<org>/<snapshot_id>/` (`TERM2GENE.tsv`, `TERM2NAME.tsv`, `manifest.json` with URLs, retrieval time, KEGG release information and SHA-256). KEGG ORA and GSEA use `enricher()`/`GSEA()` on that snapshot instead of `enrichKEGG`/`gseKEGG`. Without `annotation.enrichment.kegg.snapshot` the latest existing snapshot is used. Snapshot ID and SHA-256 are verified and recorded in provenance. The run preflight needs KEGG REST only when no snapshot exists. `resource_provider` defaults to `kegg_rest_snapshot`; the old value is accepted.
+- **GSEA reproducibility.** Both GO and KEGG GSEA now use `set.seed(seed)` immediately before the call, `seed = TRUE`, `nPermSimple = 10000` and `eps = 0`, all recorded. KEGG GSEA previously had no explicit seed. The ranking metric is unchanged (DESeq2 Wald `stat`).
+- **GO provenance** records the OrgDb, GO.db and clusterProfiler versions.
+
+### Added
+
+- Long-format member tables for the significant pathways of every analysis (`GO_<ont>_members.tsv`, `kegg_members.tsv`, GSEA `members.tsv`), keyed by `gene_id`. Columns: symbol, Entrez ID, log2FoldChange, padj and the pathway's p.adjust; GSEA tables add NES and leading-edge membership.
+- GO redundancy reduction: `simplify(cutoff = 0.7)` tables and dotplots (`*_simplified`) beside the unchanged full results.
+- GSEA running-score plots (`enrichplot::gseaplot2`) for up to 5 significant gene sets per NES sign, titled with NES and adjusted P.
+- Every enrichment figure is also written as a PNG at the profile's raster dpi (`_300dpi.png`) beside the vector PDF. When nothing is significant, no figure is drawn and the summary says why.
+- L2 (Phase 1): DEG tables gain `symbol`, `description`, group means of normalized counts and `log2FoldChange_shrunk` (apeglm, ashr fallback, never `normal`). Also new: `normalized_counts.tsv`, per-contrast `contrast_metadata.json`, an MA plot, symbol-labelled volcano and heatmap, and 300 dpi PNGs. The DEG definition and every DESeq2 statistic are unchanged.
+
+### Fixed
+
+- `rnaseq.go/gsea/kegg.execute_*` (Python entry points) now build the R backend configuration with the same function as the Nextflow path, including the contrast numerator/denominator. They no longer read summary fields the R backends stopped writing.
+
+### Runtime
+
+- The downstream lock adds `bioconductor-apeglm` and `r-ashr` (Phase 1). Enrichment additionally uses enrichplot, KEGGREST, GOSemSim, GO.db and openssl, which were already locked as clusterProfiler dependencies and are now probed by the runtime check.
+
 ## 1.4.1 — 2026-10-29
 
 Patch release from the `v1.4.0` post-release user-workflow audit. DESeq2, tximport, nf-core/rnaseq 3.26.0, QC and enrichment calculations, Nextflow workflows, reference validation, the upstream-reuse compatibility contract, the provenance schema, and scientific result tables are unchanged.

@@ -13,8 +13,9 @@ from typing import Any
 import yaml
 
 from rnaseq.design_matrix import residual_degrees_of_freedom_message
+from rnaseq.enrichment_config import BACKEND_DIRECTORIES, BACKEND_SCRIPTS, backend_config
 from rnaseq.figure_settings import resolve_run_figure_settings
-from rnaseq.models import ANNOTATION_DATABASES, deg_gene_annotation, describe_enrichment, normalize_enrichment_selection
+from rnaseq.models import deg_gene_annotation, describe_enrichment, normalize_enrichment_selection
 
 
 FILTER = {"rule": "remove genes with total count < 10 after all-zero removal", "minimum_total_count": 10}
@@ -494,21 +495,12 @@ def _annotation_qc_report_lines(ranking: dict[str, Any]) -> list[str]:
 
 
 def _ora_significance_html(contract: dict[str, Any], module: str) -> str:
-    """State the delivered ORA significance predicate with its frozen cutoffs.
+    """State the delivered enrichment significance predicate (v1.5 semantics)."""
 
-    Mirrors go_analysis.R/kegg_analysis.R: pvalue <= pvalue_cutoff and
-    qvalue <= qvalue_cutoff. p.adjust is reported but is not part of it.
-    """
-
-    annotation = contract.get("annotation")
-    enrichment = annotation.get("enrichment", {}) if isinstance(annotation, dict) else {}
-    settings = enrichment.get("go") if module == "go" else (enrichment.get("kegg") or {}).get("ora")
-    settings = settings if isinstance(settings, dict) else {}
     return (
-        f"<p>Significant terms: raw p-value &le; {_value(settings, 'pvalue_cutoff')} and "
-        f"q-value &le; {_value(settings, 'qvalue_cutoff')}. The adjusted p-value "
-        f"(p.adjust, {_value(settings, 'p_adjust_method')}) is reported but is not a selection criterion, "
-        "so a significant term can have p.adjust above the p-value cutoff.</p>"
+        "<p>Significant terms: adjusted p-value (p.adjust, Benjamini-Hochberg) &le; 0.05 "
+        "(significance semantics v1.5). clusterProfiler is called with pvalueCutoff = 1 and qvalueCutoff = 1, "
+        "so the all-terms tables keep every evaluated term with a <code>significant</code> column.</p>"
     )
 
 
@@ -764,7 +756,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
     if "go" in selected or "kegg" in selected:
         sections.extend([
             "<h2>L2 — over-representation analysis</h2>",
-            "<p>ORA uses the successfully mapped subset of statistically tested genes (finite DESeq2 p-value) as its universe. NA, NaN, Inf, and -Inf p-values are excluded; tested genes with an NA adjusted p-value remain eligible.</p>",
+            "<p>ORA universe: genes with a non-NA DESeq2 adjusted p-value (they passed independent filtering and outlier handling), mapped to Entrez and intersected with the genes of the gene-set database (each GO ontology; the KEGG snapshot). Foregrounds: significant, upregulated and downregulated DEGs of the L2 definition.</p>",
         ])
         # GO and KEGG ORA summaries name their term counts differently.
         term_count_fields = {"go": ("evaluated_term_count", "significant_term_count"), "kegg": ("tested_terms", "significant_terms")}
@@ -787,9 +779,11 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
                     f"<h4>{escape(contrast['contrast_id'])}</h4>",
                     "<ul>"
                     f"<li>Post-L1 retained genes: {_value(universe, 'post_l1_retained_genes')}</li>"
-                    f"<li>Statistically tested genes: {_value(universe, 'statistically_tested_genes')}</li>"
-                    f"<li>Mapped tested-gene universe: {_value(universe, 'successfully_mapped_tested_genes')}</li>"
-                    "</ul>",
+                    f"<li>Genes with non-NA padj: {_value(universe, 'padj_non_na_genes')}</li>"
+                    f"<li>Entrez mapping rate: {_value(universe, 'mapping_rate')}</li>"
+                    + (f"<li>KEGG universe (mapped genes in the KEGG snapshot): {_value(universe.get('kegg', {}), 'universe_genes')}</li>" if module == "kegg" else
+                       "".join(f"<li>GO {escape(str(name))} universe: {_value(record, 'universe_genes')}</li>" for name, record in (universe.get("by_ontology") or {}).items()))
+                    + "</ul>",
                 ])
                 for foreground, outcome in (item.get("foregrounds") or {}).items():
                     if not isinstance(outcome, dict):
@@ -827,7 +821,8 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
         sections.extend([
             "<h2>L2 — preranked GSEA</h2>",
             "<p>Enrichment method: GSEA. Gene-set resources: GO BP, GO MF, GO CC, KEGG.</p>",
-            "<p>GSEA uses the unmodified DESeq2 statistic-ranked gene list; no DEG, adjusted-p-value, p-value, or fold-change prefilter is applied.</p>",
+            "<p>GSEA uses the unmodified DESeq2 statistic-ranked gene list; no DEG, adjusted-p-value, p-value, or fold-change prefilter is applied. "
+            "Significant gene sets: p.adjust (Benjamini-Hochberg) &le; 0.05 (significance semantics v1.5); fgsea with a fixed seed, nPermSimple = 10000 and eps = 0.</p>",
             annotation_html,
         ])
         for contrast in contrasts:
@@ -886,7 +881,8 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
                 f"<li>Evaluated pathways: {_evaluated_terms(kegg_item)}</li>"
                 f"<li>Significant pathways: {_value(kegg_item, 'significant_terms')}</li>"
                 f"<li>Positive / negative pathways: {_value(kegg_item, 'positive_terms')} / {_value(kegg_item, 'negative_terms')}</li>"
-                f"<li>Resource provider: {escape(str(kegg_summary.get('resource', {}).get('provider', 'not available')))}</li>"
+                f"<li>Resource provider: {escape(str(kegg_summary.get('resource', {}).get('provider', 'not available')))}; "
+                f"snapshot {escape(str(kegg_summary.get('resource', {}).get('snapshot_id', 'not available')))}</li>"
                 f"<li>Client tables: <code>tables/l2/enrichment/gsea_kegg/{escape(contrast_id)}/</code></li>"
                 "</ul>",
                 _image_html(kegg_root / contrast_id / "dotplot.png", f"KEGG GSEA dotplot: {contrast_id}"),
@@ -918,7 +914,10 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
         f"<li>{_pipeline_provenance_line(execution, project.get('project', {}).get('pipeline') if isinstance(project.get('project'), dict) else None)}</li>"
         f"<li>{_source_revision_line(execution)}</li>"
         f"<li>Functional enrichment selected: {escape(describe_enrichment(selected))}.</li>"
-        + ("<li>GO GSEA evaluates BP, MF, and CC; KEGG GSEA uses the configured KEGG provider.</li>" if "gsea" in selected else "")
+        + ("<li>Enrichment significance (semantics v1.5): p.adjust (Benjamini-Hochberg) &le; 0.05 for GO/KEGG ORA and GSEA. "
+           "Results produced before v1.5 used pvalue &le; 0.05 and qvalue &le; 0.2 for ORA, and p.adjust &le; 0.05 and pvalue &le; 0.05 for GSEA.</li>" if selected else "")
+        + ("<li>KEGG gene sets come from a local snapshot of KEGG REST; its ID and SHA-256 are in the KEGG scientific provenance.</li>" if {"kegg", "gsea"} & set(selected) else "")
+        + ("<li>GO GSEA evaluates BP, MF, and CC; KEGG GSEA uses the same KEGG snapshot as KEGG ORA.</li>" if "gsea" in selected else "")
         + "</ul>",
         "<p>This automated report contains technical/statistical results only and no biological interpretation.</p>",
         "</body></html>",
@@ -932,35 +931,12 @@ def enrichment_config(contract_path: Path, inputs: Path, l2: Path, kind: str, ou
     contract = _read_contract(contract_path)
     inputs_root, manifest = _read_execution_inputs(inputs)
     annotation = _required_frozen_annotation(contract, kind)
-    organism = annotation["organism"]
-    orgdb = ANNOTATION_DATABASES.get(organism)
-    if orgdb is None:
-        raise ValueError(f"unsupported enrichment organism: {organism}")
-    contrasts = []
-    for item in _contrasts(_staged_file(inputs_root, manifest.get("contrasts"), "contrasts")):
-        root = l2 / "contrasts" / item["contrast_id"]
-        contrasts.append({
-            "contrast_id": item["contrast_id"],
-            # Figure labelling only: the sign convention of the ranked statistic.
-            "numerator": item.get("numerator"),
-            "denominator": item.get("denominator"),
-            "all_genes": str(root / "all_genes.tsv"),
-            "significant": str(root / "significant.tsv"),
-            "up": str(root / "upregulated.tsv"),
-            "down": str(root / "downregulated.tsv"),
-        })
-    names = {"go": "go", "kegg": "kegg", "gsea-go": "gsea_go", "gsea-kegg": "gsea_kegg"}
-    script = {"go": "go_analysis.R", "kegg": "kegg_analysis.R", "gsea-go": "gsea_analysis.R", "gsea-kegg": "kegg_analysis.R"}[kind]
-    cfg: dict[str, Any] = {
-        "output_dir": str(output / "enrichment" / names[kind]), "annotation": annotation,
-        "orgdb_package": orgdb, "contrasts": contrasts,
-        "figure_style": resolve_run_figure_settings(contract, _project(inputs)),
-        "runtime": _runtime_provenance(contract, script, kind),
-    }
-    if kind in {"kegg", "gsea-kegg"}:
-        code = {"Homo sapiens": "hsa", "Mus musculus": "mmu"}[organism]
-        cfg.update({"mode": "ora" if kind == "kegg" else "gsea", "kegg": {"organism_code": code, "provider": annotation["enrichment"]["kegg"]["resource_provider"], "probe_endpoint": f"https://rest.kegg.jp/list/pathway/{code}"}})
-    return cfg
+    return backend_config(
+        kind, annotation=annotation, contrasts=_contrasts(_staged_file(inputs_root, manifest.get("contrasts"), "contrasts")),
+        l2_dir=l2, output_dir=output / "enrichment" / BACKEND_DIRECTORIES[kind],
+        figure_style=resolve_run_figure_settings(contract, _project(inputs)),
+        runtime=_runtime_provenance(contract, BACKEND_SCRIPTS[kind], kind),
+    )
 
 
 def main() -> None:

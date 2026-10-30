@@ -8,6 +8,7 @@ source(file.path(dirname(normalizePath(script_file)), "gsea_core_members.R"))
 source(file.path(dirname(normalizePath(script_file)), "annotation_mapping_qc.R"))
 source(file.path(dirname(normalizePath(script_file)), "gsea_term_filtering.R"))
 source(file.path(dirname(normalizePath(script_file)), "figures.R"))
+source(file.path(dirname(normalizePath(script_file)), "enrichment_common.R"))
 suppressPackageStartupMessages({ library(jsonlite); library(AnnotationDbi); library(clusterProfiler); library(ggplot2) })
 
 cfg <- fromJSON(args[[2]], simplifyVector = FALSE)
@@ -21,7 +22,7 @@ normalize_id <- function(x) nf_rna_annotation_key(x, input_type)
 empty_terms <- function() data.frame(
   ID=character(), Description=character(), setSize=integer(), enrichmentScore=numeric(), NES=numeric(),
   pvalue=numeric(), p.adjust=numeric(), qvalue=numeric(), rank=integer(), leading_edge=character(), core_enrichment=character(),
-  stringsAsFactors=FALSE
+  significant=logical(), stringsAsFactors=FALSE
 )
 write_table <- function(x, path) write.table(x, path, sep="\t", quote=FALSE, row.names=FALSE, na="NA")
 
@@ -58,7 +59,7 @@ map_ranked_sources <- function(source, stat) {
   mapping
 }
 
-run_ontology <- function(gene_list, ranked_mapping, ontology, root, contrast) {
+run_ontology <- function(gene_list, ranked_mapping, ontology, root, contrast, lookup) {
   directory <- file.path(root, ontology); dir.create(directory, recursive=TRUE, showWarnings=FALSE)
   result <- raw <- terms <- significant <- positive <- negative <- top <- p <- core_audit <- filtered <- NULL
   on.exit({ rm(result, raw, terms, significant, positive, negative, top, p, core_audit, filtered); gc(verbose=FALSE) }, add=TRUE)
@@ -67,11 +68,11 @@ run_ontology <- function(gene_list, ranked_mapping, ontology, root, contrast) {
     result <- suppressMessages(gseGO(
       geneList=gene_list, OrgDb=orgdb, keyType="ENTREZID", ont=ontology,
       minGSSize=as.integer(gsea_cfg$min_gs_size), maxGSSize=as.integer(gsea_cfg$max_gs_size),
-      pvalueCutoff=1, pAdjustMethod=gsea_cfg$p_adjust_method,
-      eps=0, verbose=FALSE, seed=TRUE
+      pvalueCutoff=1, pAdjustMethod=NF_RNA_ENRICHMENT_ADJUST,
+      eps=0, verbose=FALSE, seed=TRUE, nPermSimple=NF_RNA_GSEA_NPERM_SIMPLE
     ))
     raw <- if (is.null(result)) data.frame() else as.data.frame(result)
-    filtered <- gsea_term_tables(raw, empty_terms(), gsea_cfg$pvalue_cutoff, gsea_cfg$padj_cutoff)
+    filtered <- gsea_term_tables(raw, empty_terms())
     terms <- filtered$terms; significant <- filtered$significant
     positive <- filtered$positive; negative <- filtered$negative
     write_table(terms, file.path(directory, "all_terms.tsv"))
@@ -79,19 +80,33 @@ run_ontology <- function(gene_list, ranked_mapping, ontology, root, contrast) {
     write_table(positive, file.path(directory, "positive_enrichment.tsv"))
     write_table(negative, file.path(directory, "negative_enrichment.tsv"))
     core_audit <- write_gsea_core_members(terms, ranked_mapping, file.path(directory, "gsea_core_members.tsv"), as.integer(gsea_cfg$max_gs_size))
+    member_record <- nf_rna_write_members(significant, nf_rna_gsea_member_pairs(result, significant, ranked_mapping), lookup, file.path(directory, "members.tsv"), gsea=TRUE)
     plot_terms <- significant[!is.na(significant$NES), , drop=FALSE]
+    figures <- list(dotplot="not drawn: no significant terms (p.adjust <= 0.05)", dotplot_simplified="not drawn: no significant terms (p.adjust <= 0.05)")
+    simplified_record <- list(significant_terms=0, simplified_terms=0, reason="no significant terms")
+    dotplot_meta <- function(n, path, what) list(ontology=ontology, seed=as.integer(gsea_cfg$seed), significance_semantics=NF_RNA_SIGNIFICANCE_SEMANTICS,
+      display_subset=sprintf("top %d %s by |NES|, ties by ID, of %d (p.adjust <= %s)", NF_RNA_DOTPLOT_TOP, what, n, NF_RNA_ENRICHMENT_PADJ),
+      source_tables=list(nf_rna_source_data(path, cfg$output_dir, what), nf_rna_source_data(file.path(root, "ranked_gene_list.tsv"), cfg$output_dir, "ranked gene list")))
     if (nrow(plot_terms) > 0) {
-      top <- head(plot_terms[order(-abs(plot_terms$NES), plot_terms$ID), , drop=FALSE], 15)
-      nf_rna_gsea_dotplot(fig, top, contrast, gsea_cfg$padj_cutoff, gsea_cfg$p_adjust_method, file.path(directory, "dotplot"), cfg$output_dir,
-        list(ontology=ontology, seed=as.integer(gsea_cfg$seed), display_subset=sprintf("top 15 significant terms by |NES|, ties by ID, of %d significant (pvalue <= %s, adjusted P <= %s)", nrow(plot_terms), gsea_cfg$pvalue_cutoff, gsea_cfg$padj_cutoff),
-             source_tables=list(nf_rna_source_data(file.path(directory, "significant.tsv"), cfg$output_dir, "all significant terms"), nf_rna_source_data(file.path(root, "ranked_gene_list.tsv"), cfg$output_dir, "ranked gene list"))))
+      top <- head(plot_terms[order(-abs(plot_terms$NES), plot_terms$ID), , drop=FALSE], NF_RNA_DOTPLOT_TOP)
+      nf_rna_gsea_dotplot(fig, top, contrast, NF_RNA_ENRICHMENT_PADJ, NF_RNA_ENRICHMENT_ADJUST, file.path(directory, "dotplot"), cfg$output_dir,
+        dotplot_meta(nrow(plot_terms), file.path(directory, "significant.tsv"), "significant terms"), formats=NF_RNA_ENRICHMENT_FORMATS)
+      simplified <- nf_rna_simplify_go(result, significant)
+      write_table(simplified$table, file.path(directory, "significant_simplified.tsv"))
+      simple_terms <- simplified$table[!is.na(simplified$table$NES), , drop=FALSE]
+      nf_rna_gsea_dotplot(fig, head(simple_terms[order(-abs(simple_terms$NES), simple_terms$ID), , drop=FALSE], NF_RNA_DOTPLOT_TOP), contrast, NF_RNA_ENRICHMENT_PADJ, NF_RNA_ENRICHMENT_ADJUST,
+        file.path(directory, "dotplot_simplified"), cfg$output_dir, dotplot_meta(nrow(simple_terms), file.path(directory, "significant_simplified.tsv"), "simplified significant terms"), formats=NF_RNA_ENRICHMENT_FORMATS)
+      simplified_record <- nf_rna_simplify_record(significant, simplified)
+      figures <- list(dotplot="drawn", dotplot_simplified="drawn")
       rm(plot_terms)
     }
-    summary <- list(status=if (nrow(significant) == 0) "NO_SIGNIFICANT_TERMS" else "SUCCESS", evaluated_terms=nrow(terms), all_terms=nrow(terms), significant_terms=nrow(significant), positive_terms=nrow(positive), negative_terms=nrow(negative), p_adjust_method=gsea_cfg$p_adjust_method, configured_pvalue_cutoff=as.numeric(gsea_cfg$pvalue_cutoff), configured_padj_cutoff=as.numeric(gsea_cfg$padj_cutoff), calculation_pvalue_cutoff=1, min_gs_size=as.integer(gsea_cfg$min_gs_size), max_gs_size=as.integer(gsea_cfg$max_gs_size), na_pathways=sum(is.na(terms$pvalue) | is.na(terms$p.adjust) | is.na(terms$NES)), core_member_rows=core_audit$rows)
+    running <- nf_rna_running_score_plots(fig, result, significant, contrast, file.path(directory, "running_score"), cfg$output_dir, list(ontology=ontology))
+    figures$running_score <- running
+    summary <- list(status=if (nrow(significant) == 0) "NO_SIGNIFICANT_TERMS" else "SUCCESS", evaluated_terms=nrow(terms), all_terms=nrow(terms), significant_terms=nrow(significant), positive_terms=nrow(positive), negative_terms=nrow(negative), p_adjust_method=NF_RNA_ENRICHMENT_ADJUST, significance_rule=nf_rna_significance_record()$rule, calculation_pvalue_cutoff=1, min_gs_size=as.integer(gsea_cfg$min_gs_size), max_gs_size=as.integer(gsea_cfg$max_gs_size), na_pathways=sum(is.na(terms$pvalue) | is.na(terms$p.adjust) | is.na(terms$NES)), core_member_rows=core_audit$rows, members=member_record, simplified=simplified_record, figures=figures)
     rm(result, raw, terms, significant, positive, negative, top, p, core_audit, filtered)
     gc(verbose=FALSE)
     summary
-  }, error=function(error) list(status="FAILED", reason=conditionMessage(error), evaluated_terms=0, all_terms=0, significant_terms=0, positive_terms=0, negative_terms=0, p_adjust_method=gsea_cfg$p_adjust_method, configured_pvalue_cutoff=as.numeric(gsea_cfg$pvalue_cutoff), configured_padj_cutoff=as.numeric(gsea_cfg$padj_cutoff), calculation_pvalue_cutoff=1, min_gs_size=as.integer(gsea_cfg$min_gs_size), max_gs_size=as.integer(gsea_cfg$max_gs_size), na_pathways=0))
+  }, error=function(error) list(status="FAILED", reason=conditionMessage(error), evaluated_terms=0, all_terms=0, significant_terms=0, positive_terms=0, negative_terms=0, p_adjust_method=NF_RNA_ENRICHMENT_ADJUST, calculation_pvalue_cutoff=1, min_gs_size=as.integer(gsea_cfg$min_gs_size), max_gs_size=as.integer(gsea_cfg$max_gs_size), na_pathways=0))
 }
 
 contrast_summaries <- list()
@@ -100,6 +115,7 @@ for (contrast in cfg$contrasts) {
   root <- file.path(cfg$output_dir, contrast$contrast_id); dir.create(root, recursive=TRUE, showWarnings=FALSE)
   source_table <- read.delim(contrast$all_genes, check.names=FALSE, stringsAsFactors=FALSE)
   if (!all(c("gene_id", "stat") %in% names(source_table))) stop("M4A all_genes.tsv must contain gene_id and stat columns")
+  lookup <- nf_rna_gene_lookup(source_table)
   raw_stat <- suppressWarnings(as.numeric(source_table$stat))
   finite <- is.finite(raw_stat) & !is.na(source_table$gene_id) & source_table$gene_id != ""
   mapping <- map_ranked_sources(as.character(source_table$gene_id[finite]), raw_stat[finite])
@@ -135,7 +151,7 @@ for (contrast in cfg$contrasts) {
   gene_list <- ranked$stat; names(gene_list) <- ranked$entrez_id
   ontologies <- list(); completed_ontologies <- character(); failed_ontology <- NULL
   for (ontology in c("BP", "MF", "CC")) {
-    outcome <- run_ontology(gene_list, ranked_mapping, ontology, root, contrast)
+    outcome <- run_ontology(gene_list, ranked_mapping, ontology, root, contrast, lookup)
     ontologies[[ontology]] <- outcome
     if (outcome$status == "FAILED") { failed_ontology <- ontology; break }
     completed_ontologies <- c(completed_ontologies, ontology)
@@ -148,7 +164,12 @@ for (contrast in cfg$contrasts) {
 }
 overall <- if (any(vapply(contrast_summaries, function(x) x$status == "FAILED", logical(1)))) "FAILED" else if (length(blocked_reasons) > 0) "BLOCKED" else if (all(vapply(contrast_summaries, function(x) x$status == "NO_SIGNIFICANT_TERMS", logical(1)))) "NO_SIGNIFICANT_TERMS" else "SUCCESS"
 annotation_contract <- list(input_id_type=cfg$annotation$input_id_type, target_id_type=cfg$annotation$target_id_type, warning_threshold=as.numeric(cfg$annotation$mapping_warning_rate), blocking_threshold=as.numeric(cfg$annotation$minimum_mapping_rate))
-summary <- list(status=overall, reason=if (length(blocked_reasons)>0) paste(blocked_reasons, collapse=" ") else NULL, annotation_qc_status=annotation_qc_status(contrast_summaries), annotation=annotation_contract, annotation_database=cfg$orgdb_package, annotation_database_version=as.character(packageVersion(cfg$orgdb_package)), clusterProfiler_version=as.character(packageVersion("clusterProfiler")), contrasts=contrast_summaries)
+summary <- list(status=overall, reason=if (length(blocked_reasons)>0) paste(blocked_reasons, collapse=" ") else NULL,
+                significance_semantics=NF_RNA_SIGNIFICANCE_SEMANTICS, significance=nf_rna_significance_record(),
+                gsea=nf_rna_gsea_settings(gsea_cfg$seed, gsea_cfg$min_gs_size, gsea_cfg$max_gs_size),
+                gene_set_source=list(kind="GO via OrgDb", orgdb=cfg$orgdb_package, orgdb_version=as.character(packageVersion(cfg$orgdb_package)), go_db_version=as.character(packageVersion("GO.db")),
+                                     clusterProfiler_version=as.character(packageVersion("clusterProfiler")), snapshot="none; GO results depend on these package versions"),
+                annotation_qc_status=annotation_qc_status(contrast_summaries), annotation=annotation_contract, annotation_database=cfg$orgdb_package, annotation_database_version=as.character(packageVersion(cfg$orgdb_package)), clusterProfiler_version=as.character(packageVersion("clusterProfiler")), contrasts=contrast_summaries)
 write(toJSON(summary, auto_unbox=TRUE, pretty=TRUE, null="null"), file.path(cfg$output_dir, "gsea_backend_summary.json"))
 nf_rna_write_figure_manifest(fig, cfg$output_dir)
-nf_rna_write_provenance(cfg, cfg$output_dir, "GO_GSEA", overall, c("AnnotationDbi", "clusterProfiler", "ggplot2", "scales", "systemfonts", "jsonlite", cfg$orgdb_package), summary)
+nf_rna_write_provenance(cfg, cfg$output_dir, "GO_GSEA", overall, c("AnnotationDbi", "clusterProfiler", "GO.db", "GOSemSim", "DOSE", "fgsea", "enrichplot", "ggplot2", "scales", "systemfonts", "jsonlite", cfg$orgdb_package), summary)
