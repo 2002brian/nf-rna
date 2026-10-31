@@ -172,6 +172,9 @@ def test_real_l2_replicated_raw_counts_outputs_and_determinism(tmp_path):
     assert all(0 <= x <= width_pt for x, _ in pdf_text_origins(contrast / "heatmap.pdf"))
     summary = yaml.safe_load((contrast / "summary.yaml").read_text())
     assert summary["independent_filtering"] is True
+    assert summary["independent_filtering_alpha"] == 0.05  # results(alpha) is the declared DEG padj threshold
+    filtering = json.loads((contrast / "contrast_metadata.json").read_text())["deg_definition"]["independent_filtering"]
+    assert filtering["alpha"] == 0.05 and isinstance(filtering["filter_threshold"], (int, float))
     assert "fallback" in summary["fit_method"]
     assert "biological interpretation" in (contrast / "contrast_report.md").read_text()
     assert json.loads((first.output_dir / "l2_state.json").read_text())["status"] == "SUCCESS"

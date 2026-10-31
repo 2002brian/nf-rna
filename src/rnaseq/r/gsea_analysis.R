@@ -7,6 +7,7 @@ source(file.path(dirname(normalizePath(script_file)), "gene_annotation.R"))
 source(file.path(dirname(normalizePath(script_file)), "gsea_core_members.R"))
 source(file.path(dirname(normalizePath(script_file)), "annotation_mapping_qc.R"))
 source(file.path(dirname(normalizePath(script_file)), "gsea_term_filtering.R"))
+source(file.path(dirname(normalizePath(script_file)), "gsea_leading_edge.R"))
 source(file.path(dirname(normalizePath(script_file)), "figures.R"))
 source(file.path(dirname(normalizePath(script_file)), "enrichment_common.R"))
 suppressPackageStartupMessages({ library(jsonlite); library(AnnotationDbi); library(clusterProfiler); library(ggplot2) })
@@ -63,15 +64,16 @@ run_ontology <- function(gene_list, ranked_mapping, ontology, root, contrast, lo
   directory <- file.path(root, ontology); dir.create(directory, recursive=TRUE, showWarnings=FALSE)
   result <- raw <- terms <- significant <- positive <- negative <- top <- p <- core_audit <- filtered <- NULL
   # The success path already removes these; on.exit releases whatever an error left behind.
-  on.exit({ rm(list=intersect(c("result", "raw", "terms", "significant", "positive", "negative", "top", "p", "core_audit", "filtered"), ls())); gc(verbose=FALSE) }, add=TRUE)
+  on.exit({ rm(list=intersect(c("result", "corrected", "raw", "terms", "significant", "positive", "negative", "top", "p", "core_audit", "filtered"), ls())); gc(verbose=FALSE) }, add=TRUE)
   tryCatch({
     set.seed(as.integer(gsea_cfg$seed))
     result <- suppressMessages(gseGO(
       geneList=gene_list, OrgDb=orgdb, keyType="ENTREZID", ont=ontology,
       minGSSize=as.integer(gsea_cfg$min_gs_size), maxGSSize=as.integer(gsea_cfg$max_gs_size),
       pvalueCutoff=1, pAdjustMethod=NF_RNA_ENRICHMENT_ADJUST,
-      eps=0, verbose=FALSE, seed=TRUE, nPermSimple=NF_RNA_GSEA_NPERM_SIMPLE
+      eps=0, verbose=FALSE, seed=FALSE, nPermSimple=NF_RNA_GSEA_NPERM_SIMPLE
     ))
+    corrected <- nf_rna_correct_leading_edge(result); result <- corrected$result
     raw <- if (is.null(result)) data.frame() else as.data.frame(result)
     filtered <- gsea_term_tables(raw, empty_terms())
     terms <- filtered$terms; significant <- filtered$significant
@@ -103,8 +105,8 @@ run_ontology <- function(gene_list, ranked_mapping, ontology, root, contrast, lo
     }
     running <- nf_rna_running_score_plots(fig, result, significant, contrast, file.path(directory, "running_score"), cfg$output_dir, list(ontology=ontology))
     figures$running_score <- running
-    summary <- list(status=if (nrow(significant) == 0) "NO_SIGNIFICANT_TERMS" else "SUCCESS", evaluated_terms=nrow(terms), all_terms=nrow(terms), significant_terms=nrow(significant), positive_terms=nrow(positive), negative_terms=nrow(negative), p_adjust_method=NF_RNA_ENRICHMENT_ADJUST, significance_rule=nf_rna_significance_record()$rule, calculation_pvalue_cutoff=1, min_gs_size=as.integer(gsea_cfg$min_gs_size), max_gs_size=as.integer(gsea_cfg$max_gs_size), na_pathways=sum(is.na(terms$pvalue) | is.na(terms$p.adjust) | is.na(terms$NES)), core_member_rows=core_audit$rows, members=member_record, simplified=simplified_record, figures=figures)
-    rm(result, raw, terms, significant, positive, negative, top, p, core_audit, filtered)
+    summary <- list(status=if (nrow(significant) == 0) "NO_SIGNIFICANT_TERMS" else "SUCCESS", evaluated_terms=nrow(terms), all_terms=nrow(terms), significant_terms=nrow(significant), positive_terms=nrow(positive), negative_terms=nrow(negative), p_adjust_method=NF_RNA_ENRICHMENT_ADJUST, significance_rule=nf_rna_significance_record()$rule, calculation_pvalue_cutoff=1, min_gs_size=as.integer(gsea_cfg$min_gs_size), max_gs_size=as.integer(gsea_cfg$max_gs_size), na_pathways=sum(is.na(terms$pvalue) | is.na(terms$p.adjust) | is.na(terms$NES)), core_member_rows=core_audit$rows, leading_edge=corrected$audit, members=member_record, simplified=simplified_record, figures=figures)
+    rm(result, corrected, raw, terms, significant, positive, negative, top, p, core_audit, filtered)
     gc(verbose=FALSE)
     summary
   }, error=function(error) list(status="FAILED", reason=conditionMessage(error), evaluated_terms=0, all_terms=0, significant_terms=0, positive_terms=0, negative_terms=0, p_adjust_method=NF_RNA_ENRICHMENT_ADJUST, calculation_pvalue_cutoff=1, min_gs_size=as.integer(gsea_cfg$min_gs_size), max_gs_size=as.integer(gsea_cfg$max_gs_size), na_pathways=0))

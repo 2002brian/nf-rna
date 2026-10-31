@@ -176,7 +176,7 @@ def test_gsea_backend_processes_ontologies_sequentially_with_bounded_lifecycle()
     helper = (Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "gsea_core_members.R").read_text()
     assert 'for (ontology in c("BP", "MF", "CC"))' in script
     assert 'lapply(c("BP", "MF", "CC"), function(x) run_ontology' not in script
-    assert "rm(result, raw, terms, significant, positive, negative, top, p, core_audit, filtered)" in script
+    assert "rm(result, corrected, raw, terms, significant, positive, negative, top, p, core_audit, filtered)" in script
     assert "gc(verbose=FALSE)" in script
     assert 'write_gsea_core_members' in script
     assert 'append=TRUE' in helper  # core members are streamed, not accumulated in a global rows list

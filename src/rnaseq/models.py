@@ -160,7 +160,8 @@ class DesignConfig(StrictModel):
 
 
 class ThresholdsConfig(StrictModel):
-    padj: float = Field(ge=0.0, le=1.0)
+    # Also DESeq2's results(alpha=), which must lie strictly between 0 and 1.
+    padj: float = Field(gt=0.0, lt=1.0)
     abs_log2fc: float = Field(ge=0.0)
 
 

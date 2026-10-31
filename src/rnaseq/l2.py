@@ -210,7 +210,7 @@ def _contrast_report(summary: dict[str, Any], prepared: PreparedL2) -> str:
         "## Results", "", f"- Input genes: {summary.get('input_genes')}", f"- Explicitly filtered genes: {summary.get('filtered_genes')}",
         f"- Tested genes: {summary.get('tested_genes')}", f"- p-value NA: {summary.get('pvalue_na')}", f"- padj NA: {summary.get('padj_na')}",
         f"- Significant: {summary['significant']}", f"- Upregulated: {summary['upregulated']}", f"- Downregulated: {summary['downregulated']}",
-        f"- DESeq2 independent filtering: {summary.get('independent_filtering')}", f"- Multiple-testing method: {summary.get('multiple_testing_method')}",
+        f"- DESeq2 independent filtering: {summary.get('independent_filtering')} (alpha {summary.get('independent_filtering_alpha')}, baseMean threshold {summary.get('independent_filtering_threshold')})", f"- Multiple-testing method: {summary.get('multiple_testing_method')}",
         f"- Volcano: available", f"- Heatmap: {summary.get('heatmap_status')}", "",
         "This report contains statistical facts only; no biological interpretation or enrichment analysis was performed.", "",
     ]
@@ -274,7 +274,7 @@ def _provenance(prepared: PreparedL2, l1_summary: dict[str, Any]) -> dict[str, A
         },
         "contrasts": [{"contrast_id": item.contrast_id, "factor": item.factor, "numerator": item.numerator, "denominator": item.denominator} for item in prepared.contrasts],
         "filtering": L1_FILTER,
-        "deseq2": {"model_fit_count": 1, "independent_filtering": True, "multiple_testing_method": "Benjamini-Hochberg (DESeq2 default)"},
+        "deseq2": {"model_fit_count": 1, "independent_filtering": True, "independent_filtering_alpha": thresholds.padj, "multiple_testing_method": "Benjamini-Hochberg (DESeq2 default)"},
         "thresholds": {"padj": thresholds.padj, "abs_log2fc": thresholds.abs_log2fc, "significance": "padj < threshold AND abs(log2FoldChange) >= threshold"},
         "plots": {"vst_source": str(prepared.l1.output_dir / "vst.tsv"), "heatmap_gene_selection": f"top {HEATMAP_TOP_N} significant genes by padj, then gene_id"},
         "software": l1_summary.get("package_versions", {}),

@@ -145,7 +145,10 @@ for (item in cfg$contrasts) {
   levels <- unique(metadata[[factor]])
   if (!(numerator %in% levels) || !(denominator %in% levels) || numerator == denominator) stop(paste("invalid contrast:", contrast_id))
   directory <- file.path(cfg$output_dir, "contrasts", contrast_id); dir.create(directory, recursive = TRUE, showWarnings = FALSE)
-  result <- results(dds, contrast = c(factor, numerator, denominator), independentFiltering = TRUE)
+  # Independent filtering maximises rejections at padj < alpha, so alpha is the
+  # declared DEG FDR threshold (DESeq2 vignette); the DESeq2 default 0.1 is not used.
+  result <- results(dds, contrast = c(factor, numerator, denominator), independentFiltering = TRUE, alpha = cfg$thresholds$padj)
+  filter_threshold <- unname(S4Vectors::metadata(result)$filterThreshold)
   result_df <- data.frame(gene_id = rownames(result), as.data.frame(result), check.names = FALSE)
   result_df <- result_df[, c("gene_id", "baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj")]
   stopifnot(identical(result_df$gene_id, gene_annotation$gene_id))
@@ -304,7 +307,7 @@ for (item in cfg$contrasts) {
     } else heatmap_reason <- "no selected gene has a defined row z-score"
   }
   tested <- sum(!is.na(result_df$pvalue))
-  summary <- list(input_genes = nrow(source_counts), filtered_genes = sum(!keep), retained_genes = sum(keep), tested_genes = tested, pvalue_na = sum(is.na(result_df$pvalue)), padj_na = sum(is.na(result_df$padj)), independent_filtering = TRUE, multiple_testing_method = "Benjamini-Hochberg (DESeq2 default)", fit_method = fit_method, heatmap_status = heatmap_status, heatmap_top_n = cfg$heatmap_top_n)
+  summary <- list(input_genes = nrow(source_counts), filtered_genes = sum(!keep), retained_genes = sum(keep), tested_genes = tested, pvalue_na = sum(is.na(result_df$pvalue)), padj_na = sum(is.na(result_df$padj)), independent_filtering = TRUE, independent_filtering_alpha = cfg$thresholds$padj, independent_filtering_threshold = filter_threshold, multiple_testing_method = "Benjamini-Hochberg (DESeq2 default)", fit_method = fit_method, heatmap_status = heatmap_status, heatmap_top_n = cfg$heatmap_top_n)
   if (!is.null(heatmap_reason) && nrow(significant_df) > 0) summary$heatmap_reason <- heatmap_reason
   write(toJSON(summary, auto_unbox = TRUE, pretty = TRUE), file.path(directory, "backend_summary.json"))
   contrast_metadata <- list(
@@ -314,7 +317,9 @@ for (item in cfg$contrasts) {
     design_formula = paste(deparse(design(dds)), collapse = ""), fit_method = fit_method,
     deg_definition = list(padj_below = cfg$thresholds$padj, abs_log2fc_at_least = cfg$thresholds$abs_log2fc,
                           rule = "padj < threshold AND abs(raw log2FoldChange) >= threshold; log2FoldChange_shrunk is not used",
-                          testing = "Wald test of LFC = 0, then effect-size filtering (no lfcThreshold)"),
+                          testing = "Wald test of LFC = 0, then effect-size filtering (no lfcThreshold)",
+                          independent_filtering = list(alpha = cfg$thresholds$padj, filter_statistic = "baseMean", filter_threshold = filter_threshold,
+                                                       rule = "DESeq2 results(alpha = padj threshold): the baseMean quantile maximising rejections at padj < alpha")),
     shrinkage = c(shrink$info, list(column = "log2FoldChange_shrunk", use = "display and ranking only")),
     group_means = list(columns = c("mean_normcount_numerator", "mean_normcount_denominator"),
                        definition = "arithmetic mean of counts(dds, normalized = TRUE) over the analysed samples of each level; descriptive, not a model estimate"),

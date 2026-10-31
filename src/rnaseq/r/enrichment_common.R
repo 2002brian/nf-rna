@@ -28,7 +28,9 @@ nf_rna_gsea_settings <- function(seed, min_gs_size, max_gs_size) list(
   ranking_metric="DESeq2 Wald statistic (stat) of the contrast, unmodified; log2FoldChange_shrunk is not used",
   na_handling="genes with a non-finite stat are excluded",
   duplicate_entrez="largest |stat| retained; ties by gene_id",
-  seed=as.integer(seed), seed_call="set.seed(seed) immediately before the call, seed = TRUE",
+  seed=as.integer(seed), rng_kind=RNGkind(),
+  seed_call="set.seed(seed) immediately before the call, seed = FALSE (DOSE 4.4.0 seed = TRUE re-seeds with set.seed(.Random.seed), a fixed state that ignores the configured seed)",
+  leading_edge=NF_RNA_LEADING_EDGE_DEFINITION,
   nPermSimple=NF_RNA_GSEA_NPERM_SIMPLE, eps=0, minGSSize=as.integer(min_gs_size), maxGSSize=as.integer(max_gs_size)
 )
 

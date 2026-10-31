@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased (v1.6.1 scientific corrections)
+
+**Result-changing.** Three corrections found by the independent scientific validation of v1.6.0 (`docs/dev/scientific_corrections_v161.md`). Existing v1.6.0 runs are not rewritten; recompute a project to obtain corrected results.
+
+### Fixed
+
+- **GSEA leading edge (GO and KEGG).** DOSE 4.4.0 `leading_edge()` locates the running-sum minimum of an ES < 0 gene set among post-step scores at hits only and can report the wrong boundary. nf-rna now recomputes `core_enrichment`, `rank` and the `leading_edge` tag string by the standard running-sum definition (Subramanian et al. 2005) and checks the recomputed extremum against the fgsea ES. Affects `core_enrichment`, the `leading_edge` tags/signal, `gsea_core_members.tsv`/`core_members.tsv` and the `leading_edge` flag of `members.tsv` for ES < 0 sets only; ES, NES, p-values and FDR are untouched by this fix.
+- **GSEA seed.** GSEA was called with `seed = TRUE`, which makes DOSE 4.4.0 re-seed with `set.seed(.Random.seed)`, i.e. the fixed state 10403, whatever `annotation.enrichment.gsea.seed` / `kegg.gsea.seed` said. nf-rna now calls `set.seed(seed)` and then GSEA with `seed = FALSE`, so the configured seed determines the fgsea Monte Carlo draw. NES, p-values, FDR and borderline significant sets change within Monte Carlo error; the recorded seed is now the seed actually used, and the provenance records the RNG kind.
+- **DESeq2 independent filtering alpha.** `results()` used DESeq2's default `alpha = 0.1` while DEGs are called at `padj < thresholds.padj` (default 0.05). `alpha` is now `thresholds.padj`, as the DESeq2 vignette recommends. The filter threshold, which genes have `padj = NA`, padj values, DEG sets and the ORA universe/foreground can change; `pvalue`, `stat` and LFCs do not. `backend_summary.json` and `contrast_metadata.json` record the alpha and the chosen baseMean filter threshold. `thresholds.padj` must now lie strictly between 0 and 1.
+
 ## 1.6.0 — 2026-10-30
 
 **This release includes the v1.5.1 test fixes**: v1.5.1 was prepared but not tagged separately, so its changes ship in v1.6.0 (see [1.5.1](#151--2026-10-30)). **Upgrading from v1.4.x: the enrichment significance semantics changed in v1.5.0.** GO/KEGG ORA and GSEA call a term significant when the Benjamini–Hochberg adjusted p-value is ≤ 0.05, the ORA universe changed, and KEGG gene sets come from a local snapshot that you should pin for published results; read the [1.5.0 notes](#150--2026-10-30) before comparing results across versions. v1.4.x results are not recomputed and keep their v1.4 semantics.

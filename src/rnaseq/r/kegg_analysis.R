@@ -8,6 +8,7 @@ source(file.path(dirname(normalizePath(script_file)), "ora_helpers.R"))
 source(file.path(dirname(normalizePath(script_file)), "kegg_core_members.R"))
 source(file.path(dirname(normalizePath(script_file)), "annotation_mapping_qc.R"))
 source(file.path(dirname(normalizePath(script_file)), "gsea_term_filtering.R"))
+source(file.path(dirname(normalizePath(script_file)), "gsea_leading_edge.R"))
 source(file.path(dirname(normalizePath(script_file)), "figures.R"))
 source(file.path(dirname(normalizePath(script_file)), "enrichment_common.R"))
 source(file.path(dirname(normalizePath(script_file)), "kegg_snapshot.R"))
@@ -148,7 +149,8 @@ if (cfg$mode == "ora") {
     ranked_mapping <- mapping[mapping$rank_status=="RETAINED" & !is.na(mapping$mapped_entrez_id),,drop=FALSE]
     gene_list <- ranked$stat; names(gene_list) <- ranked$entrez_id
     set.seed(as.integer(gsea_cfg$seed))
-    result <- suppressMessages(GSEA(geneList=gene_list, TERM2GENE=term2gene, TERM2NAME=term2name, minGSSize=min_gs, maxGSSize=max_gs, eps=0, pvalueCutoff=1, pAdjustMethod=NF_RNA_ENRICHMENT_ADJUST, verbose=FALSE, seed=TRUE, nPermSimple=NF_RNA_GSEA_NPERM_SIMPLE))
+    result <- suppressMessages(GSEA(geneList=gene_list, TERM2GENE=term2gene, TERM2NAME=term2name, minGSSize=min_gs, maxGSSize=max_gs, eps=0, pvalueCutoff=1, pAdjustMethod=NF_RNA_ENRICHMENT_ADJUST, verbose=FALSE, seed=FALSE, nPermSimple=NF_RNA_GSEA_NPERM_SIMPLE))
+    corrected <- nf_rna_correct_leading_edge(result); result <- corrected$result
     raw <- if (is.null(result)) data.frame() else as.data.frame(result)
     filtered <- gsea_term_tables(raw, empty_gsea()); terms <- filtered$terms; significant <- filtered$significant; positive <- filtered$positive; negative <- filtered$negative
     write_table(terms,file.path(root,"all_terms.tsv")); write_table(significant,file.path(root,"significant.tsv")); write_table(positive,file.path(root,"positive_enrichment.tsv")); write_table(negative,file.path(root,"negative_enrichment.tsv"))
@@ -165,7 +167,7 @@ if (cfg$mode == "ora") {
       figures$dotplot <- "drawn"
     }
     figures$running_score <- nf_rna_running_score_plots(fig, result, significant, contrast, file.path(root, "running_score"), cfg$output_dir, list(kegg_snapshot=snapshot$id))
-    contrast_summaries[[length(contrast_summaries)+1]] <- list(contrast_id=contrast$contrast_id,ranking=ranking,status=if(nrow(significant)==0)"NO_SIGNIFICANT_TERMS"else"SUCCESS",evaluated_terms=nrow(terms),all_terms=nrow(terms),significant_terms=nrow(significant),positive_terms=nrow(positive),negative_terms=nrow(negative),p_adjust_method=NF_RNA_ENRICHMENT_ADJUST,significance_rule=nf_rna_significance_record()$rule,calculation_pvalue_cutoff=1,min_gs_size=min_gs,max_gs_size=max_gs,core_member_rows=core_audit$rows,members=member_record,figures=figures)
+    contrast_summaries[[length(contrast_summaries)+1]] <- list(contrast_id=contrast$contrast_id,ranking=ranking,status=if(nrow(significant)==0)"NO_SIGNIFICANT_TERMS"else"SUCCESS",evaluated_terms=nrow(terms),all_terms=nrow(terms),significant_terms=nrow(significant),positive_terms=nrow(positive),negative_terms=nrow(negative),p_adjust_method=NF_RNA_ENRICHMENT_ADJUST,significance_rule=nf_rna_significance_record()$rule,calculation_pvalue_cutoff=1,min_gs_size=min_gs,max_gs_size=max_gs,core_member_rows=core_audit$rows,leading_edge=corrected$audit,members=member_record,figures=figures)
   }
   overall <- if(length(blocked)>0)"BLOCKED"else if(all(vapply(contrast_summaries,function(x)x$status=="NO_SIGNIFICANT_TERMS",logical(1))))"NO_SIGNIFICANT_TERMS"else"SUCCESS"
   annotation_contract <- list(input_id_type=cfg$annotation$input_id_type,target_id_type=cfg$annotation$target_id_type,warning_threshold=as.numeric(cfg$annotation$mapping_warning_rate),blocking_threshold=as.numeric(cfg$annotation$minimum_mapping_rate))
