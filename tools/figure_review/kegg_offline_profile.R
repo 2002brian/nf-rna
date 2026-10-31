@@ -49,7 +49,9 @@ local({
     core <- lapply(seq_len(n), function(k) ids[seq_len(min(8L + k %% 5, length(ids)))])
     sets <- lapply(seq_len(n), function(k) unique(c(core[[k]], ids[seq(k, length(ids), by = max(1L, length(ids) %/% size[[k]]))][seq_len(size[[k]])])))
     sets <- lapply(sets, function(x) x[!is.na(x)])
-    result <- data.frame(ID = terms$ID, Description = terms$Description, setSize = lengths(sets), enrichmentScore = nes / 3.1, NES = nes, pvalue = p, p.adjust = pmin(1, p * n), qvalue = pmin(1, p * n),
+    # ES is the real running-sum score of each synthetic set, as nf-rna recomputes the leading edge from it.
+    es <- vapply(sets, function(x) fgsea::calcGseaStat(geneList, match(x, ids)), numeric(1))
+    result <- data.frame(ID = terms$ID, Description = terms$Description, setSize = lengths(sets), enrichmentScore = es, NES = nes, pvalue = p, p.adjust = pmin(1, p * n), qvalue = pmin(1, p * n),
       rank = as.integer(10 + i * 40), leading_edge = sprintf("tags=%d%%, list=%d%%, signal=%d%%", 30L + i %% 20, 10L + i %% 15, 25L + i %% 25),
       core_enrichment = vapply(core, paste, "", collapse = "/"), stringsAsFactors = FALSE, row.names = terms$ID)
     methods::new("gseaResult", result = result, organism = "UNKNOWN", setType = "UNKNOWN", geneSets = stats::setNames(sets, terms$ID), geneList = geneList,

@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## Unreleased (v1.6.1 scientific corrections)
+## 1.6.1 — Unreleased
 
 **Result-changing.** Three corrections found by the independent scientific validation of v1.6.0 (`docs/dev/scientific_corrections_v161.md`). Existing v1.6.0 runs are not rewritten; recompute a project to obtain corrected results.
 
