@@ -1,0 +1,17 @@
+dataset	contrast_id	collection	v160_reproduced	statistics_unchanged	terms	negative_es_terms	core_changed	core_changed_positive_es	core_changed_negative_es	core_changed_significant	rank_changed	leading_edge_tag_changed	max_abs_es_difference	terms_in_reference	v160_equal_reference	corrected_equal_reference	corrected_differ_reference
+D1	trt_vs_untrt	GO_BP	TRUE	TRUE	5684	1996	464	0	464	6	0	461	0	5684	5220	5684	0
+D1	trt_vs_untrt	GO_MF	TRUE	TRUE	1130	407	124	0	124	0	0	122	0	1130	1006	1130	0
+D1	trt_vs_untrt	GO_CC	TRUE	TRUE	718	230	55	0	55	0	0	55	0	718	663	718	0
+D1	trt_vs_untrt	KEGG	TRUE	TRUE	350	99	18	0	18	0	0	18	0	350	332	350	0
+D2	LP_vs_Basal	GO_BP	TRUE	TRUE	6217	3048	687	0	687	52	0	681	0	6217	5530	6217	0
+D2	LP_vs_Basal	GO_MF	TRUE	TRUE	1221	578	153	0	153	5	0	151	0	1221	1068	1221	0
+D2	LP_vs_Basal	GO_CC	TRUE	TRUE	764	436	107	0	107	9	0	107	0	764	657	764	0
+D2	LP_vs_Basal	KEGG	TRUE	TRUE	352	155	22	0	22	3	0	22	0	352	330	352	0
+D2	ML_vs_Basal	GO_BP	TRUE	TRUE	6217	3386	820	0	820	50	0	814	0	6217	5397	6217	0
+D2	ML_vs_Basal	GO_MF	TRUE	TRUE	1221	624	145	0	145	5	0	144	0	1221	1076	1221	0
+D2	ML_vs_Basal	GO_CC	TRUE	TRUE	764	403	99	0	99	15	0	94	0	764	665	764	0
+D2	ML_vs_Basal	KEGG	TRUE	TRUE	352	167	33	0	33	2	0	33	0	352	319	352	0
+D2	LP_vs_ML	GO_BP	TRUE	TRUE	6217	2243	576	0	576	8	0	574	0	6217	5641	6217	0
+D2	LP_vs_ML	GO_MF	TRUE	TRUE	1221	577	150	0	150	0	0	149	0	1221	1071	1221	0
+D2	LP_vs_ML	GO_CC	TRUE	TRUE	764	413	80	0	80	5	0	77	0	764	684	764	0
+D2	LP_vs_ML	KEGG	TRUE	TRUE	352	146	21	0	21	2	0	21	0	352	331	352	0

@@ -1,0 +1,7 @@
+dataset	contrast	alpha_recorded	filter_threshold_v160_alpha0.1_ref	filter_threshold_fixed	filter_threshold_ref_alpha0.05	filter_threshold_rel_diff_fixed_vs_ref	padj_na_v160	padj_na_fixed	padj_na_ref_alpha0.05	padj_na_pattern_fixed_equals_ref	padj_na_added	padj_na_removed	pvalue_identical_v160_fixed	padj_max_rel_diff_fixed_vs_ref	deg_v160	deg_fixed	deg_gained	deg_lost	up_v160	up_fixed	down_v160	down_fixed	deg_ref_alpha0.05	deg_fixed_equals_ref
+D1	trt_vs_untrt	0.05	4.5	6.14	6.14	5.79e-06	4337	5204	5204	True	867	0	True	4.78e-15	1018	999	6	25	531	519	487	480	999	True
+D1a	trt_vs_untrt	0.05	3.86	4.5	4.5	2.97e-06	3954	4387	4387	True	433	0	True	4.98e-15	872	878	7	1	475	477	397	401	878	True
+D1b	trt_vs_untrt	0.05	4.5	6.14	6.14	5.79e-06	4337	5204	5204	True	867	0	True	4.78e-15	1018	999	6	25	531	519	487	480	999	True
+D2	LP_vs_Basal	0.05	1.7	1.7	1.7	9.44e-06	743	743	743	True	0	0	True	4.95e-15	6173	6173	0	0	2803	2803	3370	3370	6173	True
+D2	LP_vs_ML	0.05	2.94	3.79	3.79	1.15e-06	1486	1858	1858	True	372	0	True	4.95e-15	2931	2936	6	1	1556	1559	1375	1377	2936	True
+D2	ML_vs_Basal	0.05	1.7	1.29	1.29	1.65e-05	743	372	372	True	0	371	True	4.95e-15	6319	6314	0	5	2898	2897	3421	3417	6314	True

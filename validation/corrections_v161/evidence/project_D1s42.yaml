@@ -1,0 +1,40 @@
+schema_version: "1.2"
+project:
+  id: val_d1_airway_seed42
+  pipeline: bulk_rnaseq
+  preset: L2
+organism:
+  species: Homo sapiens
+input:
+  type: raw_counts
+  path: counts.csv
+design:
+  type: paired_two_group
+  formula: "~ cell + condition"
+  pair_id: cell
+metadata_file: metadata.csv
+contrasts_file: contrasts.csv
+upstream:
+  engine: external
+  provider: bioconductor_airway
+  quantification_method: integer_gene_counts
+reference:
+  source: igenomes
+  genome: null
+thresholds:
+  padj: 0.05
+  abs_log2fc: 1.0
+annotation:
+  organism: Homo sapiens
+  input_id_type: ENSEMBL
+  target_id_type: ENTREZID
+  gene_symbol_output: true
+  enrichment:
+    gsea:
+      seed: 42
+    kegg:
+      snapshot: hsa_kegg20261028_20261030T061908Z
+      gsea:
+        seed: 42
+analysis:
+  enrichment: [go, kegg, gsea]

@@ -1,0 +1,5 @@
+collection	terms	es_identical	pvalue_differs	nes_differs	significant_seed1	significant_seed42	significance_differs
+GO_BP	5684	True	5682	5684	221	223	28
+GO_MF	1130	True	1128	1130	22	19	3
+GO_CC	718	True	716	718	43	46	5
+KEGG	350	True	349	350	28	29	1

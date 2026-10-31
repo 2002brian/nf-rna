@@ -1,0 +1,10 @@
+3c3
+<   id: val_d1_airway
+---
+>   id: val_d1_airway_seed42
+32a33,34
+>     gsea:
+>       seed: 42
+34a37,38
+>       gsea:
+>         seed: 42
