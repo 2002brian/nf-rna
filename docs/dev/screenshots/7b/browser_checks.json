@@ -1,0 +1,114 @@
+{
+  "results: volcano PDF download equals the pipeline PDF": {
+    "pass": true,
+    "detail": "results__volcano.pdf"
+  },
+  "results: downloaded PDF opens": {
+    "pass": true,
+    "detail": [
+      "Producer:        cairo 1.18.6 (https://cairographics.org)",
+      "Pages:           1",
+      "Page size:       241 x 241 pts"
+    ]
+  },
+  "results: volcano TIFF 300 equals the pipeline TIFF and is 300 dpi": {
+    "pass": true,
+    "detail": {
+      "file": "results__volcano.tiff",
+      "format": "TIFF",
+      "mode": "RGB",
+      "compression": "tiff_lzw",
+      "dpi": [
+        300,
+        300
+      ],
+      "size": [
+        1004,
+        1004
+      ],
+      "expected_size": [
+        1004,
+        1004
+      ]
+    }
+  },
+  "results: volcano TIFF 600 is 600 dpi at the figure's physical size": {
+    "pass": true,
+    "detail": {
+      "file": "results__volcano_600dpi.tiff",
+      "format": "TIFF",
+      "mode": "RGB",
+      "compression": "tiff_lzw",
+      "dpi": [
+        600,
+        600
+      ],
+      "size": [
+        2008,
+        2008
+      ],
+      "expected_size": [
+        2008,
+        2008
+      ]
+    }
+  },
+  "reports: Figures (PDF / TIFF) section with 73 figures, TIFF 300 dpi by default": {
+    "pass": true,
+    "detail": "caption shown"
+  },
+  "reports: PCA TIFF 300 equals the pipeline TIFF": {
+    "pass": true,
+    "detail": "reports__pca.tiff"
+  },
+  "reports: running-score TIFF 300 is the pipeline 300 dpi PNG, pixel for pixel": {
+    "pass": true,
+    "detail": {
+      "file": "reports__negative_1_hsa04115_300dpi.tiff",
+      "format": "TIFF",
+      "mode": "RGB",
+      "compression": "tiff_lzw",
+      "dpi": [
+        300,
+        300
+      ],
+      "size": [
+        2125,
+        1488
+      ],
+      "expected_size": [
+        2125,
+        1488
+      ]
+    }
+  },
+  "reports: dotplot PDF equals the pipeline PDF": {
+    "pass": true,
+    "detail": "reports__dotplot_BP_simplified.pdf"
+  },
+  "reports: dotplot TIFF 600 is 600 dpi at the figure's physical size": {
+    "pass": true,
+    "detail": {
+      "file": "reports__dotplot_BP_600dpi.tiff",
+      "format": "TIFF",
+      "mode": "RGB",
+      "compression": "tiff_lzw",
+      "dpi": [
+        600,
+        600
+      ],
+      "size": [
+        2725,
+        2658
+      ],
+      "expected_size": [
+        2725,
+        2658
+      ]
+    }
+  },
+  "run files unchanged (SHA-256)": {
+    "pass": true,
+    "detail": "853 files"
+  }
+}

@@ -170,3 +170,17 @@ Non-blocking implementation choices, recorded as they are made.
 | The reuse hint lists refused SUCCESS runs with `preflight_reuse_upstream`'s own message. | Explains, without a new rule, why a run cannot be reused (for example a v1.6.0 upstream). |
 | `README.md` (the historical v1.3.0 README) gets only a pointer line; the feature text goes to `README_latest.md` and `README_zh-TW.md`, marked as v1.7.0 development. | `README.md` states that it is the frozen v1.3.0 README. |
 | Browser acceptance is `scripts/dev/gui_workspace_acceptance.py` against a GUI on port 8701 with a separate `gui.yaml` that adds the v1.6.1 validation folders as read-only data roots; the user's `~/.config/nf-rna/gui.yaml` and the GUI on 8501 are untouched. The FAILED state uses one synthetic fixture project in `testdata/gui7a-fixtures/`. | No real FAILED run exists, and the brief forbids new pipeline runs; the D3/D4/D5 runs are outside the default roots. |
+
+## v1.7.0 Phase 7b — PDF/TIFF figure downloads (2026-10-31)
+
+| Decision | Reason |
+|---|---|
+| The GUI offers PDF, TIFF 300 dpi (default) and TIFF 600 dpi for every figure the pipeline drew; no R code, figure, manifest or delivery file changes. | Inventory: every figure already has a Cairo PDF, and all except GSEA running-score plots a 300 dpi LZW TIFF drawn by R at final size. Only the GUI lacked the downloads. |
+| TIFF source order: pipeline TIFF at the requested dpi (byte for byte) → pipeline `<name>_<dpi>dpi.png` converted losslessly → the pipeline PDF rasterized with poppler at exactly that dpi → unavailable. | Reuse R's own output first; a raster is never enlarged. Running-score plots have a 300 dpi PNG drawn by R, so their 300 dpi TIFF has R's pixels. |
+| 600 dpi is rendered from the PDF, not redrawn in R. | The pipeline does not keep plot objects; redrawing would mean re-running the analysis scripts on a finished run. The PDF is vector, so 600 dpi is real resolution. |
+| Pixel size `round(page_pt / 72 × dpi)` with R's half-to-even `round`; poppler draws at the exact dpi and the image is cropped to that size (at most one white edge row/column). | Matches `nf_rna_save_figure` (339 pt at 300 dpi → 1412 px). `-scale-to` would rescale and rounds up. |
+| Generated TIFFs are encoded in memory on click; nothing is written into the run or a cache. | Brief: no change to formal runs, figures or delivery packages. |
+| Poppler is a system dependency of the 600 dpi option only, not added to `environment.yml`. | The figure review tools already use poppler; without it the option says so. |
+| The PDF's text layout differs from the raster devices' by up to ~10 pt on dotplots (1–3 pt elsewhere); recorded, not changed. The 600 dpi TIFF follows the PDF. | Found in Phase 7b verification on GUI-6B-L2; it is in the pipeline output of v1.6.1, does not affect data, colours, labels or order, and changing figure code is out of scope. Proposed follow-up in `phase7b_report.md`. |
+| Raster PNG names are recognised as `_<n>dpi` (not only `_300dpi`) when listing running-score plots. | The `elsevier` profile writes `_500dpi.png`, which was listed as a separate plot. |
+

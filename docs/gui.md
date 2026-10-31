@@ -305,7 +305,8 @@ is WARNING).
   Nextflow trace, and Salmon's recorded `--threads`.
 
 Tables are read as text, so every number is shown exactly as in the TSV.
-Figures are the pipeline's PNG files, each with PNG and PDF downloads. An
+Figures are the pipeline's PNG files, each with PNG, PDF, *TIFF 300 dpi* and
+*TIFF 600 dpi* downloads (see [Figure downloads](#figure-downloads-pdf--tiff)). An
 output that does not exist is shown as *unavailable* with the backend's
 recorded reason (for example "no significant pathway"); nothing is filled in.
 
@@ -316,7 +317,10 @@ recorded reason (for example "no significant pathway"); nothing is filled in.
   from the network.
 - Single files by group: counts (normalized, VST), QC tables, DEG tables
   (all / significant / up / down per contrast), enrichment tables and member
-  tables, and every figure as PNG or PDF. L1 runs offer no L2 file.
+  tables. L1 runs offer no L2 file.
+- *Figures (PDF / TIFF)*: every figure of the run (one per pipeline PDF), as
+  PDF, TIFF 300 dpi (the default), TIFF 600 dpi or the PNG report preview. The
+  caption says where the chosen file comes from.
 - The delivery package: *Prepare delivery package* checks every file of
   `delivery/` against `delivery_manifest.yaml` and writes a zip to
   `~/.cache/nf-rna/gui/packages/` (the run directory is not written), then
@@ -324,6 +328,32 @@ recorded reason (for example "no significant pathway"); nothing is filled in.
 
 Files and packages larger than `download_limit_mb` are not offered for
 download; the page shows their server path and an `scp` command instead.
+
+### Figure downloads (PDF / TIFF)
+
+Nothing is redrawn from data and nothing is written into the run; generated
+TIFF files are made in memory when the button is clicked.
+
+| Download | Source |
+|---|---|
+| PDF | the pipeline's Cairo PDF, byte for byte |
+| TIFF 300 dpi | the pipeline's TIFF, byte for byte, when it was drawn at 300 dpi (every figure except GSEA running-score plots, under the default profiles) |
+| TIFF 300 dpi, running-score plots | the pipeline's `<name>_300dpi.png`, drawn by R at 300 dpi, converted losslessly (every pixel unchanged) |
+| TIFF 600 dpi | the pipeline's PDF rasterized at 600 dpi with poppler (`pdftocairo`) |
+
+A TIFF at a given dpi always has `round(page_pt / 72 × dpi)` pixels, the same
+rule as the pipeline's own devices, RGB on white, LZW, with the dpi in its
+resolution tags. A raster is never enlarged to reach a higher dpi: without a
+raster drawn at that dpi and without a PDF (or without poppler for the PDF),
+the option is shown as unavailable with the reason. Under the `elsevier`
+profile (500 dpi pipeline TIFF) both TIFF options are rendered from the PDF.
+
+The 600 dpi TIFF follows the PDF's text layout. R's PDF device measures text
+slightly differently from its raster devices, so in the pipeline's own output
+the panel edge of a PDF can sit up to about 3 mm (10 pt, on enrichment
+dotplots with long term names) from that of its PNG/TIFF; data, colours, labels
+and order are the same. The PDF and TIFF 300 dpi downloads are the pipeline's
+files as they are.
 
 ## How runs are started
 
@@ -361,6 +391,9 @@ find its runs again after a restart; the analysis state stays in the run.
 - `/dashboard` is not a URL of the Projects page; use the server root.
 - Scope changes (for example running an L2 project as L1) remain project.yaml
   edits; the Run page runs the project's scope.
+- TIFF 600 dpi needs poppler (`pdftocairo`, `pdfinfo`) on the server; without
+  it the option is unavailable. There is no TIFF beyond 600 dpi, no SVG and no
+  figure editing.
 
 ## Known limitations (v1.6.0)
 

@@ -148,7 +148,8 @@ def test_an_l1_run_offers_no_l2_results_or_downloads(results_home):
     run = next(item for item in results.result_runs(results_home) if item.case_id == "L1-CASE")
     assert not run.is_l2
     groups = {item.group for item in results.downloads(run)}
-    assert groups == {"Report", "Counts", "QC tables", "Figures (PNG / PDF)"}
+    assert groups == {"Report", "Counts", "QC tables"}
+    assert [stem.name for stem in results.figure_stems(run)] == ["pca"]
     assert all("l2" not in str(item.path.relative_to(run.run_dir)) for item in results.downloads(run))
 
 
@@ -212,6 +213,9 @@ def test_reports_page_offers_report_files_and_delivery(results_home):
     assert not page.exception
     labels = [button.label for button in page.get("download_button")]
     assert "Download report_20261030.html" in labels
+    run_dir = results_home / "runs" / "CASE-1" / "20261030-120000+0800"
+    assert page.selectbox(key=f"rep::{run_dir}::figure").value == "l1/pca"
+    assert page.radio(key=f"rep::{run_dir}::figfmt").value == "TIFF 300 dpi"  # the default TIFF resolution
     page.button(key="rep::zip").click().run()
     assert not page.exception and not page.error
     assert results.delivery_archive_path(results.result_runs(results_home)[0]).is_file()

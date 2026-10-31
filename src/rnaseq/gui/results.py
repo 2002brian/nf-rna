@@ -12,6 +12,7 @@ import csv
 import getpass
 import json
 import os
+import re
 import shlex
 import socket
 import zipfile
@@ -148,6 +149,12 @@ class Figure:
     pdf: Path | None
     reason: str | None = None
 
+    @property
+    def stem(self) -> Path | None:
+        """The figure's path without suffix (``.../volcano``), when its preview exists."""
+
+        return self.png.with_suffix("") if self.png is not None else None
+
 
 def figure(directory: Path, stem: str, label: str, reason: str) -> Figure:
     png, pdf = directory / f"{stem}.png", directory / f"{stem}.pdf"
@@ -161,7 +168,7 @@ def running_score_figures(directory: Path, record: Any, label: str) -> list[Figu
     running = running if isinstance(running, dict) else {}
     figures = []
     for sign in ("positive", "negative"):
-        found = sorted((path for path in directory.glob(f"running_score/{sign}_*.png") if not path.stem.endswith("_300dpi")), key=lambda path: int(path.name.split("_")[1]))
+        found = sorted((path for path in directory.glob(f"running_score/{sign}_*.png") if not re.search(r"_\d+dpi$", path.stem)), key=lambda path: int(path.name.split("_")[1]))
         for path in found:
             _sign, rank, *rest = path.stem.split("_")
             figures.append(Figure(f"{label} running score, {sign} NES, rank {rank}: {'_'.join(rest).replace('GO_', 'GO:')}", path, path.with_suffix(".pdf") if path.with_suffix(".pdf").is_file() else None))
@@ -574,12 +581,14 @@ def downloads(run: ResultRun) -> list[Download]:
         enrichment = run.l2 / "enrichment"
         for path in sorted(enrichment.rglob("*.tsv")) if enrichment.is_dir() else ():
             items.append(Download("Enrichment tables and members", str(path.relative_to(enrichment)), path))
-    roots = [run.l1, *([run.l2] if run.is_l2 else [])]
-    for root in roots:
-        for path in sorted(root.rglob("*")):
-            if path.suffix in {".png", ".pdf"} and not path.stem.endswith("_300dpi"):
-                items.append(Download("Figures (PNG / PDF)", str(path.relative_to(run.run_dir / "downstream")), path))
     return items
+
+
+def figure_stems(run: ResultRun) -> list[Path]:
+    """Every figure the pipeline drew for this run (one per PDF), as paths without suffix; no L2 figure for an L1 run."""
+
+    roots = [run.l1, *([run.l2] if run.is_l2 else [])]
+    return [path.with_suffix("") for root in roots if root.is_dir() for path in sorted(root.rglob("*.pdf"))]
 
 
 def too_large(path: Path, limit_mb: int) -> bool:

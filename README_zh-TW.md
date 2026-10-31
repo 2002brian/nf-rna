@@ -264,7 +264,7 @@ GUI 只監聽 127.0.0.1。從筆電透過 SSH 轉送 port，再開啟 http://127
 ssh -N -L 8501:127.0.0.1:8501 user@server
 ```
 
-**開發中（v1.7.0，尚未發布）：** GUI 擴充為本地研究工作區（Local Research Workspace）。*Datasets* 頁面可瀏覽 Server 上允許的資料資料夾（檔案類型、大小、讀取權限；以 validator 既有規則辨識 FASTQ 與 count matrix 的樣本），並以既有匯入機制將資料集指定到專案。*Project overview* 顯示物種、輸入類型、定量方法、reference、樣本數、contrasts 與專案的所有 runs，並可直接開啟每次 run 的結果與報告。每次 run 分開顯示 **執行狀態**（RUNNING、SUCCESS、FAILED、INCOMPLETE）與 **科學 QC**（PASS、WARNING、INCONCLUSIVE、NOT_EVALUATED）；科學 QC 只彙整 run 本身已記錄的判定（strandedness 檢查、L1 樣本 flags、DESeq2/apeglm warnings），QC warning 不會改變執行狀態。分析方法與結果完全不變。
+**開發中（v1.7.0，尚未發布）：** GUI 擴充為本地研究工作區（Local Research Workspace）。*Datasets* 頁面可瀏覽 Server 上允許的資料資料夾（檔案類型、大小、讀取權限；以 validator 既有規則辨識 FASTQ 與 count matrix 的樣本），並以既有匯入機制將資料集指定到專案。*Project overview* 顯示物種、輸入類型、定量方法、reference、樣本數、contrasts 與專案的所有 runs，並可直接開啟每次 run 的結果與報告。每次 run 分開顯示 **執行狀態**（RUNNING、SUCCESS、FAILED、INCOMPLETE）與 **科學 QC**（PASS、WARNING、INCONCLUSIVE、NOT_EVALUATED）；科學 QC 只彙整 run 本身已記錄的判定（strandedness 檢查、L1 樣本 flags、DESeq2/apeglm warnings），QC warning 不會改變執行狀態。分析方法與結果完全不變。所有圖表都可在 *Results* 與 *Reports & Downloads* 下載 PDF 或 TIFF（預設 300 dpi，可選 600 dpi）；PDF 與 300 dpi TIFF 就是 pipeline 自己輸出的檔案，不會從資料重新繪圖。
 
 關閉瀏覽器或 GUI 不會中止 run；GUI 同時只允許一個進行中的 run。未安裝 `gui` extra 時 CLI 完全不變，`rnaseq gui` 會顯示安裝指令。各頁面說明、GUI 可開啟的資料夾（`~/.config/nf-rna/gui.yaml`）與選用的 `systemd --user` service：[docs/gui.md](docs/gui.md)。
 

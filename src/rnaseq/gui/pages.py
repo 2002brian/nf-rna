@@ -15,7 +15,7 @@ import pandas as pd
 import streamlit as st
 
 from rnaseq.errors import ExecutionPreflightError, ProjectConfigError, ProjectCreationError
-from rnaseq.gui import datasets, jobs, results, services, workspace
+from rnaseq.gui import datasets, figure_export, jobs, results, services, workspace
 from rnaseq.gui.config import GuiConfig, PathNotAllowed, ensure_data_layout, gui_state_dir, load_config
 from rnaseq.models import DEFAULT_L2_ENRICHMENT, PIPELINE_VERSION, DesignType, FastqPreprocessing, InputType, Preset, SequencingLayout, describe_enrichment
 from rnaseq.run_status import _Cache, build_status, discover_runs, render_status
@@ -1383,6 +1383,20 @@ def download(path: Path, label: str, key: str, config: GuiConfig) -> None:
     st.download_button(label, data=lambda: path.read_bytes(), file_name=path.name, key=key, on_click="ignore")
 
 
+def tiff_download(option: figure_export.TiffOption, label: str, key: str, config: GuiConfig) -> None:
+    """A TIFF download (the pipeline's file, or one encoded in memory on click), or a disabled button saying why not."""
+
+    if not option.available:
+        st.button(label, key=key, disabled=True, help=f"Unavailable: {option.reason}")
+        return
+    if option.method == figure_export.PIPELINE_FILE:
+        if results.too_large(option.source, config.download_limit_mb):
+            download(option.source, label, key, config)
+            return
+    st.download_button(label, data=lambda: figure_export.tiff_bytes(option), file_name=option.file_name, mime="image/tiff",
+                       key=key, on_click="ignore", help=f"{option.dpi} dpi TIFF: {option.method}")
+
+
 def show_figure(item: results.Figure, key: str, config: GuiConfig) -> None:
     if item.png is None:
         st.warning(f"**{item.label}: unavailable** — {item.reason}")
@@ -1391,9 +1405,15 @@ def show_figure(item: results.Figure, key: str, config: GuiConfig) -> None:
     cols = st.columns(2)
     with cols[0]:
         download(item.png, "PNG", f"{key}::png", config)
-    if item.pdf is not None:
-        with cols[1]:
+    with cols[1]:
+        if item.pdf is not None:
             download(item.pdf, "PDF", f"{key}::pdf", config)
+        else:
+            st.button("PDF", key=f"{key}::pdf", disabled=True, help="Unavailable: the pipeline wrote no PDF for this figure")
+    options = figure_export.tiff_options(item.stem, item.pdf)
+    for column, dpi in zip(st.columns(2), figure_export.TIFF_DPIS):
+        with column:
+            tiff_download(options[dpi], f"TIFF {dpi} dpi", f"{key}::tiff{dpi}", config)
 
 
 def facts_table(facts: dict[str, object]) -> None:
@@ -1608,7 +1628,7 @@ def results_page() -> None:
     run = choose_run(project, "results")
     if run is None:
         return
-    st.caption(f"`{run.run_dir}` · analysis level {run.level or 'not recorded'}. Figures are the pipeline's own PNG files (PDF for download); nothing is recomputed.")
+    st.caption(f"`{run.run_dir}` · analysis level {run.level or 'not recorded'}. Figures are the pipeline's own PNG files, with PDF and TIFF (300 or 600 dpi) downloads; nothing is recomputed.")
     sections = ["QC & exploratory", *(["Differential expression", "Enrichment"] if run.is_l2 else []), "Provenance"]
     section = st.radio("Section", sections, horizontal=True, key=f"results_section::{project}::{run.level}")
     contrast = None
@@ -1666,6 +1686,8 @@ def reports_page() -> None:
             item = members[labels.index(chosen)]
             download(item.path, "Download", f"rep::{group}::dl", config)
 
+    figure_downloads(run, config)
+
     st.subheader("Delivery package")
     size = results.delivery_size(run)
     if size is None:
@@ -1686,6 +1708,42 @@ def reports_page() -> None:
     if archive.is_file():
         download(archive, f"Download {archive.name}", "rep::zip::dl", config)
         st.caption(f"Written to `{archive}` after checking every file against delivery_manifest.yaml.")
+
+
+FIGURE_FORMATS = ("PDF", *(f"TIFF {dpi} dpi" for dpi in figure_export.TIFF_DPIS), "PNG (report preview)")
+
+
+def figure_downloads(run: results.ResultRun, config: GuiConfig) -> None:
+    """One figure at a time in PDF, TIFF (300 dpi default, 600 dpi) or PNG; nothing is redrawn from data."""
+
+    st.subheader("Figures (PDF / TIFF)")
+    stems = results.figure_stems(run)
+    if not stems:
+        st.warning("**Figures: unavailable** — the run has no figure PDFs.")
+        return
+    base = run.run_dir / "downstream"
+    labels = [str(stem.relative_to(base)) for stem in stems]
+    cols = st.columns([3, 2, 1])
+    chosen = cols[0].selectbox(f"Figure ({len(stems)})", labels, key=f"rep::{run.run_dir}::figure")
+    form = cols[1].radio("Format", FIGURE_FORMATS, index=1, horizontal=True, key=f"rep::{run.run_dir}::figfmt")
+    stem = stems[labels.index(chosen)]
+    pdf, png = stem.with_suffix(".pdf"), stem.with_suffix(".png")
+    with cols[2]:
+        st.write("")
+        if form == "PDF":
+            download(pdf, "Download", "rep::fig::dl", config)
+            note = "the pipeline's Cairo PDF, unchanged"
+        elif form.startswith("TIFF"):
+            option = figure_export.tiff_option(stem, int(form.split()[1]), pdf)
+            tiff_download(option, "Download", "rep::fig::dl", config)
+            note = option.method if option.available else f"unavailable — {option.reason}"
+        elif png.is_file():
+            download(png, "Download", "rep::fig::dl", config)
+            note = "the pipeline's 150 dpi report preview, unchanged"
+        else:
+            st.button("Download", key="rep::fig::dl", disabled=True)
+            note = "unavailable — the pipeline wrote no PNG preview for this figure"
+    st.caption(f"{form}: {note}. TIFF is RGB, LZW, with the dpi in its resolution tags; a raster is never enlarged to reach a higher dpi.")
 
 
 PAGES: dict[str, st.Page] = {}
