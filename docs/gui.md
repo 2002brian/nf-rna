@@ -10,7 +10,7 @@ never recomputes a statistic or redraws a figure.
 ## Install and start
 
 ```bash
-python -m pip install "nf-rna[gui] @ git+https://github.com/2002brian/nf-rna.git@v1.6.0"
+python -m pip install "nf-rna[gui] @ git+https://github.com/2002brian/nf-rna.git@v1.6.1"
 # or, in a source checkout: pip install -e '.[gui]'
 tmux new -s nf-rna-gui        # or attach: tmux attach -t nf-rna-gui
 rnaseq gui                    # --port 8600 to use another port

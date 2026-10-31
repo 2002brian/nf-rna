@@ -1,10 +1,10 @@
 # Runtime and reproducibility
 
-## Supported runtime (v1.6.0)
+## Supported runtime (v1.6.1)
 
-nf-rna v1.6.0 supports one runtime: **Linux x86-64, including Windows WSL2,
+nf-rna v1.6.1 supports one runtime: **Linux x86-64, including Windows WSL2,
 with Nextflow and Conda**. Docker is not required and is never invoked. Native
-Windows and macOS are not supported by v1.6.0. The repository also keeps an
+Windows and macOS are not supported by v1.6.1. The repository also keeps an
 osx-arm64 downstream lock as an unqualified candidate; it has not been installed
 or smoke-tested on a Mac and does not make macOS a supported platform.
 

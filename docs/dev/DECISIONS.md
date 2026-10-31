@@ -138,3 +138,13 @@ Non-blocking implementation choices, recorded as they are made.
 | The release notes link to files at the `v1.6.0` tag. | Links stay valid after `main` moves on. |
 | The 14 no-GUI-venv failures were compared with `main` by re-running only `tests/test_figure_*.py` on `9a7352b` in a temporary worktree (same venv), not the whole suite. | Phase 6a kept no `main` log; the three files contain all 14 and give the identical set on both commits. |
 | Screenshots stay in the sdist. | Not distributed through PyPI; removing them would need a packaging change at release time. |
+
+## v1.6.1 finalization (2026-10-31)
+
+| Decision | Reason |
+|---|---|
+| Release date 2026-10-31 in CHANGELOG and CITATION.cff, set in the finalization commit before tagging. | Same practice as v1.6.0; the release-metadata guard requires both to agree. |
+| `main` fast-forwards to `fix/v1.6.1-reliability`; `validation/v1.6.0` and `validation/v1.6.1-phase3` stay separate evidence branches. | They add only validation material; the release documents cite them by branch and commit. |
+| The Phase 2 and Phase 3 FAIL verdicts are reported as known findings with their root causes, not as PASS. | Frozen criteria; post-hoc explanations do not replace verdicts. |
+| Salmon's same-thread `EffectiveLength` variation is documented as a reproducibility limitation from existing evidence; its DE effect is stated as not measured. | No new large analysis for the release review. |
+| Refusal of `--reuse-upstream` for v1.6.0 source runs is documented, not changed. | Fail-closed behaviour; a v1.6.0 upstream lacks the strand evidence and the `cpus` trace column. Changing the reuse contract is out of scope for the release. |

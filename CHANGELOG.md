@@ -2,9 +2,9 @@
 
 All notable changes to this project are documented here.
 
-## 1.6.1 — Unreleased
+## 1.6.1 — 2026-10-31
 
-**Result-changing.** Three corrections found by the independent scientific validation of v1.6.0 (`docs/dev/scientific_corrections_v161.md`). Existing v1.6.0 runs are not rewritten; recompute a project to obtain corrected results.
+**Result-changing.** Three corrections found by the independent scientific validation of v1.6.0 (`docs/dev/scientific_corrections_v161.md`) change GSEA leading edges and GSEA Monte Carlo results, and DESeq2 independent filtering (padj, DEG sets, ORA). Existing v1.6.0 runs are not rewritten; recompute a project to obtain corrected results. Three further changes add QC, provenance and warning records and change no analysis value (`docs/dev/scientific_reliability_v161.md`). Release readiness, evidence and limitations: `docs/dev/release_readiness_v161.md`.
 
 ### Fixed
 
@@ -25,6 +25,25 @@ Findings of the Phase 3 upstream FASTQ validation (`docs/dev/scientific_reliabil
   The result is shown in the run log, the report and the GUI, and is recorded in provenance. The check never changes the declared strandedness or the counts, and never fails a run.
 - **Actual upstream thread counts.** Nextflow traces of FASTQ runs gain `process`, `tag`, `cpus` and `memory` columns. `run_provenance.yaml` (`execution_threads`), the report and the GUI record the CPUs each relevant upstream process actually used (HISAT2, featureCounts, fastp, Trim Galore, Salmon), Salmon's `cmd_info.json` threads and the tool versions per process, with a note that alignment and quantification can depend on the thread count. CPU allocation is unchanged.
 - **Recorded R warnings in L2.** DESeq2, apeglm and ashr warnings are recorded verbatim, by step and with counts, in `contrast_metadata.json` (`r_warnings`), `backend_summary.json` and the L2 provenance, and shown in the report and the GUI. They are not muffled, not escalated, and do not change any result.
+
+### Compatibility
+
+- **Results.** GO/KEGG GSEA (leading edge of ES < 0 sets; NES, p-values, FDR and borderline significance through the effective seed) and DESeq2 `padj`, DEG sets and ORA differ from v1.6.0. Do not mix v1.6.0 and v1.6.1 results in one analysis; recompute.
+- **Upstream reuse across versions.** The frozen `nfcore.local.config` of a FASTQ run now ends with the `trace.fields` line, so `rnaseq run --reuse-upstream` refuses a source run made by v1.6.0 or earlier (`frozen nfcore.local.config differs`). The error's hint names only CPU/memory limits; the cause here is the version change. Rerun the upstream stage with v1.6.1. Reuse between v1.6.1 runs is unchanged.
+- New outputs only: `qc/strandedness/` on the HISAT2 route, and new keys in the handoff manifest, frozen contract, `run_provenance.yaml`, `contrast_metadata.json`, `backend_summary.json` and the L2 provenance. No existing key, table or column changes meaning.
+
+### Runtime
+
+- The downstream Conda lock and the nf-core/rnaseq 3.26.0 pin are unchanged. The runtime environment is keyed by lock and nf-rna build, so the first v1.6.1 run provisions a fresh downstream environment from the same lock.
+- The HISAT2 route runs one extra process per sample (`STRAND_EVIDENCE`: two featureCounts passes, 2 CPUs).
+
+### Known limitations
+
+- **Thread-dependent upstream results.** HISAT2 2.2.3 places multimapping reads differently at different `-p`; Salmon's EM gives different `NumReads` at different thread counts. Thread counts are recorded, not fixed; `execution.max_cpus` can lower them.
+- **Salmon is not bitwise reproducible at the same thread count.** Rerunning Salmon 1.10.3 on identical input with identical arguments (`--threads 6`) gave identical `NumReads` but different `EffectiveLength` (105–117 transcripts, through the fragment-length estimate) and therefore `TPM`. Through the tximport length offsets, L1 normalized counts differed by at most 1.03e-3 (relative) and VST by 6.4e-5 on the yeast test data; the effect on DE was not measured. Byte-identical Salmon-route reruns cannot be expected.
+- The strandedness check covers the HISAT2 route only (Salmon route: `NOT_EVALUATED`), warns but never fails, and its limits were calibrated on one real stranded library (yeast, reverse) plus unstranded human and simulated data.
+- Not validated with natural data: forward-stranded and single-end libraries (simulation only), mouse FASTQ, multi-lane merging, preprocessed/`--skip_trimming` input, other aligners, quantifiers and annotation releases. `auto` strandedness near nf-core's 0.8 threshold was not explored. L1 R warnings (VST, PCA) are not recorded.
+- The independent validations of v1.6.0 (Phase 2, downstream) and v1.6.1 (Phase 3, upstream) do not PASS under their frozen criteria; their FAIL verdicts stand. Their root causes are the defects fixed here (D-1, D-2, M-1), tool behaviour (thread dependence, Salmon's library-type classifier) and acceptance-criterion calibration; no nf-rna computation error remains open. See `docs/dev/release_readiness_v161.md`.
 
 ## 1.6.0 — 2026-10-30
 

@@ -4,7 +4,7 @@ This guide is for production users on Linux x86-64 or Windows WSL2. Install Pyth
 
 ## Install a released nf-rna version
 
-The latest stable release is `v1.6.0`, and this guide describes it (see the [1.6.0 changes](../CHANGELOG.md#160--2026-10-30)). It adds the optional browser GUI (see [Browser GUI](#browser-gui-optional)) and includes the v1.5.1 test fixes; its analysis is identical to `v1.5.0`. **If you upgrade from v1.4.x, read the [1.5.0 changes](../CHANGELOG.md#150--2026-10-30) first:** in v1.5.0 GO/KEGG enrichment calls a term significant when the Benjamini-Hochberg adjusted p-value is ≤ 0.05, and KEGG gene sets come from a local snapshot: for results you will publish, pin the snapshot ID that `rnaseq validate` reports with `annotation.enrichment.kegg.snapshot` in `project.yaml`. For an earlier release, follow the documentation at that release's tag; to use the development version, see [Development installation](development.md).
+The latest stable release is `v1.6.1`, and this guide describes it (see the [1.6.1 changes](../CHANGELOG.md#161--2026-10-31)). **v1.6.1 changes results:** GSEA leading edges and Monte Carlo results, DESeq2 padj, DEG sets and ORA can differ from `v1.6.0`, so recompute projects to obtain corrected results; it also adds a strandedness check (HISAT2 route) and records upstream thread counts and R warnings without changing any analysis value. `v1.6.0` added the optional browser GUI (see [Browser GUI](#browser-gui-optional)) and includes the v1.5.1 test fixes. **If you upgrade from v1.4.x, read the [1.5.0 changes](../CHANGELOG.md#150--2026-10-30) first:** in v1.5.0 GO/KEGG enrichment calls a term significant when the Benjamini-Hochberg adjusted p-value is ≤ 0.05, and KEGG gene sets come from a local snapshot: for results you will publish, pin the snapshot ID that `rnaseq validate` reports with `annotation.enrichment.kegg.snapshot` in `project.yaml`. For an earlier release, follow the documentation at that release's tag; to use the development version, see [Development installation](development.md).
 
 nf-rna is installed from Git tags; it is not published to PyPI. Installing from
 Git lets pip record the exact source commit, which every run records; nf-rna
@@ -130,7 +130,7 @@ The frozen Nextflow config contains the local CPU/memory ceiling, so changing `e
 The same workflow is available in a local browser GUI, from project creation to results and downloads:
 
 ```bash
-python -m pip install "nf-rna[gui] @ git+https://github.com/2002brian/nf-rna.git@v1.6.0"
+python -m pip install "nf-rna[gui] @ git+https://github.com/2002brian/nf-rna.git@v1.6.1"
 tmux new -s nf-rna-gui
 rnaseq gui                                   # serves http://127.0.0.1:8501 on the server
 ssh -N -L 8501:127.0.0.1:8501 user@server    # on your laptop, then open http://127.0.0.1:8501

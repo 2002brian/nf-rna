@@ -4,7 +4,7 @@ English | [繁體中文](README_zh-TW.md)
 
 `nf-rna` is a reproducible bulk RNA-seq workflow for FASTQ and raw-count projects. It validates declared inputs and design, performs the selected QC and analysis stages, and produces figures, tables, a technical report, and frozen provenance.
 
-`rnaseq` is the control plane, Nextflow is the execution plane, and Conda provides every process environment. The supported runtime for v1.6.0 is **Linux x86-64 or Windows WSL2, with Nextflow and Conda**; Docker is not required. Production users enter through `rnaseq`; they do not invoke internal Nextflow modules.
+`rnaseq` is the control plane, Nextflow is the execution plane, and Conda provides every process environment. The supported runtime for v1.6.1 is **Linux x86-64 or Windows WSL2, with Nextflow and Conda**; Docker is not required. Production users enter through `rnaseq`; they do not invoke internal Nextflow modules.
 
 ## Features
 
@@ -51,7 +51,7 @@ Every authorized execution creates an immutable run under `runs/<case-id>/<run-i
 
 ## Requirements
 
-Use a Linux x86-64 workstation or Windows with WSL2 (native Windows and macOS are not supported by v1.6.0) with:
+Use a Linux x86-64 workstation or Windows with WSL2 (native Windows and macOS are not supported by v1.6.1) with:
 
 - Python 3.11+ and Git;
 - Conda (for example Miniforge) on `PATH`, with the `conda-forge` and `bioconda` channels configured in that order, as nf-core requires (`conda config --add channels bioconda && conda config --add channels conda-forge && conda config --set channel_priority strict`);
@@ -62,7 +62,7 @@ Docker is not required. Java, Nextflow, and Conda run on the host. nf-core/rnase
 
 ## Installation
 
-> **Latest stable release: `v1.6.0`.** This README describes it (see the [CHANGELOG](CHANGELOG.md#160--2026-10-30)). It adds the optional browser GUI and includes the v1.5.1 test fixes (v1.5.1 was not tagged separately). Its analysis is identical to `v1.5.0`. **Upgrading from `v1.4.x`:** v1.5.0 changed the enrichment significance semantics (see the [1.5.0 changes](CHANGELOG.md#150--2026-10-30)): DEG tables with gene symbols, normalized-count group means and shrunken log2 fold changes, an MA plot and 300 dpi figures; GO/KEGG ORA and GSEA significance is now the Benjamini-Hochberg adjusted p-value ≤ 0.05, and KEGG gene sets come from a local snapshot that you should pin for published results. DESeq2 statistics and the DEG definition are unchanged from `v1.4.1`; results produced with `v1.4.x` keep their earlier enrichment semantics. For an earlier release, use the README at that release's tag. To use the development version, follow [Development installation](docs/development.md).
+> **Latest stable release: `v1.6.1`.** This README describes it (see the [CHANGELOG](CHANGELOG.md#161--2026-10-31)). **v1.6.1 changes results:** it corrects the GSEA leading edge of negative-ES gene sets, makes the configured GSEA seed effective, and sets DESeq2's independent-filtering `alpha` to the padj threshold, so GSEA results, padj, DEG sets and ORA can differ from `v1.6.0`; recompute projects to obtain corrected results. It also adds a strandedness check on the HISAT2 route and records actual upstream thread counts and R warnings, without changing any analysis value. `v1.6.0` added the optional browser GUI and includes the v1.5.1 test fixes (v1.5.1 was not tagged separately). **Upgrading from `v1.4.x`:** v1.5.0 changed the enrichment significance semantics (see the [1.5.0 changes](CHANGELOG.md#150--2026-10-30)): DEG tables with gene symbols, normalized-count group means and shrunken log2 fold changes, an MA plot and 300 dpi figures; GO/KEGG ORA and GSEA significance is now the Benjamini-Hochberg adjusted p-value ≤ 0.05, and KEGG gene sets come from a local snapshot that you should pin for published results. DESeq2 statistics and the DEG definition are unchanged from `v1.4.1`; results produced with `v1.4.x` keep their earlier enrichment semantics. For an earlier release, use the README at that release's tag. To use the development version, follow [Development installation](docs/development.md).
 
 nf-rna has no PyPI distribution. Install the released CLI from its Git tag.
 Installing from Git lets pip record the exact source commit, which every run
@@ -255,7 +255,7 @@ The wizard creates a project scaffold; it does not infer scientific inputs. FAST
 `rnaseq gui` starts a Streamlit GUI for the same workflow: create a project, add the count matrix or FASTQ files, edit the sample metadata, compose contrasts, validate, start and follow L1/L2 runs, browse the results (QC, DEG table and plots, GO/KEGG ORA and GSEA with member genes, provenance), open `report.html` and download tables, figures and the delivery package. It calls the same validators, design and run services as the CLI; runs started from the GUI are ordinary `rnaseq run` runs, and results are read from the run's own files, never recomputed.
 
 ```bash
-python -m pip install "nf-rna[gui] @ git+https://github.com/2002brian/nf-rna.git@v1.6.0"   # or, in a source checkout: pip install -e '.[gui]'
+python -m pip install "nf-rna[gui] @ git+https://github.com/2002brian/nf-rna.git@v1.6.1"   # or, in a source checkout: pip install -e '.[gui]'
 tmux new -s nf-rna-gui           # keeps the GUI running after you log out
 rnaseq gui                       # http://127.0.0.1:8501 (--port to change)
 ```
