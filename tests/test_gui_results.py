@@ -181,18 +181,20 @@ def _page(name: str, project: Path):
 def test_results_page_shows_deg_summary_shrinkage_failure_and_search(results_home):
     page = _page("results_page", results_home).run()
     assert not page.exception
-    page.radio(key="results_section::L2").set_value("Differential expression").run()
+    section = f"results_section::{results_home}::L2"
+    page.radio(key=section).set_value("Differential expression").run()
     assert not page.exception, page.exception
     assert any("Shrinkage **failed**" in item.value for item in page.error)
     assert any("MA plot: B_vs_A: unavailable" in item.value for item in page.warning)
-    key = "deg::CASE-1/20261030-120000+0800::B_vs_A"
+    run_dir = results_home / "runs" / "CASE-1" / "20261030-120000+0800"
+    key = f"deg::{run_dir}::B_vs_A"
     page.text_input(key=f"{key}::query").set_value("DUSP1").run()
     table = next(frame.value for frame in page.dataframe if "log2FoldChange_shrunk" in frame.value)
     assert table.iloc[0]["padj"] == "1.82328987063955e-125"
-    page.radio(key="results_section::L2").set_value("Enrichment").run()
+    page.radio(key=section).set_value("Enrichment").run()
     assert not page.exception
     assert any("Legacy results" in item.value for item in page.warning)  # GO ORA of the fixture is pre-v1.5
-    page.radio(key="enr::CASE-1/20261030-120000+0800::module").set_value("KEGG ORA").run()
+    page.radio(key=f"enr::{run_dir}::module").set_value("KEGG ORA").run()
     assert not page.exception and not any("Legacy results" in item.value for item in page.warning)
     assert any("hsa_kegg20261028_X" in frame.value.to_string() for frame in page.dataframe)
 
@@ -201,8 +203,8 @@ def test_results_page_of_an_l1_run_has_no_l2_sections(results_home):
     _run(results_home, level="L1", case="L1-CASE", run_id="20261031-120000+0800")
     page = _page("results_page", results_home).run()
     assert not page.exception
-    assert page.selectbox(key="results_run").value.startswith("L1-CASE")
-    assert page.radio(key="results_section::L1").options == ["QC & exploratory", "Provenance"]
+    assert page.selectbox(key=f"results_run::{results_home}").value.startswith("L1-CASE")
+    assert page.radio(key=f"results_section::{results_home}::L1").options == ["QC & exploratory", "Provenance"]
 
 
 def test_reports_page_offers_report_files_and_delivery(results_home):

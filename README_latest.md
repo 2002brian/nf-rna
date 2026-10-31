@@ -266,6 +266,8 @@ The GUI listens on 127.0.0.1 only. From your laptop, forward the port over SSH a
 ssh -N -L 8501:127.0.0.1:8501 user@server
 ```
 
+**In development (v1.7.0, unreleased):** the GUI becomes a local research workspace. A *Datasets* page browses the server's data folders (file kinds, sizes, permissions; FASTQ and count-matrix samples recognised by the validator's rules) and assigns a dataset to a project with the existing importers. A *Project overview* lists species, input, quantification, reference, samples, contrasts and every run of a project, and links each run to its results and report. Every run shows its **execution status** (RUNNING, SUCCESS, FAILED, INCOMPLETE) separately from its **scientific QC** (PASS, WARNING, INCONCLUSIVE, NOT_EVALUATED), a roll-up of the verdicts the run recorded (strandedness check, L1 sample flags, DESeq2/apeglm warnings); a QC warning never changes the execution status. Nothing in the analysis changes.
+
 Runs continue when the browser or the GUI is closed, and one GUI run can be active at a time. Without the `gui` extra the CLI is unchanged and `rnaseq gui` prints the install command. Pages, folders the GUI may open (`~/.config/nf-rna/gui.yaml`), and an optional `systemd --user` service: [docs/gui.md](docs/gui.md).
 
 ## Covariate-aware DESeq2 designs

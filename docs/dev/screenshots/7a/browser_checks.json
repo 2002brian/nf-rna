@@ -1,0 +1,117 @@
+{
+  "projects: list shows GUI, CLI, FASTQ and fixture projects": {
+    "pass": true,
+    "detail": ""
+  },
+  "projects: columns": {
+    "pass": true,
+    "detail": []
+  },
+  "datasets: D5 FASTQ folder counted": {
+    "pass": true,
+    "detail": "Datasets\n\nBrowse the research data on this server. Only the data folders in the GUI settings are shown; FASTQ contents are never read here.\n\nDataset folder\n\nkeyboard_arrow_right\n\nBrowse\n\nRescan\n\nFiles\n\n14\n\nTotal size\n\n85.7 MB\n\nFASTQ files\n\n14\n\nTables\n\n0\n\nUnreadable\n\n0\n\nkeyboard_arrow_down\n\nAll files (14)\n\nFolders are listed 3 levels deep; run, work and output folders (.nextflow, delivery, downstre"
+  },
+  "datasets: paired-end recognition lists samples": {
+    "pass": true,
+    "detail": ""
+  },
+  "datasets: single-end files reported by the validator rule": {
+    "pass": true,
+    "detail": ""
+  },
+  "datasets: airway count matrix recognised (validator)": {
+    "pass": true,
+    "detail": [
+      "counts.csv: 63677 genes \u00d7 8 samples: SRR1039508, SRR1039509, SRR1039512, SRR1039513, SRR1039516, SRR1039517, SRR1039520, SRR1039521"
+    ]
+  },
+  "datasets: metadata preview": {
+    "pass": true,
+    "detail": ""
+  },
+  "datasets: empty mounted folder": {
+    "pass": true,
+    "detail": ""
+  },
+  "workspace: GUI project summary": {
+    "pass": true,
+    "detail": ""
+  },
+  "workspace: GUI project run history (4 runs, INCOMPLETE shown)": {
+    "pass": true,
+    "detail": ""
+  },
+  "workspace: CLI project opens": {
+    "pass": true,
+    "detail": ""
+  },
+  "switching: sidebar switch to rel_d5_neg": {
+    "pass": true,
+    "detail": ""
+  },
+  "switching: back to airway-gui-demo keeps its run choice": {
+    "pass": true,
+    "detail": "GUI-KILL-001/20261030-182629+0800"
+  },
+  "switching: URL follows the project": {
+    "pass": true,
+    "detail": "http://127.0.0.1:8701/project?project=%2Fmedia%2Fduobook02%2Fbrian%2Fnf-rna%2Fprojects%2Fairway-gui-demo"
+  },
+  "qc: F-1 WARNING on project overview": {
+    "pass": true,
+    "detail": ""
+  },
+  "qc: execution stays SUCCESS": {
+    "pass": true,
+    "detail": ""
+  },
+  "qc: F-1 strandedness on Results (v1.6.1 view unchanged)": {
+    "pass": true,
+    "detail": ""
+  },
+  "qc: F-3 R warnings on project overview": {
+    "pass": true,
+    "detail": ""
+  },
+  "qc: F-3 R warnings expander on Results (v1.6.1 view unchanged)": {
+    "pass": true,
+    "detail": ""
+  },
+  "states: FAILED read from run_state.json": {
+    "pass": true,
+    "detail": ""
+  },
+  "states: validation overview": {
+    "pass": true,
+    "detail": ""
+  },
+  "states: log filter keeps WARNING/ERROR lines only": {
+    "pass": true,
+    "detail": "2026-10-31T09:01:09+08:00 WARNING synthetic fixture warning line\n2026-10-31T09:01:10+08:00 ERROR downstream L1 task exited with status 1 (synthetic fixture)"
+  },
+  "states: INCOMPLETE (GUI-KILL-001)": {
+    "pass": true,
+    "detail": ""
+  },
+  "states: SUCCESS (GUI-6B-L2)": {
+    "pass": true,
+    "detail": ""
+  },
+  "results: Open results preselects the chosen run": {
+    "pass": true,
+    "detail": "GUI-L2-001/20261030-181614+0800 \u2014 SUCCESS, L2"
+  },
+  "results: QC figures render": {
+    "pass": true,
+    "detail": [
+      502,
+      354,
+      706,
+      354
+    ]
+  },
+  "results: Open report preselects the chosen run": {
+    "pass": true,
+    "detail": "http://127.0.0.1:8701/reports?project=%2Fmedia%2Fduobook02%2Fbrian%2Fnf-rna%2Fprojects%2Fairway-gui-demo"
+  }
+}

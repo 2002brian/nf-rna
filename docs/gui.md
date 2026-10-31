@@ -51,16 +51,108 @@ created when it is not mounted.
 
 ## Pages
 
-The sidebar selects the page and the current project (also kept in the URL, so
-a reload or a bookmark returns to it).
+The sidebar groups the pages in the order of the work — **Workspace**
+(Projects, Datasets, Project overview), **Set up** (New Project, Input &
+Metadata, Contrasts) and **Analysis** (Validate & Run, Results, Reports &
+Downloads) — and selects the current project. The current project is kept in
+the URL, so a reload or a bookmark returns to it; under the selector the
+sidebar shows its scope, input, sample count and the status of its latest run.
 
-### Dashboard
+Selections that belong to a project (the run chosen on Project overview,
+Validate & Run, Results and Reports; the case ID; the metadata being edited;
+the contrasts being composed) are kept per project, so switching to another
+project and back returns to the same run and the same unsaved edits.
 
-nf-rna version, allowed roots and their mount state, the projects found in the
-allowed roots (two folder levels deep) with their latest run, recent runs of
-all projects, `rnaseq doctor` checks (cached for 10 minutes; *Re-run checks*
-refreshes), and the registered references. An active GUI run is announced at
-the top.
+### Execution status and scientific QC
+
+Every run is shown with two separate statuses:
+
+| | Values | Source |
+|---|---|---|
+| **Execution** | RUNNING, SUCCESS, FAILED, INCOMPLETE | the run's `run_state.json` and process liveness: CREATED/RUNNING with a live process is RUNNING; RUNNING without its process, a recorded INTERRUPTED and an unknown state are INCOMPLETE |
+| **Scientific QC** | PASS, WARNING, INCONCLUSIVE, NOT_EVALUATED | a display roll-up of verdicts the run itself recorded (below) |
+
+The scientific QC roll-up reads, for each run:
+
+- the strandedness check of FASTQ runs on the HISAT2 route (v1.6.1, frozen
+  contract `upstream_qc.strandedness`): CONSISTENT → PASS, WARNING → WARNING,
+  ADVISORY (declared unstranded, reads look stranded; unstranded counting is
+  valid) → WARNING, INCONCLUSIVE → INCONCLUSIVE, Salmon route → NOT_EVALUATED;
+- the L1 sample flags (`downstream/l1/backend_summary.json`, for example
+  `LOW_LIBRARY_SIZE`): none → PASS, any → WARNING;
+- per contrast, the R warnings of the DESeq2 fit, `results()` and shrinkage
+  (v1.6.1, `contrast_metadata.json` `r_warnings`): none → PASS, any → WARNING;
+  runs before v1.6.1 → NOT_EVALUATED; and a shrinkage that did not succeed →
+  WARNING.
+
+The roll-up is WARNING if any check is WARNING, otherwise INCONCLUSIVE if any
+is INCONCLUSIVE, otherwise PASS if any check passed, otherwise NOT_EVALUATED.
+Each check is listed with the verdict exactly as recorded. The roll-up never
+changes a recorded verdict, `run_state.json` or the execution status: a run
+with a QC warning is still SUCCESS.
+
+### Projects
+
+The research projects found in the allowed roots (two folder levels deep), one
+row each: project, species, input type, quantification (Salmon, HISAT2 +
+featureCounts, or none for imported counts), reference, sample count (rows of
+metadata.csv), contrasts (contrasts.csv), scope, number of runs, the last run,
+its execution status and scientific QC. *Open* goes to the project's overview.
+Below: recent runs of all projects, the data folders and their mount state,
+`rnaseq doctor` checks (cached for 10 minutes; *Re-run checks* refreshes) and
+the registered references. An unavailable data folder (for example an
+unmounted disk) is reported at the top. An active GUI run is announced at the
+top.
+
+### Datasets
+
+Browse a folder inside the allowed roots (unmounted roots are not offered) and
+see what it holds, three folder levels deep (run, work and output folders are
+skipped): the number of files, total size, files per kind (FASTQ, count
+matrix, sample metadata, FASTQ samplesheet, contrasts, other tables, other),
+and files without read permission. Kinds come from the file name and, for
+tables, the header line only; FASTQ contents are never read. A symbolic link
+that resolves outside the allowed roots is listed as ignored and never
+followed, and symlinked folders are not entered.
+
+Recognition uses the existing rules: FASTQ samples and R1/R2 pairs by the
+validator's file-name rule (paired-end or single-end; other files in the
+folder are ignored); count matrices by the validator's count-matrix checks
+(genes × samples); samplesheets by the `rnaseq new --fastq-samplesheet`
+reader, which also reports any FASTQ path outside the allowed roots;
+metadata as a preview.
+
+*Use in a project* acts on the current project (sidebar), with the existing
+importers only:
+
+- FASTQ folder or samplesheet → a FASTQ project of the same layout: shows how
+  many files and bytes would be copied into `input/fastq/` and the free space
+  there, then copies with `import_fastq_samplesheet` (refused when a file is
+  outside the allowed roots, the project is not on an available root, or the
+  space is insufficient). The originals are not moved or changed; where they
+  came from is shown on Input & Metadata and Project overview (from
+  `planning/imported_fastq_samplesheet.csv`).
+- Count matrix → a raw-count project: `import_count_matrix` (replacing an
+  existing matrix needs a tick).
+- Metadata → loaded into the project's metadata editor, unsaved; *Save
+  metadata* on Input & Metadata checks and writes it.
+
+### Project overview
+
+The current project: species, input, sample count, contrasts, quantification,
+reference, layout and strandedness, and the analysis settings (scope, design
+formula, DEG thresholds, enrichment). The workflow row shows Dataset →
+Project → Metadata → Contrasts → Validate → Run → Results, each done, to do,
+needing attention or not needed, from `rnaseq validate` and the runs; the
+first unfinished step is named with its findings and a link to its page.
+*Data locations* gives the project input, the original FASTQ folder(s), the
+metadata and contrasts files and the runs folder.
+
+*Analysis history* lists every run (newest first) with level, execution
+status, scientific QC, start and end time, and whether results and a report
+exist. For the chosen run it shows each recorded QC check, and *Open
+results*, *Open report & downloads* and *Run details and logs* go to that run
+on the corresponding page.
 
 ### New Project
 
@@ -131,23 +223,35 @@ When KEGG ORA or GSEA is selected and the project does not pin a KEGG
 snapshot, the validator's warning is shown with *Pin to the current snapshot*,
 which writes `annotation.enrichment.kegg.snapshot` to project.yaml.
 
-### Run
+### Validate & Run
 
-- *Validate* shows the `rnaseq validate` report and, when the project is
-  valid, refreshes the planning artifacts (as `rnaseq plan`).
-- Settings summary: scope, input, design, every contrast with its direction,
-  enrichment and KEGG snapshot, resources, and the exact command.
+- The validator's findings are always shown, grouped by workflow step
+  (Dataset, Project, Metadata, Contrasts) with the page that fixes them; the
+  page says whether the project can run. *Validate and refresh the plan*
+  shows the full `rnaseq validate` report and, when the project is valid,
+  refreshes the planning artifacts (as `rnaseq plan`).
+- Settings summary: scope (with what that scope produces), species, input,
+  quantification, strandedness, reference, design, DEG thresholds, every
+  contrast with its direction, enrichment and KEGG snapshot, resources; the
+  exact command is in an expander.
 - Downstream runtime: whether the locked runtime for this nf-rna build exists,
   or that the first run will create it (several minutes).
 - Case ID (required) and, for FASTQ projects with a successful earlier run,
   the upstream results to reuse (offered only when `--reuse-upstream`'s own
   preflight accepts them; a single candidate is preselected). Raw-count
   projects have no upstream stage, so there is nothing to reuse.
+  Earlier SUCCESS runs that the preflight refuses are listed with the
+  preflight's own reason (for example a v1.6.0 upstream, which lacks the
+  strand evidence).
 - *Run L1* / *Run L2* (named after the project's scope) runs the `rnaseq run`
-  preflight, then starts the run in the background.
-- Runs: every recorded run of the project with its state, the `rnaseq status`
-  dashboard of the selected run (stages, tasks, elapsed time, errors), and a
-  log viewer (last N lines of the run's logs or the GUI launcher log).
+  preflight, then starts the run in the background. It is disabled while the
+  project is invalid, without a case ID, or while a GUI run is active.
+- Runs: every recorded run of the project with execution status and
+  scientific QC, the selected run's state and QC checks, *Open results* /
+  *Open report & downloads*, the `rnaseq status` dashboard (stages, tasks,
+  elapsed time, errors), and a log viewer (last N lines of the run's logs or
+  the GUI launcher log; `rnaseq.log` first; *Only warnings and errors* keeps
+  the lines with ERROR, WARN/WARNING, FAILED or Exception).
   *Refresh* re-reads the files; there is no automatic polling.
 
 States are read from each run's `run_state.json`. A run recorded as RUNNING
@@ -161,6 +265,8 @@ with that explanation.
 Choose a run of the current project that has downstream outputs (any state; a
 run that did not finish shows what it wrote). Sections follow the run's
 analysis level: an L1 run shows only *QC & exploratory* and *Provenance*.
+*QC & exploratory* starts with the run's scientific QC summary (open when it
+is WARNING).
 
 - **QC & exploratory**: the L1 summary (genes filtered and retained,
   normalization, VST), PCA, sample correlation, raw and VST boxplots, the QC
@@ -243,6 +349,18 @@ when that process has ended. Each submission also leaves
 and `~/.cache/nf-rna/gui/logs/<id>.log` (the command's own output, which
 exists before the run's log folder does). These files are what the GUI uses to
 find its runs again after a restart; the analysis state stays in the run.
+
+## Known limitations (v1.7.0 development)
+
+- Assigning FASTQ files to a project copies them into the project (the
+  existing importer; the project schema requires `input.path` inside the
+  project). The Datasets page shows the size and free space before copying,
+  but there is no "use in place" mode.
+- The original location of an imported count matrix is not recorded by the
+  importer, so Project overview cannot show it.
+- `/dashboard` is not a URL of the Projects page; use the server root.
+- Scope changes (for example running an L2 project as L1) remain project.yaml
+  edits; the Run page runs the project's scope.
 
 ## Known limitations (v1.6.0)
 

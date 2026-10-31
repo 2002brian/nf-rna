@@ -5,6 +5,9 @@
 > For the latest features, installation, and the optional browser GUI, read the
 > [latest README](README_latest.md) ([繁體中文](README_zh-TW.md)) and the [CHANGELOG](CHANGELOG.md).
 > Documentation links below point to the `v1.3.0` tag.
+> The development branch for v1.7.0 (unreleased) extends the browser GUI into a local research
+> workspace (data browser, project overview, run history with execution status and scientific QC);
+> see [docs/gui.md](docs/gui.md).
 
 English | [繁體中文](https://github.com/2002brian/nf-rna/blob/v1.3.0/README_zh-TW.md) (v1.3.0)
 

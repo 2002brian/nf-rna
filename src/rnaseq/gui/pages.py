@@ -1,4 +1,4 @@
-"""Streamlit pages: Dashboard, New Project, Input & Metadata, Contrasts, Run, Results, Reports & Downloads.
+"""Streamlit pages: Projects, Datasets, Project, New Project, Input & Metadata, Contrasts, Run, Results, Reports & Downloads.
 
 Pages read every state from the project and run files on each rerun;
 ``st.session_state`` holds only unsaved UI input (the metadata being edited,
@@ -15,7 +15,7 @@ import pandas as pd
 import streamlit as st
 
 from rnaseq.errors import ExecutionPreflightError, ProjectConfigError, ProjectCreationError
-from rnaseq.gui import jobs, results, services
+from rnaseq.gui import datasets, jobs, results, services, workspace
 from rnaseq.gui.config import GuiConfig, PathNotAllowed, ensure_data_layout, gui_state_dir, load_config
 from rnaseq.models import DEFAULT_L2_ENRICHMENT, PIPELINE_VERSION, DesignType, FastqPreprocessing, InputType, Preset, SequencingLayout, describe_enrichment
 from rnaseq.run_status import _Cache, build_status, discover_runs, render_status
@@ -47,11 +47,23 @@ def gui_config() -> GuiConfig:
 
 
 def current_project() -> Path | None:
+    """The selected project, from the session or (on a reload or bookmark) the URL.
+
+    A project that arrives by URL is copied into the session, and the URL is
+    restored after a page switch (``st.switch_page`` and page links drop the
+    query string), so changing pages never loses the project.
+    """
+
     value = st.session_state.get(PROJECT_KEY) or st.query_params.get(PROJECT_KEY)
     if not value:
         return None
     path = Path(value)
-    return path if (path / "project.yaml").is_file() else None
+    if not (path / "project.yaml").is_file():
+        return None
+    st.session_state[PROJECT_KEY] = str(path)
+    if st.query_params.get(PROJECT_KEY) != str(path):
+        st.query_params[PROJECT_KEY] = str(path)
+    return path
 
 
 def select_project(path: Path | None) -> None:
@@ -97,6 +109,61 @@ def sidebar(config: GuiConfig) -> None:
                     st.error(str(exc))
         if current is not None:
             st.caption(f"Current: `{current}`")
+            summary = _sidebar_summary(str(current))
+            if summary:
+                st.caption(summary)
+
+
+def _sidebar_summary(project: str) -> str:
+    summary = workspace.project_summary(Path(project))
+    if summary.error:
+        return "project.yaml cannot be read"
+    latest = summary.latest
+    state = f"latest run {latest.execution}, QC {latest.qc.headline()}" if latest else "no run yet"
+    return f"{summary.scope} · {summary.input_type} · {summary.samples} samples · {state}"
+
+
+def remembered_choice(label: str, options: list[str], key: str, **kwargs) -> str:
+    """A selectbox whose choice survives visits to other projects and pages.
+
+    Streamlit drops the state of a widget that is not drawn in a rerun, so the
+    choice is also kept under ``_keep::<key>`` and restored when the widget is
+    drawn again (if it is still one of the options).
+    """
+
+    keep = f"_keep::{key}"
+    if st.session_state.get(key) not in options:
+        st.session_state.pop(key, None)
+        if st.session_state.get(keep) in options:
+            st.session_state[key] = st.session_state[keep]
+    value = st.selectbox(label, options, index=0, key=key, **kwargs)
+    st.session_state[keep] = value
+    return value
+
+
+def remembered_text(label: str, key: str, **kwargs) -> str:
+    """A text input whose value survives visits to other projects and pages (see :func:`remembered_choice`)."""
+
+    keep = f"_keep::{key}"
+    if key not in st.session_state and keep in st.session_state:
+        st.session_state[key] = st.session_state[keep]
+    value = st.text_input(label, key=key, **kwargs)
+    st.session_state[keep] = value
+    return value
+
+
+def remember(key: str, value: str) -> None:
+    """Preselect ``value`` for the :func:`remembered_choice` widget ``key``."""
+
+    st.session_state[key] = value
+    st.session_state[f"_keep::{key}"] = value
+
+
+def go_to(page: str) -> None:
+    """Switch page when running inside the navigation (not in a single-page AppTest)."""
+
+    if page in PAGES:
+        st.switch_page(PAGES[page])
 
 
 def path_picker(config: GuiConfig, label: str, key: str, *, want: str, suffixes: tuple[str, ...] = (), start: Path | None = None) -> Path | None:
@@ -176,50 +243,72 @@ def _doctor() -> list[tuple[str, str, str]]:
     return [(item.name, item.verdict, item.detail) for item in doctor_checks(None)]
 
 
+def _project_table_row(item: workspace.ProjectSummary) -> dict[str, object]:
+    latest = item.latest
+    # Status columns first: the table is wider than most screens.
+    return {
+        "project": item.project_id, "scope": item.scope, "samples": item.samples, "contrasts": ", ".join(item.contrasts) or "—",
+        "last run": latest.started[:16].replace("T", " ") if latest else "—",
+        "execution": latest.execution if latest else "—", "scientific QC": latest.qc.headline() if latest else "—",
+        "runs": len(item.runs), "species": item.species, "input": item.input_type, "quantification": item.quantification,
+        "reference": item.reference, "path": str(item.path), "problem": item.error or "",
+    }
+
+
 def dashboard_page() -> None:
     config = gui_config()
-    st.title("nf-rna")
-    st.caption(f"Version {PIPELINE_VERSION} · settings: `{config.source}`")
+    st.title("Research projects")
+    st.caption(f"nf-rna {PIPELINE_VERSION} · settings: `{config.source}`")
     for message in st.session_state.get("_layout_messages", []):
         st.info(message)
     active = jobs.active_launch()
     if active is not None:
         st.warning(f"Active GUI run: case **{active.case_id}** of `{active.project}` (submitted {active.launched_at}). Open the Run page of that project to follow it.")
 
-    st.subheader("Storage")
-    st.dataframe(pd.DataFrame([{"allowed root": str(item.path), "status": "available" if item.available else "UNAVAILABLE", "detail": item.message} for item in config.root_statuses()]), hide_index=True, width="stretch")
+    for item in config.root_statuses():
+        if not item.available:
+            st.error(f"Data folder `{item.path}` is unavailable: {item.message} Its projects and datasets are not shown.")
 
-    st.subheader("Projects")
+    st.subheader("Research projects")
     cache = _Cache()
     projects = services.discover_projects(config)
-    rows = [services.project_row(path, cache) for path in projects]
-    if rows:
-        st.dataframe(pd.DataFrame([{"project": row.project_id, "scope": row.preset, "input": row.input_type, "latest run": row.latest_run, "state": row.latest_state, "path": str(row.path), "problem": row.error or ""} for row in rows]), hide_index=True, width="stretch")
-        chosen = st.selectbox("Open project", [str(row.path) for row in rows], index=None, format_func=lambda value: Path(value).name, key="dash_open")
-        if chosen and st.button("Open", key="dash_open_btn"):
+    summaries = [workspace.project_summary(path, cache) for path in projects]
+    if summaries:
+        st.dataframe(pd.DataFrame([_project_table_row(item) for item in summaries]), hide_index=True, width="stretch",
+                     column_config={"path": st.column_config.TextColumn("path", width="small")})
+        cols = st.columns([3, 1])
+        chosen = cols[0].selectbox("Open project", [str(item.path) for item in summaries], index=None, format_func=lambda value: Path(value).name,
+                                   placeholder="Choose a project to open", key="dash_open")
+        cols[1].write("")
+        if cols[1].button("Open", key="dash_open_btn", disabled=chosen is None, type="primary"):
             select_project(Path(chosen))
-            if "inputs" in PAGES:
-                st.switch_page(PAGES["inputs"])
+            go_to("project")
             st.rerun()
     else:
-        st.write("No projects found under the allowed roots.")
+        st.write("No projects found under the allowed roots. Create one on **New Project**, or open one by path in the sidebar.")
 
     st.subheader("Recent runs")
-    recent = services.recent_runs(projects, cache=cache)
-    if recent:
-        st.dataframe(pd.DataFrame(recent), hide_index=True, width="stretch")
+    rows = []
+    for item in summaries:
+        for run in item.runs[:15]:
+            rows.append({"started": run.started, "project": item.project_id, "run": run.label, "level": run.level or "",
+                         "execution": run.execution, "scientific QC": run.qc.headline(), "note": run.note or ""})
+    rows.sort(key=lambda row: row["started"], reverse=True)
+    if rows:
+        st.dataframe(pd.DataFrame(rows[:15]), hide_index=True, width="stretch")
     else:
         st.write("No recorded runs.")
 
+    st.subheader("Server")
+    st.dataframe(pd.DataFrame([{"data folder (allowed root)": str(item.path), "status": "available" if item.available else "UNAVAILABLE", "detail": item.message} for item in config.root_statuses()]), hide_index=True, width="stretch")
     left, right = st.columns(2)
     with left:
-        st.subheader("Runtime (rnaseq doctor)")
-        if st.button("Re-run checks", key="doctor_refresh"):
-            _doctor.clear()
-        checks = _doctor()
-        st.dataframe(pd.DataFrame(checks, columns=["check", "verdict", "detail"]), hide_index=True, width="stretch")
-    with right:
-        st.subheader("Registered references")
+        with st.expander("Runtime checks (rnaseq doctor)"):
+            if st.button("Re-run checks", key="doctor_refresh"):
+                _doctor.clear()
+            checks = _doctor()
+            st.dataframe(pd.DataFrame(checks, columns=["check", "verdict", "detail"]), hide_index=True, width="stretch")
+    with right, st.expander("Registered references"):
         references, error = services.registered_references()
         if error:
             st.error(error)
@@ -227,6 +316,377 @@ def dashboard_page() -> None:
             st.dataframe(pd.DataFrame([{"species": ref.species, "provider": ref.provider, "release": ref.release, "assembly": ref.assembly_identity, "Salmon": "yes" if ref.salmon_index else "no", "HISAT2": "yes" if ref.hisat2_index else "no", "root": str(ref.root)} for ref in references]), hide_index=True, width="stretch")
         elif not error:
             st.write("No registered references.")
+
+
+# --------------------------------------------------------------------- Project workspace
+
+STEP_ICONS = {"done": "✅", "todo": "⬜", "problem": "⚠️", "not needed": "➖"}
+STEP_PAGES = {"Dataset": "inputs", "Project": "new", "Metadata": "inputs", "Contrasts": "contrasts", "Validate": "run", "Run": "run", "Results": "results"}
+
+
+def run_history_table(runs: list[workspace.RunRow]) -> pd.DataFrame:
+    return pd.DataFrame([{
+        "run": run.label, "level": run.level or "", "execution": f"{workspace.EXECUTION_ICONS.get(run.execution, '')} {run.execution}",
+        "scientific QC": f"{workspace.QC_ICONS.get(run.qc.level, '')} {run.qc.headline()}",
+        "started": run.started[:19].replace("T", " "), "completed": run.completed[:19].replace("T", " "),
+        "results": "yes" if run.has_results else "", "report": "yes" if run.has_report else "", "note": run.note or "",
+    } for run in runs])
+
+
+def show_run_qc(qc: workspace.RunQc) -> None:
+    """The recorded scientific QC verdicts of a run (display only; the execution status is separate)."""
+
+    text = {
+        "PASS": "Scientific QC: **PASS** — every recorded check passed.",
+        "WARNING": f"Scientific QC: **WARNING** — {len(qc.warnings)} recorded check(s) need attention. The run's execution status is unchanged.",
+        "INCONCLUSIVE": "Scientific QC: **INCONCLUSIVE** — at least one check had too little evidence for a verdict.",
+        "NOT_EVALUATED": "Scientific QC: **NOT EVALUATED** — this run recorded no QC verdict (it did not reach the analysis, or it predates the check).",
+    }[qc.level]
+    {"PASS": st.success, "WARNING": st.warning, "INCONCLUSIVE": st.info, "NOT_EVALUATED": st.caption}[qc.level](text)
+    if qc.items:
+        st.dataframe(pd.DataFrame([{"check": item.check, "QC": f"{workspace.QC_ICONS.get(item.level, '')} {item.level}", "recorded": item.recorded, "detail": item.detail} for item in qc.items]),
+                     hide_index=True, width="stretch", column_config={"detail": st.column_config.TextColumn("detail", width="large")})
+
+
+def open_run(project: Path, run: workspace.RunRow, page: str) -> None:
+    """Preselect ``run`` on the Results or Reports page and go there."""
+
+    remember(f"{page}_run::{project}", run.label)
+    go_to(page)
+
+
+def project_page() -> None:
+    from rnaseq.validators import validate_project
+
+    config = gui_config()
+    project = require_project()
+    if project is None:
+        return
+    summary = workspace.project_summary(project)
+    st.title(summary.project_id)
+    st.caption(f"`{project}`")
+    if summary.error:
+        st.error(f"project.yaml cannot be read: {summary.error}")
+        return
+    try:
+        config.resolve_allowed(project)
+    except PathNotAllowed as exc:
+        st.warning(f"This project is outside the available data folders ({exc}). It can be viewed, but check that the data disk is mounted.")
+
+    cols = st.columns(4)
+    cols[0].metric("Species", summary.species)
+    cols[1].metric("Input", summary.input_type.replace("_", " "))
+    cols[2].metric("Samples", summary.samples)
+    cols[3].metric("Contrasts", len(summary.contrasts))
+    facts_table({
+        "quantification": summary.quantification, "reference": summary.reference,
+        "layout / strandedness": f"{summary.layout} / {summary.strandedness}" if summary.input_type == InputType.FASTQ.value else None,
+        "analysis": summary.analysis_settings(), "contrasts": ", ".join(summary.contrasts) or None,
+    })
+
+    report = validate_project(project)
+    st.subheader("Workflow")
+    if report.config is None:
+        show_issues(report.errors)
+        return
+    steps = workspace.workflow_steps(report, list(summary.runs))
+    cols = st.columns(len(steps))
+    for col, step in zip(cols, steps):
+        col.markdown(f"{STEP_ICONS.get(step.status, '')} **{step.name}**  \n{step.detail}")
+    upcoming = workspace.next_step(steps)
+    if upcoming is None:
+        st.success("Every step is complete. Open the results of a run below.")
+    else:
+        st.info(f"Next: **{upcoming.name}** — {upcoming.detail}.")
+        if upcoming.issues:
+            show_issues(upcoming.issues[:8])
+        target = STEP_PAGES.get(upcoming.name)
+        if target in PAGES:
+            st.page_link(PAGES[target], label=f"Go to {PAGES[target].title} →")
+
+    with st.expander("Data locations"):
+        assert report.loaded is not None
+        origin = workspace.input_origin(project)
+        facts_table({
+            "project input": str(report.loaded.input_path),
+            "original FASTQ location": ", ".join(origin) if origin else None,
+            "metadata": str(report.loaded.metadata_path), "contrasts": str(report.loaded.contrasts_path),
+            "runs": str(project / "runs"),
+        })
+        if report.config.input.type is InputType.RAW_COUNTS:
+            st.caption("The count matrix was copied into the project; the importer does not record its original file.")
+
+    st.subheader("Analysis history")
+    runs = list(summary.runs)
+    if not runs:
+        st.write("No run yet.")
+        if "run" in PAGES:
+            st.page_link(PAGES["run"], label="Validate and run →")
+        return
+    st.dataframe(run_history_table(runs), hide_index=True, width="stretch")
+    labels = [run.label for run in runs]
+    chosen = remembered_choice("Run", labels, f"project_run::{project}")
+    run = runs[labels.index(chosen)]
+    show_run_qc(run.qc)
+    cols = st.columns(3)
+    if cols[0].button("Open results", key=f"project_open_results::{project}", disabled=not run.has_results):
+        open_run(project, run, "results")
+    if cols[1].button("Open report & downloads", key=f"project_open_reports::{project}", disabled=not run.has_results):
+        open_run(project, run, "reports")
+    if cols[2].button("Run details and logs", key=f"project_open_run::{project}"):
+        remember(f"run_selected::{project}", run.label)
+        go_to("run")
+
+
+# --------------------------------------------------------------------- Datasets
+
+@st.cache_data(ttl=60, max_entries=16, show_spinner="Listing the folder ...")
+def _scan(folder: str, roots: tuple[str, ...]) -> datasets.DatasetScan:
+    return datasets.scan_dataset(load_config(), folder)
+
+
+@st.cache_data(max_entries=8, show_spinner="Checking the count matrix ...")
+def _recognise_counts(path: str, mtime: float):
+    return datasets.recognise_counts(Path(path))
+
+
+def copy_plan_notice(plan: datasets.CopyPlan) -> None:
+    free = datasets.human_size(plan.free_bytes) if plan.free_bytes is not None else "unknown"
+    text = (f"Importing copies {plan.files} FASTQ file(s), {datasets.human_size(plan.bytes)}, into `{plan.target}` "
+            f"(free space there: {free}). The original files stay where they are and are not changed.")
+    (st.info if plan.fits else st.error)(text if plan.fits else text + " There is not enough free space.")
+
+
+def import_fastq(config: GuiConfig, project: Path, records, sheet_text: str | None = None, sheet_path: Path | None = None) -> None:
+    """Copy FASTQ files into the project with the existing importer (``rnaseq new --fastq-samplesheet``).
+
+    Refused when a file resolves outside the allowed roots or the target has no room.
+    """
+
+    from rnaseq.project import import_fastq_samplesheet, load_project
+
+    outside = datasets.outside_allowed(config, datasets.fastq_paths(records))
+    if outside:
+        st.error("These FASTQ files are outside the allowed data folders (for example through a symbolic link) and are not imported: " + ", ".join(outside[:5]))
+        return
+    try:
+        config.resolve_allowed(project)
+    except PathNotAllowed as exc:
+        st.error(f"The project is not inside an available data folder; nothing is copied. {exc}")
+        return
+    plan = datasets.fastq_copy_plan(records, load_project(project).input_path)
+    if not plan.fits:
+        st.error(f"Not enough free space in `{plan.target}` for {datasets.human_size(plan.bytes)}; nothing is copied.")
+        return
+    if sheet_path is not None:
+        _import_samplesheet(project, sheet_path, import_fastq_samplesheet)
+        return
+    assert sheet_text is not None
+    scratch = gui_state_dir() / "samplesheets" / f"{project.name}-{datetime.now():%Y%m%d-%H%M%S}.csv"
+    scratch.parent.mkdir(parents=True, exist_ok=True)
+    scratch.write_text(sheet_text, encoding="utf-8")
+    try:
+        _import_samplesheet(project, scratch, import_fastq_samplesheet)
+    finally:
+        scratch.unlink(missing_ok=True)
+
+
+def _dataset_target(project: Path | None):
+    """The current project's loaded configuration, or None with an explanation."""
+
+    from rnaseq.project import load_project
+
+    if project is None:
+        st.info("To use this data, choose a project in the sidebar or create one on **New Project**.")
+        return None
+    try:
+        return load_project(project)
+    except ProjectConfigError as exc:
+        st.error(str(exc))
+        return None
+
+
+def datasets_page() -> None:
+    from rnaseq.project import fastq_samplesheet_text, import_count_matrix
+
+    config = gui_config()
+    st.title("Datasets")
+    st.caption("Browse the research data on this server. Only the data folders in the GUI settings are shown; FASTQ contents are never read here.")
+    statuses = config.root_statuses()
+    for item in statuses:
+        if not item.available:
+            st.error(f"`{item.path}`: {item.message}")
+    roots = config.available_roots()
+    if not roots:
+        return
+    data_root = config.project_parent.parent
+    start = data_root / "fastq" if (data_root / "fastq").is_dir() and any((data_root / "fastq").iterdir()) else roots[0]
+    folder = path_picker(config, "Dataset folder", "ds", want="dir", start=start)
+    if folder is None:
+        st.caption("Choose a folder: browse below and press *Use this folder*, or type its path.")
+        return
+    if st.button("Rescan", key="ds_rescan"):
+        _scan.clear()
+    try:
+        scan = _scan(str(folder), tuple(map(str, roots)))
+    except PathNotAllowed as exc:
+        st.error(str(exc))
+        return
+
+    cols = st.columns(5)
+    cols[0].metric("Files", len(scan.files))
+    cols[1].metric("Total size", datasets.human_size(scan.total_bytes))
+    cols[2].metric("FASTQ files", len(scan.of_kind("fastq")))
+    cols[3].metric("Tables", sum(len(scan.of_kind(kind)) for kind in ("count_matrix", "metadata", "samplesheet", "contrasts", "table")))
+    cols[4].metric("Unreadable", len(scan.unreadable))
+    if scan.truncated:
+        st.warning(f"Only the first {datasets.MAX_FILES} files are listed.")
+    if scan.outside_links:
+        st.warning("Symbolic links that point outside the allowed data folders are ignored: " + ", ".join(scan.outside_links[:10]))
+    for problem in scan.unlisted:
+        st.warning(f"Cannot list {problem}")
+    if scan.unreadable:
+        st.error("Files without read permission: " + ", ".join(item.relative for item in scan.unreadable[:10]))
+    if scan.kind_summary():
+        st.dataframe(pd.DataFrame(scan.kind_summary()), hide_index=True)
+    with st.expander(f"All files ({len(scan.files)})", expanded=len(scan.files) <= 30):
+        st.dataframe(pd.DataFrame([{"file": item.relative, "kind": datasets.KIND_LABELS[item.kind], "size": datasets.human_size(item.size),
+                                    "readable": "yes" if item.readable else "NO", "link": "symlink" if item.symlink else ""} for item in scan.files[:2000]]),
+                     hide_index=True, width="stretch")
+    st.caption(f"Folders are listed {datasets.MAX_DEPTH} levels deep; run, work and output folders ({', '.join(sorted(datasets.SKIPPED_DIRS))}) are skipped.")
+
+    project = current_project()
+    tabs_wanted = [name for name, present in (("FASTQ", scan.fastq_folders), ("Count matrix", scan.of_kind("count_matrix")),
+                                               ("Metadata", scan.of_kind("metadata")), ("Samplesheet", scan.of_kind("samplesheet"))) if present]
+    if not tabs_wanted:
+        st.info("No FASTQ files, count matrices, metadata or samplesheets were recognised in this folder.")
+        return
+    st.subheader("Recognise samples and use in a project")
+    st.caption(f"Target project: **{project.name if project else 'none selected'}** (change it in the sidebar).")
+    for tab, name in zip(st.tabs(tabs_wanted), tabs_wanted):
+        with tab:
+            if name == "FASTQ":
+                _dataset_fastq(config, scan, project, fastq_samplesheet_text)
+            elif name == "Count matrix":
+                _dataset_counts(scan, project, import_count_matrix)
+            elif name == "Metadata":
+                _dataset_metadata(scan, project)
+            else:
+                _dataset_samplesheet(config, scan, project)
+
+
+def _dataset_fastq(config: GuiConfig, scan: datasets.DatasetScan, project: Path | None, sheet_text) -> None:
+    folders = scan.fastq_folders
+    folder = folders[0] if len(folders) == 1 else Path(st.selectbox("FASTQ folder", [str(item) for item in folders], key="ds_fq_folder"))
+    files = [item for item in scan.of_kind("fastq") if item.path.parent == folder]
+    loaded = None
+    if project is not None:
+        try:
+            from rnaseq.project import load_project
+            loaded = load_project(project)
+        except ProjectConfigError:
+            loaded = None
+    default = loaded.config.input.layout if loaded is not None and loaded.config.input.layout else datasets.guess_layout(files)
+    layouts = [SequencingLayout.PAIRED_END, SequencingLayout.SINGLE_END]
+    layout = st.radio("Layout", layouts, index=layouts.index(default), format_func=lambda value: value.value.replace("_", "-"), horizontal=True, key=f"ds_fq_layout::{folder}")
+    summary, errors = datasets.recognise_fastq(folder, layout)
+    st.caption(f"`{folder}` · {len(files)} FASTQ file(s), {datasets.human_size(sum(item.size or 0 for item in files))}. Samples follow the validator's naming rule `<sample>[_Lnnn]_R1|R2[_nnn].fastq.gz`.")
+    show_issues(errors)
+    if summary is None or not summary.records:
+        return
+    st.dataframe(pd.DataFrame([{"sample_id": record.sample_id, "lane": record.lane, "R1": record.fastq_1.name, "R2": record.fastq_2.name if record.fastq_2 else ""} for record in summary.records]), hide_index=True, width="stretch")
+    st.caption(f"{len(summary.sample_ids)} sample(s), {len(summary.records)} FASTQ assignment(s).")
+    loaded = _dataset_target(project)
+    if loaded is None:
+        return
+    if loaded.config.input.type is not InputType.FASTQ:
+        st.info(f"Project `{project.name}` takes a raw-count matrix, not FASTQ files.")
+        return
+    if loaded.config.input.layout is not layout:
+        st.warning(f"Project `{project.name}` is {loaded.config.input.layout.value}; recognise the files as that layout to import them.")
+        return
+    if errors:
+        st.warning("Fix the FASTQ naming problems above before importing.")
+        return
+    plan = datasets.fastq_copy_plan(summary.records, loaded.input_path)
+    copy_plan_notice(plan)
+    sheet = sheet_text(summary.records, loaded.config.upstream.strandedness or "auto")
+    if st.button(f"Copy {len(summary.records)} FASTQ assignment(s) into {project.name}", key="ds_fq_import", disabled=not plan.fits, type="primary"):
+        import_fastq(config, project, summary.records, sheet_text=sheet)
+
+
+def _dataset_counts(scan: datasets.DatasetScan, project: Path | None, importer) -> None:
+    files = scan.of_kind("count_matrix")
+    chosen = files[0] if len(files) == 1 else files[[item.relative for item in files].index(st.selectbox("Count matrix", [item.relative for item in files], key="ds_counts_file"))]
+    summary, issues = _recognise_counts(str(chosen.path), chosen.path.stat().st_mtime)
+    if summary is not None:
+        st.success(f"`{chosen.relative}`: {summary.gene_count} genes × {len(summary.sample_ids)} samples: {', '.join(summary.sample_ids[:20])}{' …' if len(summary.sample_ids) > 20 else ''}")
+    show_issues(issues)
+    loaded = _dataset_target(project)
+    if loaded is None or summary is None:
+        return
+    if loaded.config.input.type is not InputType.RAW_COUNTS:
+        st.info(f"Project `{project.name}` takes FASTQ files, not a count matrix.")
+        return
+    st.caption(f"Importing copies this file ({datasets.human_size(chosen.size)}) to `{loaded.input_path}`.")
+    replace = loaded.input_path.exists() and st.checkbox("Replace the project's existing count matrix", key="ds_counts_replace")
+    if st.button(f"Use this count matrix in {project.name}", key="ds_counts_import", type="primary", disabled=loaded.input_path.exists() and not replace):
+        try:
+            importer(project, chosen.path, replace=bool(replace))
+        except ProjectCreationError as exc:
+            st.error(str(exc))
+        else:
+            st.success(f"Copied to `{loaded.input_path}`. Next: describe the samples on Input & Metadata.")
+            if "inputs" in PAGES:
+                st.page_link(PAGES["inputs"], label="Input & Metadata →")
+
+
+def _dataset_metadata(scan: datasets.DatasetScan, project: Path | None) -> None:
+    from rnaseq.validators import validate_project
+
+    files = scan.of_kind("metadata")
+    chosen = files[0] if len(files) == 1 else files[[item.relative for item in files].index(st.selectbox("Metadata file", [item.relative for item in files], key="ds_meta_file"))]
+    header, rows = datasets.table_preview(chosen.path, 50)
+    st.dataframe(pd.DataFrame(rows, columns=header), hide_index=True, width="stretch")
+    loaded = _dataset_target(project)
+    if loaded is None:
+        return
+    if loaded.config.project.preset is Preset.QC:
+        st.info("QC-only projects do not use metadata.")
+        return
+    if st.button(f"Load into the metadata editor of {project.name}", key="ds_meta_load"):
+        text = chosen.path.read_text(encoding="utf-8-sig")
+        parsed_header, parsed_rows = services.parse_table_text(text)
+        report = validate_project(project)
+        columns = list(dict.fromkeys([*services.metadata_columns(report), *parsed_header]))
+        _set_editor_table(project, pd.DataFrame(services.merge_sample_ids(parsed_rows, columns, []), columns=columns))
+        st.success("Loaded, not saved yet. Check the table and press *Save metadata* on Input & Metadata.")
+        if "inputs" in PAGES:
+            st.page_link(PAGES["inputs"], label="Input & Metadata →")
+
+
+def _dataset_samplesheet(config: GuiConfig, scan: datasets.DatasetScan, project: Path | None) -> None:
+    files = scan.of_kind("samplesheet")
+    chosen = files[0] if len(files) == 1 else files[[item.relative for item in files].index(st.selectbox("Samplesheet", [item.relative for item in files], key="ds_sheet_file"))]
+    view = datasets.recognise_samplesheet(config, chosen.path)
+    if view.error:
+        st.error(view.error)
+        return
+    st.dataframe(pd.DataFrame([{"sample": record.sample, "fastq_1": str(record.fastq_1), "fastq_2": str(record.fastq_2 or ""), "strandedness": record.strandedness} for record in view.records]), hide_index=True, width="stretch")
+    st.caption(f"{len(view.records)} row(s), {view.layout.value if view.layout else '?'}, strandedness {view.strandedness}.")
+    if view.outside:
+        st.error("Rows refer to FASTQ files outside the allowed data folders; this samplesheet cannot be imported here: " + ", ".join(view.outside[:5]))
+        return
+    loaded = _dataset_target(project)
+    if loaded is None:
+        return
+    if loaded.config.input.type is not InputType.FASTQ:
+        st.info(f"Project `{project.name}` takes a raw-count matrix, not FASTQ files.")
+        return
+    plan = datasets.fastq_copy_plan(view.records, loaded.input_path)
+    copy_plan_notice(plan)
+    if st.button(f"Import this samplesheet into {project.name}", key="ds_sheet_import", disabled=not plan.fits, type="primary"):
+        import_fastq(config, project, view.records, sheet_path=chosen.path)
 
 
 # --------------------------------------------------------------------- B. New Project
@@ -343,16 +803,18 @@ def new_project_page() -> None:
         select_project(target)
         st.success(f"Created project `{target}`.")
         if "inputs" in PAGES:  # absent when a page runs on its own (AppTest)
-            st.page_link(PAGES["inputs"], label="Next: Input & Metadata →")
+            st.page_link(PAGES["datasets"], label="Next: choose its data on Datasets →")
+            st.page_link(PAGES["inputs"], label="or add data and metadata on Input & Metadata →")
 
 
 # --------------------------------------------------------------------- C. Input & Metadata
 
 def _input_section(config: GuiConfig, project: Path, report) -> None:
-    from rnaseq.project import fastq_samplesheet_text, import_count_matrix, import_fastq_samplesheet
+    from rnaseq.project import fastq_samplesheet_text, import_count_matrix
 
     assert report.config is not None and report.loaded is not None
     st.subheader("1. Input data")
+    st.caption("Tip: the **Datasets** page lists everything in the data folders and can assign it to this project.")
     if report.config.input.type is InputType.RAW_COUNTS:
         if report.counts is not None:
             st.success(f"Count matrix `{report.loaded.input_path}`: {report.counts.gene_count} genes × {len(report.counts.sample_ids)} samples.")
@@ -372,6 +834,9 @@ def _input_section(config: GuiConfig, project: Path, report) -> None:
     layout = report.config.input.layout or SequencingLayout.PAIRED_END
     if report.fastq is not None and report.fastq.records:
         st.success(f"FASTQ input `{report.loaded.input_path}`: {len(report.fastq.sample_ids)} samples, {len(report.fastq.records)} FASTQ assignments ({layout.value}).")
+        origin = workspace.input_origin(project)
+        if origin:
+            st.caption("Copied from: " + ", ".join(f"`{item}`" for item in origin))
     else:
         st.warning(f"No FASTQ files in `{report.loaded.input_path}` yet.")
     mode = st.radio("Add FASTQ files", ["Detect in a folder", "Import an existing samplesheet"], horizontal=True, key="fq_mode")
@@ -387,19 +852,28 @@ def _input_section(config: GuiConfig, project: Path, report) -> None:
         sheet = fastq_samplesheet_text(summary.records, report.config.upstream.strandedness or "auto")
         st.code(sheet, language=None)
         st.download_button("Download samplesheet.csv", sheet, file_name="samplesheet.csv", key="fq_download")
-        if not errors and st.button(f"Copy these {len(summary.records)} FASTQ assignment(s) into the project", key="fq_import"):
+        if errors:
+            return
+        plan = datasets.fastq_copy_plan(summary.records, report.loaded.input_path)
+        copy_plan_notice(plan)
+        if st.button(f"Copy these {len(summary.records)} FASTQ assignment(s) into the project", key="fq_import", disabled=not plan.fits):
             # The import keeps its own copy as planning/imported_fastq_samplesheet.csv.
-            scratch = gui_state_dir() / "samplesheets" / f"{project.name}-{datetime.now():%Y%m%d-%H%M%S}.csv"
-            scratch.parent.mkdir(parents=True, exist_ok=True)
-            scratch.write_text(sheet, encoding="utf-8")
-            try:
-                _import_samplesheet(project, scratch, import_fastq_samplesheet)
-            finally:
-                scratch.unlink(missing_ok=True)
+            import_fastq(config, project, summary.records, sheet_text=sheet)
     else:
         sheet_path = path_picker(config, "Samplesheet CSV (sample,fastq_1,fastq_2,strandedness)", "fq_sheet", want="file", suffixes=(".csv",))
-        if sheet_path is not None and st.button("Import samplesheet (copies the FASTQ files)", key="fq_sheet_import"):
-            _import_samplesheet(project, sheet_path, import_fastq_samplesheet)
+        if sheet_path is None:
+            return
+        view = datasets.recognise_samplesheet(config, sheet_path)
+        if view.error:
+            st.error(view.error)
+            return
+        if view.outside:
+            st.error("Rows refer to FASTQ files outside the allowed data folders: " + ", ".join(view.outside[:5]))
+            return
+        plan = datasets.fastq_copy_plan(view.records, report.loaded.input_path)
+        copy_plan_notice(plan)
+        if st.button("Import samplesheet (copies the FASTQ files)", key="fq_sheet_import", disabled=not plan.fits):
+            import_fastq(config, project, view.records, sheet_path=sheet_path)
 
 
 def _import_samplesheet(project: Path, sheet: Path, importer) -> None:
@@ -674,32 +1148,70 @@ def _runtime_section(active: jobs.Launch | None) -> None:
         st.warning(f"The first run creates the downstream runtime (`{prefix}`); this takes several minutes before analysis starts.")
 
 
+SCOPE_OUTPUTS = {
+    Preset.QC: "FASTQ technical QC (fastp, MultiQC). No statistics.",
+    Preset.L1: "L1: QC, filtering, DESeq2 normalization, blind VST, PCA, sample correlation and distribution plots. No differential expression.",
+    Preset.L2: "L2: everything in L1, plus DESeq2 differential expression per contrast (raw LFC for DEG calls, shrunken LFC for display) and the selected enrichment analyses.",
+}
+
+
 def _summary(report, command: list[str]) -> None:
     config = report.config
     contrasts = report.contrasts.contrasts if report.contrasts else ()
     enrichment = tuple(config.analysis.enrichment) if config.analysis else ()
-    lines = [
-        f"- Project: **{config.project.id}** · scope {services.scope_label(report)}",
-        f"- Input: {config.input.type.value}" + (f" ({len(report.counts.sample_ids)} samples, {report.counts.gene_count} genes)" if report.counts else "") + (f" ({len(report.fastq.sample_ids)} samples)" if report.fastq else ""),
-    ]
+    rows: dict[str, object] = {
+        "project": config.project.id,
+        "scope": services.scope_label(report),
+        "species": config.organism.species.value,
+        "input": config.input.type.value + (f" — {len(report.counts.sample_ids)} samples, {report.counts.gene_count} genes" if report.counts else "") + (f" — {len(report.fastq.sample_ids)} samples, {config.input.layout.value}" if report.fastq else ""),
+        "quantification": workspace.quantification_label(config),
+        "strandedness": config.upstream.strandedness if config.input.type is InputType.FASTQ else None,
+        "reference": workspace.reference_label(config),
+    }
     if config.project.preset is not Preset.QC:
-        lines.append(f"- Design: {config.design.type.value}, `{config.design.formula}`")
-        lines.extend(f"- Contrast {c.contrast_id}: log2FC > 0 = higher in **{c.numerator}** than {c.denominator}" for c in contrasts)
+        rows["design"] = f"{config.design.type.value}, `{config.design.formula}`"
     if config.project.preset is Preset.L2:
-        lines.append(f"- Enrichment: {describe_enrichment(enrichment)}")
+        rows["DEG thresholds"] = f"padj < {config.thresholds.padj}, |log2FC| ≥ {config.thresholds.abs_log2fc} (raw LFC)"
+        for item in contrasts:
+            rows[f"contrast {item.contrast_id}"] = f"log2FC > 0 = higher in {item.numerator} than {item.denominator}"
+        rows["enrichment"] = describe_enrichment(enrichment)
         if config.annotation is not None and enrichment:
-            lines.append(f"- KEGG snapshot: {config.annotation.enrichment.kegg.snapshot or 'not pinned (latest local snapshot)'}")
-    lines.append(f"- Resources: CPUs {config.execution.max_cpus}, memory GiB {config.execution.max_memory_gb}")
-    st.markdown("\n".join(lines))
-    st.markdown("Command:")
-    st.code(shlex.join(command), language="bash", wrap_lines=True)
+            rows["KEGG snapshot"] = config.annotation.enrichment.kegg.snapshot or "not pinned (latest local snapshot)"
+    rows["resources"] = f"CPUs {config.execution.max_cpus}, memory GiB {config.execution.max_memory_gb}"
+    facts_table(rows)
+    st.caption(SCOPE_OUTPUTS[config.project.preset])
+    with st.expander("Command"):
+        st.code(shlex.join(command), language="bash", wrap_lines=True)
+
+
+def _validation_overview(report) -> None:
+    """The project validator's findings, grouped by workflow step, in plain words."""
+
+    if report.is_valid:
+        text = "The project is valid and can be run."
+        if report.warnings:
+            text += f" {len(report.warnings)} warning(s) below do not block the run."
+        st.success(text)
+    else:
+        st.error(f"The project cannot run yet: {len(report.errors)} problem(s) to fix.")
+    grouped: dict[str, list] = {}
+    for issue in report.issues:
+        grouped.setdefault(workspace.issue_area(issue), []).append(issue)
+    for area in workspace.STEP_NAMES:
+        issues = grouped.get(area)
+        if not issues:
+            continue
+        target = STEP_PAGES.get(area)
+        link = f" — fix on {PAGES[target].title}" if target in PAGES and target != "run" else ""
+        st.markdown(f"**{area}**{link}")
+        show_issues(issues)
 
 
 def _run_status_section(config: GuiConfig, project: Path, active: jobs.Launch | None) -> None:
-    st.subheader("Runs")
+    st.subheader("Runs of this project")
     if st.button("Refresh", key="run_refresh"):
         st.rerun()
-    st.caption(f"Read from the run files at {datetime.now().strftime('%H:%M:%S')}; refresh manually.")
+    st.caption(f"Read from the run files at {datetime.now().strftime('%H:%M:%S')}; press Refresh to update.")
     launches = jobs.list_launches(project)
     for launch in launches[:1]:
         run_dir = jobs.launch_run_dir(launch)
@@ -717,27 +1229,33 @@ def _run_status_section(config: GuiConfig, project: Path, active: jobs.Launch | 
     if not runs:
         st.write("No recorded runs.")
         return
-    table = []
-    for run_dir, state in runs:
-        shown, note = jobs.run_display_state(run_dir, state, cache)
-        table.append({"case": run_dir.parent.name, "run": run_dir.name, "state": shown, "started": state.get("started_at"), "completed": state.get("completed_at") or "", "note": note or ""})
-    st.dataframe(pd.DataFrame(table), hide_index=True, width="stretch")
-    labels = [f"{row['case']}/{row['run']}" for row in table]
-    chosen = st.selectbox("Run", labels, index=0, key="run_selected")
+    rows = workspace.project_runs(project, cache)
+    st.dataframe(run_history_table(rows), hide_index=True, width="stretch")
+    st.caption("Execution = whether the run finished (RUNNING, SUCCESS, FAILED, INCOMPLETE). Scientific QC = the QC verdicts the run recorded (PASS, WARNING, INCONCLUSIVE, NOT_EVALUATED); a QC warning does not change the execution status.")
+    labels = [row.label for row in rows]
+    chosen = remembered_choice("Run", labels, f"run_selected::{project}")
+    row = rows[labels.index(chosen)]
     run_dir, state = runs[labels.index(chosen)]
-    shown, note = jobs.run_display_state(run_dir, state, cache)
     status = build_status(run_dir, state, cache)
-    if shown == "INCOMPLETE":
-        st.error(f"INCOMPLETE — the run's process no longer exists; the run did not finish. The run files were not changed. {note}")
-    elif shown == "RUNNING" and state.get("status") == "CREATED":
+    if row.execution == "INCOMPLETE":
+        st.error(f"INCOMPLETE — the run did not finish; its files were not changed. {row.note or ''}")
+    elif row.execution == "RUNNING" and state.get("status") == "CREATED":
         st.info("RUNNING — preparing: freezing inputs and creating or verifying the downstream runtime. With a new nf-rna build this first step takes several minutes; the analysis stages follow.")
-    elif shown == "FAILED":
+    elif row.execution == "RUNNING":
+        st.info("RUNNING — press Refresh to follow the stages below.")
+    elif row.execution == "FAILED":
         st.error(f"FAILED: {state.get('error') or 'see the logs'}")
-    elif shown == "SUCCESS":
+    elif row.execution == "SUCCESS":
         st.success(f"SUCCESS. Results: `{state.get('delivery') or run_dir / 'delivery'}`")
-        if "results" in PAGES:
-            st.page_link(PAGES["results"], label="Open in Results →")
-    st.code(render_status(status, ascii_only=True), language=None)
+    show_run_qc(row.qc)
+    if row.has_results:
+        cols = st.columns(2)
+        if cols[0].button("Open results", key=f"run_open_results::{project}"):
+            open_run(project, row, "results")
+        if cols[1].button("Open report & downloads", key=f"run_open_reports::{project}"):
+            open_run(project, row, "reports")
+    with st.expander("Stages and tasks (rnaseq status)", expanded=row.execution == "RUNNING"):
+        st.code(render_status(status, ascii_only=True), language=None)
 
     st.markdown("**Logs**")
     logs = sorted((run_dir / "logs").glob("*.log")) if (run_dir / "logs").is_dir() else []
@@ -748,11 +1266,17 @@ def _run_status_section(config: GuiConfig, project: Path, active: jobs.Launch | 
     if not options:
         st.write("No logs yet.")
         return
-    cols = st.columns([3, 1])
-    log_choice = cols[0].selectbox("Log", list(options), key="run_log")
+    names = list(options)
+    preferred = next((name for name in names if name == "run: rnaseq.log"), names[0])
+    cols = st.columns([3, 1, 1])
+    log_choice = cols[0].selectbox("Log", names, index=names.index(preferred), key=f"run_log::{project}::{chosen}")
     lines = cols[1].number_input("Last lines", min_value=10, max_value=5000, value=config.log_tail_lines, step=50, key="run_log_lines")
+    alerts = cols[2].toggle("Only warnings and errors", key=f"run_log_alerts::{project}")
     st.caption(f"`{options[log_choice]}`")
-    st.code(jobs.tail(options[log_choice], int(lines)) or "(empty)", language=None)
+    text = jobs.tail(options[log_choice], int(lines))
+    if alerts:
+        text = workspace.alert_lines(text) or "(no warning or error line in these lines)"
+    st.code(text or "(empty)", language=None)
 
 
 def runner_page() -> None:
@@ -761,7 +1285,7 @@ def runner_page() -> None:
     from rnaseq.validators import validate_project
 
     config = gui_config()
-    st.title("Run")
+    st.title("Validate & Run")
     project = require_project()
     if project is None:
         return
@@ -770,36 +1294,54 @@ def runner_page() -> None:
         show_issues(report.errors)
         return
     active = jobs.active_launch()
+    st.caption(f"`{project}`")
 
-    st.subheader("Validate")
-    if st.button("Validate", key="run_validate"):
+    st.subheader("1. Validate")
+    _validation_overview(report)
+    if st.button("Validate and refresh the plan", key="run_validate"):
         text = render_validation_report(report)
         if report.is_valid:
             generate_plan(report)
             text += "\n\nPlanning artifacts refreshed (as `rnaseq plan`)."
         st.session_state[f"validation::{project}"] = text
     if f"validation::{project}" in st.session_state:
-        st.code(st.session_state[f"validation::{project}"], language=None)
+        with st.expander("Full validation report (rnaseq validate)", expanded=True):
+            st.code(st.session_state[f"validation::{project}"], language=None)
 
-    st.subheader("Settings")
+    st.subheader("2. Settings")
     preset = report.config.project.preset
-    case_id = st.text_input("Case ID", key=f"case::{project}", placeholder=f"e.g. {preset.value}-{datetime.now():%Y%m%d}", help="A new immutable run is created under runs/<case ID>/<run ID>.")
+    case_id = remembered_text("Case ID", f"case::{project}", placeholder=f"e.g. {preset.value}-{datetime.now():%Y%m%d}", help="A new immutable run is created under runs/<case ID>/<run ID>.")
     reuse = None
-    candidates = services.reuse_candidates(report)
+    options = workspace.reuse_options(report)
+    candidates = [item.reference for item in options if item.accepted]
     if len(candidates) == 1:
-        reuse = candidates[0] if st.checkbox(f"Reuse the upstream results of {candidates[0]}", value=True, key="run_reuse_one") else None
+        reuse = candidates[0] if st.checkbox(f"Reuse the upstream results of {candidates[0]}", value=True, key=f"run_reuse_one::{project}") else None
     elif len(candidates) > 1:
-        picked = st.selectbox("Reuse upstream results of", ["(do not reuse)", *candidates], key="run_reuse_many")
+        picked = st.selectbox("Reuse upstream results of", ["(do not reuse)", *candidates], key=f"run_reuse_many::{project}")
         reuse = None if picked == "(do not reuse)" else picked
+    refused = [item for item in options if not item.accepted]
+    if candidates:
+        st.caption("Reuse skips FASTQ processing: the earlier run's quantification is used when its frozen upstream inputs (FASTQ, reference, settings) are identical.")
+    if refused:
+        with st.expander(f"Earlier runs that cannot be reused ({len(refused)})"):
+            for item in refused:
+                st.markdown(f"- `{item.reference}`: {item.reason}")
+    elif report.config.input.type is InputType.RAW_COUNTS:
+        st.caption("Raw-count projects have no upstream stage, so there is nothing to reuse.")
     command = jobs.rnaseq_command(project, case_id or "CASE-ID", reuse)
     _summary(report, command)
     if preset is not Preset.QC:
         _runtime_section(active)
 
+    st.subheader("3. Run")
     label = {Preset.QC: "Run QC", Preset.L1: "Run L1", Preset.L2: "Run L2"}[preset]
     if active is not None:
         st.warning(f"A GUI run is active (case {active.case_id} of `{active.project}`); a new run can start when it ends.")
-    if st.button(label, type="primary", key="run_start", disabled=active is not None or not case_id):
+    elif not report.is_valid:
+        st.caption("Fix the validation problems above first.")
+    elif not case_id:
+        st.caption("Enter a case ID to start.")
+    if st.button(label, type="primary", key="run_start", disabled=active is not None or not case_id or not report.is_valid):
         try:
             with st.spinner("Checking the run preflight ..."):
                 services.run_preflight(project, case_id, reuse)
@@ -860,16 +1402,21 @@ def facts_table(facts: dict[str, object]) -> None:
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
-def choose_run(project: Path, key: str) -> results.ResultRun | None:
+def choose_run(project: Path, page: str) -> results.ResultRun | None:
+    """The run shown on Results or Reports; the selection is kept per project (key ``<page>_run::<project>``)."""
+
     runs = results.result_runs(project, _Cache())
     if not runs:
         st.info("This project has no run with results yet; start one on the Run page.")
         return None
-    labels = [f"{run.label} — {run.state}, {run.level or '?'}" for run in runs]
-    chosen = st.selectbox("Run", labels, index=0, key=key)
-    run = runs[labels.index(chosen)]
-    if run.state != "SUCCESS":
-        st.warning(f"This run is {run.state}; only the outputs it wrote are shown, and missing ones are marked unavailable.")
+    labels = [run.label for run in runs]
+    by_label = {run.label: run for run in runs}
+    chosen = remembered_choice("Run", labels, f"{page}_run::{project}",
+                               format_func=lambda label: f"{label} — {workspace.execution_status(by_label[label].state)}, {by_label[label].level or '?'}")
+    run = by_label[chosen]
+    execution = workspace.execution_status(run.state)
+    if execution != "SUCCESS":
+        st.warning(f"This run is {execution}; only the outputs it wrote are shown, and missing ones are marked unavailable.")
     return run
 
 
@@ -965,7 +1512,7 @@ def _deg_section(run: results.ResultRun, contrast: str, config: GuiConfig) -> No
         st.warning("**all_genes.tsv: unavailable** — not produced for this contrast.")
         return
     genes = table(path)
-    key = f"deg::{run.label}::{contrast}"
+    key = f"deg::{run.run_dir}::{contrast}"
     cols = st.columns([3, 2, 2, 2, 2, 1])
     query = cols[0].text_input("Search symbol or gene_id", key=f"{key}::query")
     only = cols[1].toggle("Only significant", key=f"{key}::only")
@@ -990,7 +1537,7 @@ def _enrichment_section(run: results.ResultRun, contrast: str, config: GuiConfig
         st.info("No functional enrichment was selected for this run (analysis.enrichment: []).")
         return
     labels = [module.label for module in modules]
-    module = modules[labels.index(st.radio("Analysis", labels, horizontal=True, key=f"enr::{run.label}::module"))]
+    module = modules[labels.index(st.radio("Analysis", labels, horizontal=True, key=f"enr::{run.run_dir}::module"))]
     if module.summary is None:
         st.warning(f"**{module.label}: unavailable** — {module.reason}")
         return
@@ -999,8 +1546,8 @@ def _enrichment_section(run: results.ResultRun, contrast: str, config: GuiConfig
     facts_table(module.facts)
     sets = results.enrichment_results(module, contrast)
     names = [item.label for item in sets]
-    result = sets[names.index(st.selectbox("Result set", names, key=f"enr::{run.label}::{module.key}::set"))]
-    key = f"enr::{run.label}::{contrast}::{module.key}::{result.label}"
+    result = sets[names.index(st.selectbox("Result set", names, key=f"enr::{run.run_dir}::{module.key}::set"))]
+    key = f"enr::{run.run_dir}::{contrast}::{module.key}::{result.label}"
     status_text = f"Status **{result.status}**" + (f" — {result.reason}" if result.reason else "")
     (st.success if result.status == "SUCCESS" else st.info)(status_text)
     facts_table(result.facts)
@@ -1058,20 +1605,22 @@ def results_page() -> None:
     project = require_project()
     if project is None:
         return
-    run = choose_run(project, "results_run")
+    run = choose_run(project, "results")
     if run is None:
         return
     st.caption(f"`{run.run_dir}` · analysis level {run.level or 'not recorded'}. Figures are the pipeline's own PNG files (PDF for download); nothing is recomputed.")
     sections = ["QC & exploratory", *(["Differential expression", "Enrichment"] if run.is_l2 else []), "Provenance"]
-    section = st.radio("Section", sections, horizontal=True, key=f"results_section::{run.level}")
+    section = st.radio("Section", sections, horizontal=True, key=f"results_section::{project}::{run.level}")
     contrast = None
     if section in {"Differential expression", "Enrichment"}:
         contrasts = results.contrast_ids(run)
         if not contrasts:
             st.warning("**L2 results: unavailable** — no contrast output under downstream/l2/contrasts.")
             return
-        contrast = st.selectbox("Contrast", contrasts, key=f"results_contrast::{run.label}")
+        contrast = st.selectbox("Contrast", contrasts, key=f"results_contrast::{run.run_dir}")
     if section == "QC & exploratory":
+        with st.expander(f"Scientific QC summary: {workspace.run_qc(run.run_dir).headline()}", expanded=workspace.run_qc(run.run_dir).level == "WARNING"):
+            show_run_qc(workspace.run_qc(run.run_dir))
         _qc_section(run, config)
     elif section == "Differential expression":
         _deg_section(run, contrast, config)
@@ -1091,7 +1640,7 @@ def reports_page() -> None:
     project = require_project()
     if project is None:
         return
-    run = choose_run(project, "reports_run")
+    run = choose_run(project, "reports")
     if run is None:
         return
     st.subheader("Report")
@@ -1101,7 +1650,7 @@ def reports_page() -> None:
     else:
         st.caption(f"`{report}` (self-contained; figures are embedded).")
         download(report, f"Download {report.name}", "rep::report", config)
-        if st.toggle("Show the report here", key="rep::show"):
+        if st.toggle("Show the report here", key=f"rep::show::{run.run_dir}"):
             components.html(report.read_text(encoding="utf-8"), height=900, scrolling=True)
 
     st.subheader("Files")
@@ -1111,7 +1660,7 @@ def reports_page() -> None:
         members = [item for item in items if item.group == group]
         cols = st.columns([4, 1])
         labels = [item.label for item in members]
-        chosen = cols[0].selectbox(f"{group} ({len(members)})", labels, key=f"rep::{group}")
+        chosen = cols[0].selectbox(f"{group} ({len(members)})", labels, key=f"rep::{run.run_dir}::{group}")
         with cols[1]:
             st.write("")
             item = members[labels.index(chosen)]
@@ -1145,14 +1694,20 @@ PAGES: dict[str, st.Page] = {}
 def main() -> None:
     st.set_page_config(page_title="nf-rna", layout="wide")
     PAGES.update({
-        "dashboard": st.Page(dashboard_page, title="Dashboard", url_path="dashboard", default=True),
+        "dashboard": st.Page(dashboard_page, title="Projects", url_path="dashboard", default=True),
+        "datasets": st.Page(datasets_page, title="Datasets", url_path="datasets"),
+        "project": st.Page(project_page, title="Project overview", url_path="project"),
         "new": st.Page(new_project_page, title="New Project", url_path="new"),
         "inputs": st.Page(inputs_page, title="Input & Metadata", url_path="inputs"),
         "contrasts": st.Page(contrasts_page, title="Contrasts", url_path="contrasts"),
-        "run": st.Page(runner_page, title="Run", url_path="run"),
+        "run": st.Page(runner_page, title="Validate & Run", url_path="run"),
         "results": st.Page(results_page, title="Results", url_path="results"),
         "reports": st.Page(reports_page, title="Reports & Downloads", url_path="reports"),
     })
-    page = st.navigation(list(PAGES.values()), position="sidebar")
+    page = st.navigation({
+        "Workspace": [PAGES["dashboard"], PAGES["datasets"], PAGES["project"]],
+        "Set up": [PAGES["new"], PAGES["inputs"], PAGES["contrasts"]],
+        "Analysis": [PAGES["run"], PAGES["results"], PAGES["reports"]],
+    }, position="sidebar")
     sidebar(gui_config())
     page.run()
