@@ -184,3 +184,14 @@ Non-blocking implementation choices, recorded as they are made.
 | The PDF's text layout differs from the raster devices' by up to ~10 pt on dotplots (1–3 pt elsewhere); recorded, not changed. The 600 dpi TIFF follows the PDF. | Found in Phase 7b verification on GUI-6B-L2; it is in the pipeline output of v1.6.1, does not affect data, colours, labels or order, and changing figure code is out of scope. Proposed follow-up in `phase7b_report.md`. |
 | Raster PNG names are recognised as `_<n>dpi` (not only `_300dpi`) when listing running-score plots. | The `elsevier` profile writes `_500dpi.png`, which was listed as a separate plot. |
 
+
+## v1.7.0 release finalization (2026-10-31)
+
+| Decision | Reason |
+|---|---|
+| Version 1.7.0, release date 2026-10-31 in CHANGELOG and CITATION.cff; `main` fast-forwards to `feature/v1.7.0`. | Same practice as v1.6.1; the release-metadata guard requires both to agree. |
+| Release checks reuse the Phase 7a/7b evidence and add only build, inventory, fresh-install smoke and GUI smoke from the installed wheel (with and without poppler). | Brief: no new analysis, no FASTQ run; the full suite ran on `f04dce8`, and finalization touches GUI display code and docs only. |
+| Poppler stays an optional system dependency, not added to `environment.yml` or the `gui` extra; the *Projects* page and the unavailable reason name the install command. | Only TIFF 600 dpi needs it; every other function was verified with poppler absent from `PATH`. |
+| The PDF-vs-raster text layout difference is a documented known limitation; the R plotting engine is not changed. | Brief; data, colours, labels and order are identical (`phase7b_report.md` §4). |
+| The GUI reuse hint lists runs of another nf-rna version as not reusable; the reuse rule is unchanged and documented in the CHANGELOG. | `--reuse-upstream` compares the frozen upstream identity, which includes `pipeline.version`, so the run would be refused after it had started; display-only fix. |
+| Pillow and pandas are not declared separately in the `gui` extra. | Both come with `streamlit<2,>=1.66`; the wheel GUI smoke ran in a fresh venv with only `nf-rna[gui]`. |

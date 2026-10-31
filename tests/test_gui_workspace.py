@@ -317,3 +317,22 @@ def test_datasets_page_assigns_a_fastq_folder_to_the_current_project_by_copy(gui
     assert sorted(path.name for path in (project / "input" / "fastq").iterdir()) == ["Ctrl1_R1.fastq.gz", "Ctrl1_R2.fastq.gz", "Trt1_R1.fastq.gz", "Trt1_R2.fastq.gz"]
     assert workspace.input_origin(project) == [str(folder.resolve())]
     assert _digest(folder) == before  # the originals are not moved or changed
+
+
+def test_reuse_hint_refuses_a_source_run_of_another_nf_rna_version(tmp_path):
+    from types import SimpleNamespace
+
+    from rnaseq.models import PIPELINE_VERSION
+
+    project = tmp_path / "fq"
+    for case, version in (("OLD", "1.6.1"), ("NEW", PIPELINE_VERSION)):
+        run = project / "runs" / case / "20261031-120000+0800"
+        (run / "handoff").mkdir(parents=True)
+        (run / "frozen").mkdir()
+        (run / "handoff" / "upstream_manifest.yaml").write_text("{}\n", encoding="utf-8")
+        (run / "frozen" / "input_manifest.yaml").write_text(yaml.safe_dump({"pipeline": {"name": "bulk_rnaseq", "version": version}}), encoding="utf-8")
+        (run / "run_state.json").write_text(json.dumps({"case_id": case, "run_id": run.name, "status": "SUCCESS"}), encoding="utf-8")
+    report = SimpleNamespace(config=SimpleNamespace(input=SimpleNamespace(type=InputType.FASTQ)), project_dir=project)
+    options = {option.reference.split("/")[0]: option for option in workspace.reuse_options(report)}
+    assert options["NEW"].accepted
+    assert not options["OLD"].accepted and "made by nf-rna 1.6.1" in options["OLD"].reason

@@ -29,7 +29,7 @@ from typing import Any
 from rnaseq.errors import ProjectConfigError
 from rnaseq.gui.jobs import run_display_state
 from rnaseq.gui.results import read_json, read_yaml
-from rnaseq.models import InputType, Preset, ProjectConfig, describe_enrichment
+from rnaseq.models import PIPELINE_VERSION, InputType, Preset, ProjectConfig, describe_enrichment
 from rnaseq.project import load_project
 from rnaseq.run_status import _Cache, discover_runs
 from rnaseq.validators import ValidationIssue, ValidationReport
@@ -414,9 +414,23 @@ def reuse_options(report: ValidationReport) -> list[ReuseOption]:
             preflight_reuse_upstream(report, reference)
         except ExecutionPreflightError as exc:
             options.append(ReuseOption(reference, False, str(exc)))
-        else:
-            options.append(ReuseOption(reference, True, "accepted by the reuse preflight; the frozen upstream inputs are compared byte for byte when the run starts"))
+            continue
+        made_by = _frozen_pipeline_version(run_dir)
+        if made_by != PIPELINE_VERSION:
+            # The run-time check compares the upstream identity, which includes the nf-rna version
+            # (service._upstream_identity), so this run would be refused after it had started.
+            options.append(ReuseOption(reference, False, f"made by nf-rna {made_by or 'unknown'}; --reuse-upstream needs a source run made by this "
+                                                          f"version ({PIPELINE_VERSION}), because the frozen upstream identity includes the nf-rna version"))
+            continue
+        options.append(ReuseOption(reference, True, "accepted by the reuse preflight; the frozen upstream inputs are compared byte for byte when the run starts"))
     return options
+
+
+def _frozen_pipeline_version(run_dir: Path) -> str | None:
+    manifest = read_yaml(run_dir / "frozen" / "input_manifest.yaml")
+    pipeline = manifest.get("pipeline") if isinstance(manifest, dict) else None
+    version = pipeline.get("version") if isinstance(pipeline, dict) else None
+    return str(version) if version is not None else None
 
 
 # --------------------------------------------------------------------- logs

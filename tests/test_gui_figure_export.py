@@ -93,3 +93,15 @@ def test_pixel_rule_matches_r_devices():
     assert figure_export.pixels_for((306, 577), 300) == (1275, 2404)  # the airway DEG heatmap
     assert figure_export.pixels_for((306, 577), 600) == (2550, 4808)
     assert figure_export.pixels_for((339, 255), 300) == (1412, 1062)  # 1412.5 -> 1412, as R's round()
+
+
+def test_without_poppler_only_the_pdf_rendered_tiff_is_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setattr(figure_export.shutil, "which", lambda name: None)
+    stem = _figure(tmp_path)
+    assert figure_export.tiff_option(stem, 300).method == figure_export.PIPELINE_FILE  # pipeline TIFF still offered
+    option = figure_export.tiff_option(stem, 600)
+    assert not option.available and "poppler" in option.reason and "apt install poppler-utils" in option.reason
+    running = _figure(tmp_path, stem="positive_1_X", tiff_dpi=None, raster_png_dpi=300)
+    assert figure_export.tiff_option(running, 300).available  # lossless conversion needs no poppler
+    available, message = figure_export.poppler_status()
+    assert not available and "TIFF 600 dpi is unavailable" in message

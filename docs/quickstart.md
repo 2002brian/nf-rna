@@ -4,7 +4,7 @@ This guide is for production users on Linux x86-64 or Windows WSL2. Install Pyth
 
 ## Install a released nf-rna version
 
-The latest stable release is `v1.6.1`, and this guide describes it (see the [1.6.1 changes](../CHANGELOG.md#161--2026-10-31)). **v1.6.1 changes results:** GSEA leading edges and Monte Carlo results, DESeq2 padj, DEG sets and ORA can differ from `v1.6.0`, so recompute projects to obtain corrected results; it also adds a strandedness check (HISAT2 route) and records upstream thread counts and R warnings without changing any analysis value. `v1.6.0` added the optional browser GUI (see [Browser GUI](#browser-gui-optional)) and includes the v1.5.1 test fixes. **If you upgrade from v1.4.x, read the [1.5.0 changes](../CHANGELOG.md#150--2026-10-30) first:** in v1.5.0 GO/KEGG enrichment calls a term significant when the Benjamini-Hochberg adjusted p-value is ≤ 0.05, and KEGG gene sets come from a local snapshot: for results you will publish, pin the snapshot ID that `rnaseq validate` reports with `annotation.enrichment.kegg.snapshot` in `project.yaml`. For an earlier release, follow the documentation at that release's tag; to use the development version, see [Development installation](development.md).
+The latest stable release is `v1.7.0`, and this guide describes it (see the [1.7.0 changes](../CHANGELOG.md#170--2026-10-31)). v1.7.0 extends the optional browser GUI into a local research workspace with PDF/TIFF figure downloads; its analysis is identical to `v1.6.1` (v1.6.1 upstream runs cannot be reused with `--reuse-upstream`). **`v1.6.1` changed results:** GSEA leading edges and Monte Carlo results, DESeq2 padj, DEG sets and ORA can differ from `v1.6.0`, so recompute projects to obtain corrected results; it also adds a strandedness check (HISAT2 route) and records upstream thread counts and R warnings without changing any analysis value. `v1.6.0` added the optional browser GUI (see [Browser GUI](#browser-gui-optional)) and includes the v1.5.1 test fixes. **If you upgrade from v1.4.x, read the [1.5.0 changes](../CHANGELOG.md#150--2026-10-30) first:** in v1.5.0 GO/KEGG enrichment calls a term significant when the Benjamini-Hochberg adjusted p-value is ≤ 0.05, and KEGG gene sets come from a local snapshot: for results you will publish, pin the snapshot ID that `rnaseq validate` reports with `annotation.enrichment.kegg.snapshot` in `project.yaml`. For an earlier release, follow the documentation at that release's tag; to use the development version, see [Development installation](development.md).
 
 nf-rna is installed from Git tags; it is not published to PyPI. Installing from
 Git lets pip record the exact source commit, which every run records; nf-rna
@@ -123,20 +123,20 @@ Take the run ID from the SUCCESS row of `rnaseq status . --all`. Compatibility c
 - its frozen nf-core parameters, Nextflow config, and samplesheet must match the new run byte for byte;
 - its input, upstream, and reference identity must match the new run.
 
-The frozen Nextflow config contains the local CPU/memory ceiling, so changing `execution.max_cpus` or `execution.max_memory_gb`, or using `auto` on a machine with a different capacity, makes the runs incompatible; keep the same limits and machine, or run without `--reuse-upstream`. Otherwise the new run fails with an incompatibility error and no upstream results are copied. Scope, design, metadata, and contrasts may differ, so the changes made by `rnaseq design` do not block reuse. Results are copied from the durable L1 run record, so `rnaseq clean` on the L1 run does not prevent reuse. Raw-count projects have no upstream stage; do not use this option for them.
+The frozen Nextflow config contains the local CPU/memory ceiling, so changing `execution.max_cpus` or `execution.max_memory_gb`, or using `auto` on a machine with a different capacity, makes the runs incompatible; keep the same limits and machine, or run without `--reuse-upstream`. Otherwise the new run fails with an incompatibility error and no upstream results are copied. Scope, design, metadata, and contrasts may differ, so the changes made by `rnaseq design` do not block reuse. Results are copied from the durable L1 run record, so `rnaseq clean` on the L1 run does not prevent reuse. The source run must also be made by the same nf-rna version (the frozen upstream identity records it), so after an upgrade the upstream stage runs once more. Raw-count projects have no upstream stage; do not use this option for them.
 
 ## Browser GUI (optional)
 
 The same workflow is available in a local browser GUI, from project creation to results and downloads:
 
 ```bash
-python -m pip install "nf-rna[gui] @ git+https://github.com/2002brian/nf-rna.git@v1.6.1"
+python -m pip install "nf-rna[gui] @ git+https://github.com/2002brian/nf-rna.git@v1.7.0"
 tmux new -s nf-rna-gui
 rnaseq gui                                   # serves http://127.0.0.1:8501 on the server
 ssh -N -L 8501:127.0.0.1:8501 user@server    # on your laptop, then open http://127.0.0.1:8501
 ```
 
-The GUI only offers folders listed in `~/.config/nf-rna/gui.yaml`; see [Browser GUI](gui.md) for the pages, settings and the optional `systemd --user` service.
+Figures can be downloaded as PDF or TIFF (300 dpi, or 600 dpi when poppler is installed: `sudo apt install poppler-utils`). The GUI only offers folders listed in `~/.config/nf-rna/gui.yaml`; see [Browser GUI](gui.md) for the pages, settings and the optional `systemd --user` service.
 
 ## References and inputs
 

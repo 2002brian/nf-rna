@@ -4,7 +4,7 @@ English | [繁體中文](README_zh-TW.md)
 
 `nf-rna` is a reproducible bulk RNA-seq workflow for FASTQ and raw-count projects. It validates declared inputs and design, performs the selected QC and analysis stages, and produces figures, tables, a technical report, and frozen provenance.
 
-`rnaseq` is the control plane, Nextflow is the execution plane, and Conda provides every process environment. The supported runtime for v1.6.1 is **Linux x86-64 or Windows WSL2, with Nextflow and Conda**; Docker is not required. Production users enter through `rnaseq`; they do not invoke internal Nextflow modules.
+`rnaseq` is the control plane, Nextflow is the execution plane, and Conda provides every process environment. The supported runtime for v1.7.0 is **Linux x86-64 or Windows WSL2, with Nextflow and Conda**; Docker is not required. Production users enter through `rnaseq`; they do not invoke internal Nextflow modules.
 
 ## Features
 
@@ -51,7 +51,7 @@ Every authorized execution creates an immutable run under `runs/<case-id>/<run-i
 
 ## Requirements
 
-Use a Linux x86-64 workstation or Windows with WSL2 (native Windows and macOS are not supported by v1.6.1) with:
+Use a Linux x86-64 workstation or Windows with WSL2 (native Windows and macOS are not supported by v1.7.0) with:
 
 - Python 3.11+ and Git;
 - Conda (for example Miniforge) on `PATH`, with the `conda-forge` and `bioconda` channels configured in that order, as nf-core requires (`conda config --add channels bioconda && conda config --add channels conda-forge && conda config --set channel_priority strict`);
@@ -62,7 +62,7 @@ Docker is not required. Java, Nextflow, and Conda run on the host. nf-core/rnase
 
 ## Installation
 
-> **Latest stable release: `v1.6.1`.** This README describes it (see the [CHANGELOG](CHANGELOG.md#161--2026-10-31)). **v1.6.1 changes results:** it corrects the GSEA leading edge of negative-ES gene sets, makes the configured GSEA seed effective, and sets DESeq2's independent-filtering `alpha` to the padj threshold, so GSEA results, padj, DEG sets and ORA can differ from `v1.6.0`; recompute projects to obtain corrected results. It also adds a strandedness check on the HISAT2 route and records actual upstream thread counts and R warnings, without changing any analysis value. `v1.6.0` added the optional browser GUI and includes the v1.5.1 test fixes (v1.5.1 was not tagged separately). **Upgrading from `v1.4.x`:** v1.5.0 changed the enrichment significance semantics (see the [1.5.0 changes](CHANGELOG.md#150--2026-10-30)): DEG tables with gene symbols, normalized-count group means and shrunken log2 fold changes, an MA plot and 300 dpi figures; GO/KEGG ORA and GSEA significance is now the Benjamini-Hochberg adjusted p-value ≤ 0.05, and KEGG gene sets come from a local snapshot that you should pin for published results. DESeq2 statistics and the DEG definition are unchanged from `v1.4.1`; results produced with `v1.4.x` keep their earlier enrichment semantics. For an earlier release, use the README at that release's tag. To use the development version, follow [Development installation](docs/development.md).
+> **Latest stable release: `v1.7.0`.** This README describes it (see the [CHANGELOG](CHANGELOG.md#170--2026-10-31)). v1.7.0 turns the optional browser GUI into a local research workspace (dataset browser, project overview, run history with execution status and scientific QC) and adds PDF/TIFF figure downloads; its analysis is identical to `v1.6.1`, so v1.6.1 results do not need to be recomputed (a v1.6.1 upstream cannot be reused with `--reuse-upstream`; rerun the upstream stage once). **`v1.6.1` changed results:** it corrects the GSEA leading edge of negative-ES gene sets, makes the configured GSEA seed effective, and sets DESeq2's independent-filtering `alpha` to the padj threshold, so GSEA results, padj, DEG sets and ORA can differ from `v1.6.0`; recompute projects to obtain corrected results. It also adds a strandedness check on the HISAT2 route and records actual upstream thread counts and R warnings, without changing any analysis value. `v1.6.0` added the optional browser GUI and includes the v1.5.1 test fixes (v1.5.1 was not tagged separately). **Upgrading from `v1.4.x`:** v1.5.0 changed the enrichment significance semantics (see the [1.5.0 changes](CHANGELOG.md#150--2026-10-30)): DEG tables with gene symbols, normalized-count group means and shrunken log2 fold changes, an MA plot and 300 dpi figures; GO/KEGG ORA and GSEA significance is now the Benjamini-Hochberg adjusted p-value ≤ 0.05, and KEGG gene sets come from a local snapshot that you should pin for published results. DESeq2 statistics and the DEG definition are unchanged from `v1.4.1`; results produced with `v1.4.x` keep their earlier enrichment semantics. For an earlier release, use the README at that release's tag. To use the development version, follow [Development installation](docs/development.md).
 
 nf-rna has no PyPI distribution. Install the released CLI from its Git tag.
 Installing from Git lets pip record the exact source commit, which every run
@@ -255,7 +255,7 @@ The wizard creates a project scaffold; it does not infer scientific inputs. FAST
 `rnaseq gui` starts a Streamlit GUI for the same workflow: create a project, add the count matrix or FASTQ files, edit the sample metadata, compose contrasts, validate, start and follow L1/L2 runs, browse the results (QC, DEG table and plots, GO/KEGG ORA and GSEA with member genes, provenance), open `report.html` and download tables, figures and the delivery package. It calls the same validators, design and run services as the CLI; runs started from the GUI are ordinary `rnaseq run` runs, and results are read from the run's own files, never recomputed.
 
 ```bash
-python -m pip install "nf-rna[gui] @ git+https://github.com/2002brian/nf-rna.git@v1.6.1"   # or, in a source checkout: pip install -e '.[gui]'
+python -m pip install "nf-rna[gui] @ git+https://github.com/2002brian/nf-rna.git@v1.7.0"   # or, in a source checkout: pip install -e '.[gui]'
 tmux new -s nf-rna-gui           # keeps the GUI running after you log out
 rnaseq gui                       # http://127.0.0.1:8501 (--port to change)
 ```
@@ -266,7 +266,7 @@ The GUI listens on 127.0.0.1 only. From your laptop, forward the port over SSH a
 ssh -N -L 8501:127.0.0.1:8501 user@server
 ```
 
-**In development (v1.7.0, unreleased):** the GUI becomes a local research workspace. A *Datasets* page browses the server's data folders (file kinds, sizes, permissions; FASTQ and count-matrix samples recognised by the validator's rules) and assigns a dataset to a project with the existing importers. A *Project overview* lists species, input, quantification, reference, samples, contrasts and every run of a project, and links each run to its results and report. Every run shows its **execution status** (RUNNING, SUCCESS, FAILED, INCOMPLETE) separately from its **scientific QC** (PASS, WARNING, INCONCLUSIVE, NOT_EVALUATED), a roll-up of the verdicts the run recorded (strandedness check, L1 sample flags, DESeq2/apeglm warnings); a QC warning never changes the execution status. Nothing in the analysis changes. Every figure can be downloaded as PDF or TIFF (300 dpi by default, or 600 dpi) from *Results* and *Reports & Downloads*; the PDF and 300 dpi TIFF are the pipeline's own files, and nothing is redrawn from data.
+**Local research workspace (v1.7.0):** the GUI is a local research workspace. A *Datasets* page browses the server's data folders (file kinds, sizes, permissions; FASTQ and count-matrix samples recognised by the validator's rules) and assigns a dataset to a project with the existing importers. A *Project overview* lists species, input, quantification, reference, samples, contrasts and every run of a project, and links each run to its results and report. Every run shows its **execution status** (RUNNING, SUCCESS, FAILED, INCOMPLETE) separately from its **scientific QC** (PASS, WARNING, INCONCLUSIVE, NOT_EVALUATED), a roll-up of the verdicts the run recorded (strandedness check, L1 sample flags, DESeq2/apeglm warnings); a QC warning never changes the execution status. Nothing in the analysis changes. Every figure can be downloaded as PDF or TIFF (300 dpi by default, or 600 dpi) from *Results* and *Reports & Downloads*; the PDF and 300 dpi TIFF are the pipeline's own files, and nothing is redrawn from data. TIFF 600 dpi needs poppler on the server (`sudo apt install poppler-utils`, or `conda install -c conda-forge poppler`); without it only that option is unavailable.
 
 Runs continue when the browser or the GUI is closed, and one GUI run can be active at a time. Without the `gui` extra the CLI is unchanged and `rnaseq gui` prints the install command. Pages, folders the GUI may open (`~/.config/nf-rna/gui.yaml`), and an optional `systemd --user` service: [docs/gui.md](docs/gui.md).
 

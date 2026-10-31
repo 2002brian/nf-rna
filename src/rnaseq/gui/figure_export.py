@@ -57,6 +57,24 @@ class TiffOption:
         return self.source is not None
 
 
+POPPLER_INSTALL = "sudo apt install poppler-utils (Debian/Ubuntu/WSL2) or conda install -c conda-forge poppler"
+
+
+def poppler_available() -> bool:
+    """Whether the PDF renderer for TIFFs without a pipeline raster (pdftocairo, pdfinfo) is on PATH."""
+
+    return shutil.which("pdftocairo") is not None and shutil.which("pdfinfo") is not None
+
+
+def poppler_status() -> tuple[bool, str]:
+    """For the GUI: is TIFF rendering from PDF possible, and what does its absence mean."""
+
+    if poppler_available():
+        return True, "Figure export: poppler found; PDF, TIFF 300 dpi and TIFF 600 dpi are available."
+    return False, ("Figure export: poppler (pdftocairo, pdfinfo) is not installed. PDF and TIFF 300 dpi downloads work; "
+                   f"TIFF 600 dpi is unavailable. Install it with: {POPPLER_INSTALL}")
+
+
 def file_dpi(path: Path) -> int | None:
     """The horizontal resolution recorded in a raster file, rounded; ``None`` if absent."""
 
@@ -101,8 +119,8 @@ def tiff_option(stem: Path, dpi: int, pdf: Path | None = None) -> TiffOption:
         return TiffOption(dpi, name, raster_png, PNG_CONVERSION.format(dpi=dpi))
     if not pdf.is_file():
         return TiffOption(dpi, name, None, None, f"no {dpi} dpi raster and no PDF for this figure")
-    if shutil.which("pdftocairo") is None or shutil.which("pdfinfo") is None:
-        return TiffOption(dpi, name, None, None, f"no {dpi} dpi raster from the pipeline, and poppler (pdftocairo, pdfinfo) is not installed to render the PDF")
+    if not poppler_available():
+        return TiffOption(dpi, name, None, None, f"no {dpi} dpi raster from the pipeline, and poppler (pdftocairo, pdfinfo) is not installed to render the PDF ({POPPLER_INSTALL})")
     return TiffOption(dpi, name, pdf, PDF_RENDER.format(dpi=dpi))
 
 

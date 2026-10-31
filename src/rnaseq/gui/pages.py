@@ -301,6 +301,8 @@ def dashboard_page() -> None:
 
     st.subheader("Server")
     st.dataframe(pd.DataFrame([{"data folder (allowed root)": str(item.path), "status": "available" if item.available else "UNAVAILABLE", "detail": item.message} for item in config.root_statuses()]), hide_index=True, width="stretch")
+    poppler, message = figure_export.poppler_status()
+    (st.caption if poppler else st.info)(message)
     left, right = st.columns(2)
     with left:
         with st.expander("Runtime checks (rnaseq doctor)"):

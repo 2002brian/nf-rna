@@ -9,6 +9,9 @@ On run GUI-6B-L2 of airway-gui-demo (read-only):
   reports   Reports & downloads > Figures: a GSEA running-score plot (no pipeline TIFF) as TIFF 300,
             a GO dotplot as PDF and TIFF 600, and the PCA as TIFF 300 (the default format)
 
+With --no-poppler (the GUI server started without poppler on its PATH): the Projects notice, a disabled
+TIFF 600 dpi on Results and Reports, and working PDF / TIFF 300 dpi downloads.
+
 Every downloaded file is compared with its source: PDF and pipeline TIFF byte for byte, a converted
 running-score TIFF pixel for pixel with the pipeline's 300 dpi PNG, and every TIFF for format, RGB,
 LZW, dpi tags and pixel size = round(page_pt / 72 * dpi).  Needs the ``gui-dev`` extra.
@@ -122,12 +125,50 @@ def step_reports(page: Page, shots: Path, out: Path) -> None:
     ws.expect("reports: dotplot TIFF 600 is 600 dpi at the figure's physical size", ok and "rendered from the pipeline's vector PDF" in ws.main_text(page), {"file": t600.name, **facts})
 
 
+def step_no_poppler(page: Page, shots: Path, out: Path) -> None:
+    """The GUI server runs without poppler on its PATH: only TIFF 600 dpi is unavailable, everything else works."""
+
+    gui.goto(page, "dashboard", DEMO)
+    text = ws.main_text(page)
+    ws.expect("no poppler: Projects page says TIFF 600 dpi is unavailable and how to install poppler",
+              "TIFF 600 dpi is unavailable" in text and "poppler-utils" in text, "notice shown")
+    page.screenshot(path=str(shots / "F5_projects_without_poppler.png"), full_page=True)
+    gui.goto(page, "results", DEMO)
+    ws.pick(page, "Run", "GUI-6B-L2")
+    page.get_by_text("Differential expression", exact=True).click()
+    gui.settle(page, 2000)
+    main = page.locator("[data-testid=stMain]")
+    button = main.get_by_role("button", name="TIFF 600 dpi", exact=True).first
+    ws.expect("no poppler: Results TIFF 600 dpi button is disabled", button.is_disabled(), "disabled")
+    stem = DOWN / "l2" / "contrasts" / "trt_vs_untrt" / "volcano"
+    pdf = save_download(page, main.get_by_role("button", name="PDF", exact=True).first, out, "nopoppler")
+    t300 = save_download(page, main.get_by_role("button", name="TIFF 300 dpi", exact=True).first, out, "nopoppler")
+    ws.expect("no poppler: PDF and TIFF 300 dpi downloads still equal the pipeline files",
+              pdf.read_bytes() == stem.with_suffix(".pdf").read_bytes() and t300.read_bytes() == stem.with_suffix(".tiff").read_bytes(), [pdf.name, t300.name])
+    gui.goto(page, "reports", DEMO)
+    ws.pick(page, "Run", "GUI-6B-L2")
+    running = "l2/enrichment/gsea_kegg/trt_vs_untrt/running_score/negative_1_hsa04115"
+    tif = report_download(page, out, running, "TIFF 300 dpi", "nopoppler")
+    with Image.open(tif) as a, Image.open((DOWN / running).with_name(Path(running).name + "_300dpi.png")) as b:
+        same = ImageChops.difference(a.convert("RGB"), b.convert("RGB")).getbbox() is None
+    ws.expect("no poppler: running-score TIFF 300 dpi still works (lossless conversion)", same, tif.name)
+    ws.pick(page, "Figure (73)", "l1/pca")
+    page.get_by_text("TIFF 600 dpi", exact=True).click()
+    gui.settle(page)
+    text = ws.main_text(page)
+    disabled = main.get_by_role("button", name="Download", exact=True).last.is_disabled()
+    page.get_by_text("a raster is never enlarged", exact=False).scroll_into_view_if_needed()
+    page.screenshot(path=str(shots / "F6_reports_tiff600_without_poppler.png"))
+    ws.expect("no poppler: Reports TIFF 600 dpi is unavailable with the install hint", disabled and "poppler" in text and "unavailable" in text, "disabled + caption")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--shots", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--base", default="http://127.0.0.1:8701")
+    parser.add_argument("--no-poppler", action="store_true", help="the GUI server runs without poppler; check the degraded mode instead")
     args = parser.parse_args()
     gui.BASE = args.base
     for folder in (args.shots, args.out):
@@ -136,7 +177,7 @@ def main() -> int:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(executable_path=gui.CHROME, headless=True)
         page = browser.new_context(viewport={"width": 1440, "height": 1000}, accept_downloads=True).new_page()
-        for step in (step_results, step_reports):
+        for step in ((step_no_poppler,) if args.no_poppler else (step_results, step_reports)):
             print(f"== {step.__name__}")
             try:
                 step(page, args.shots, args.out)

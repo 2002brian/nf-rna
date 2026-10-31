@@ -219,3 +219,13 @@ def test_reports_page_offers_report_files_and_delivery(results_home):
     page.button(key="rep::zip").click().run()
     assert not page.exception and not page.error
     assert results.delivery_archive_path(results.result_runs(results_home)[0]).is_file()
+
+
+def test_results_page_works_without_poppler(results_home, monkeypatch):
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    page = _page("results_page", results_home).run()
+    assert not page.exception
+    buttons = {button.label: button for button in page.button}
+    assert buttons["TIFF 600 dpi"].disabled and "poppler" in buttons["TIFF 600 dpi"].help

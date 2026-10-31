@@ -10,7 +10,7 @@ never recomputes a statistic or redraws a figure.
 ## Install and start
 
 ```bash
-python -m pip install "nf-rna[gui] @ git+https://github.com/2002brian/nf-rna.git@v1.6.1"
+python -m pip install "nf-rna[gui] @ git+https://github.com/2002brian/nf-rna.git@v1.7.0"
 # or, in a source checkout: pip install -e '.[gui]'
 tmux new -s nf-rna-gui        # or attach: tmux attach -t nf-rna-gui
 rnaseq gui                    # --port 8600 to use another port
@@ -25,6 +25,18 @@ ssh -N -L 8501:127.0.0.1:8501 user@server    # then open http://127.0.0.1:8501
 
 Without the `gui` extra, every CLI command works as before and `rnaseq gui`
 prints the install command.
+
+**Optional: poppler for TIFF 600 dpi.** The *TIFF 600 dpi* figure download
+renders the pipeline's PDF with poppler (`pdftocairo`, `pdfinfo`), which nf-rna
+does not install:
+
+```bash
+sudo apt install poppler-utils          # Debian/Ubuntu/WSL2
+# or, into the GUI's Conda environment: conda install -c conda-forge poppler
+```
+
+Without poppler only that option is unavailable (its button says why and the
+*Projects* page shows a notice); PDF, TIFF 300 dpi and everything else work.
 
 ## Settings: `~/.config/nf-rna/gui.yaml`
 
@@ -241,8 +253,9 @@ which writes `annotation.enrichment.kegg.snapshot` to project.yaml.
   preflight accepts them; a single candidate is preselected). Raw-count
   projects have no upstream stage, so there is nothing to reuse.
   Earlier SUCCESS runs that the preflight refuses are listed with the
-  preflight's own reason (for example a v1.6.0 upstream, which lacks the
-  strand evidence).
+  preflight's own reason (for example a missing upstream handoff), and runs
+  made by another nf-rna version are listed as not reusable, because the run's
+  upstream identity check would refuse them after the run had started.
 - *Run L1* / *Run L2* (named after the project's scope) runs the `rnaseq run`
   preflight, then starts the run in the background. It is disabled while the
   project is invalid, without a case ID, or while a GUI run is active.
@@ -380,7 +393,7 @@ and `~/.cache/nf-rna/gui/logs/<id>.log` (the command's own output, which
 exists before the run's log folder does). These files are what the GUI uses to
 find its runs again after a restart; the analysis state stays in the run.
 
-## Known limitations (v1.7.0 development)
+## Known limitations (v1.7.0)
 
 - Assigning FASTQ files to a project copies them into the project (the
   existing importer; the project schema requires `input.path` inside the

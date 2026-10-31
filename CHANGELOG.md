@@ -2,6 +2,46 @@
 
 All notable changes to this project are documented here.
 
+## 1.7.0 — 2026-10-31
+
+**Local Research Workspace & Publication Figure Export.** v1.7.0 changes only the optional browser GUI. DESeq2, tximport, LFC shrinkage, GO/KEGG ORA, GSEA, Salmon, HISAT2 + featureCounts, the scientific thresholds, the reference and annotation handling, the R analysis and plotting scripts, the Nextflow workflows and both downstream Conda locks are unchanged from v1.6.1 (`git diff v1.6.1 -- src/rnaseq/r workflow workflow/envs` is empty). v1.6.1 results do not need to be recomputed. Release readiness: `docs/dev/release_readiness_v170.md`.
+
+### Added — Local Research Workspace (GUI)
+
+- **Local Dataset Browser** (*Datasets* page). Browses folders inside the allowed roots of `gui.yaml` only; roots on an unmounted disk are shown as unavailable and never browsed. Shows file count, total size, unreadable files and file kinds (FASTQ, count matrix, metadata, samplesheet, contrasts, other), recognised from the file name and, for tables, the header line; FASTQ contents are not read. FASTQ and count-matrix samples are recognised with the validator's existing rules. Symlinks that resolve outside the allowed roots are listed as ignored and never followed. A dataset is assigned to a project with the existing importers: FASTQ files are copied into the project after a path and free-space check; the source files are never moved or changed. There is no central FASTQ database.
+- **Project Workspace** (*Project overview* page; the dashboard becomes *Projects*). Species, input type, quantification backend, reference, sample count, contrasts, L1/L2 settings, the original FASTQ folder of imported FASTQ, the workflow steps Dataset → Project → Metadata → Contrasts → Validate → Run → Results with their state and the next step, and buttons that open a run's results or report. Projects can be switched from the sidebar; each project keeps its own run selection and case ID.
+- **Run History.** Every run of a project with level, start and end time, execution status, scientific QC and whether results and a report exist; the *Validate & Run* page (formerly *Run*) adds the same history, a settings summary table, validation findings grouped by workflow step, the runs that cannot be reused with the preflight's own reason, and a log filter for warnings and errors. *Run* is disabled while the project is invalid.
+- **QC display.** Execution status (RUNNING, SUCCESS, FAILED, INCOMPLETE) is shown separately from scientific QC (PASS, WARNING, INCONCLUSIVE, NOT_EVALUATED). Scientific QC is a display roll-up of verdicts the run itself recorded: the v1.6.1 strandedness check, the L1 sample flags, the DESeq2/apeglm/ashr R warnings and the shrinkage status, each with its recorded value. A QC warning never changes the execution status or `run_state.json`, and no verdict is re-judged. Runs that predate a check are NOT_EVALUATED, not PASS.
+
+### Added — PDF/TIFF figure downloads (GUI)
+
+- *Results* offers every figure as **PNG, PDF, TIFF 300 dpi and TIFF 600 dpi**; *Reports & Downloads* gains a **Figures (PDF / TIFF)** section covering every figure of a run (PCA, sample correlation, boxplots, volcano, MA plot, DEG heatmap, GO/KEGG ORA and GSEA dotplots, GSEA running-score plots), with TIFF 300 dpi as the default.
+- Nothing is redrawn from data and nothing is written into a run. PDF and the 300 dpi TIFF are the pipeline's own files, byte for byte. GSEA running-score plots, which have no pipeline TIFF, get a lossless TIFF of their R-drawn 300 dpi PNG (every pixel unchanged). TIFF 600 dpi is the pipeline's vector PDF rasterized with poppler at exactly 600 dpi. Every TIFF is RGB on white, LZW, with the dpi in its resolution tags and `round(page_pt / 72 × dpi)` pixels, the rule of the pipeline's own devices. A raster is never enlarged; a figure or format that cannot be produced is shown as unavailable with the reason.
+- **Poppler** (`pdftocairo`, `pdfinfo`) is needed only for TIFF 600 dpi and is not installed by nf-rna. Without it the option is shown as unavailable with the install command, the *Projects* page says so, and every other download and page works.
+
+### Fixed (GUI)
+
+- A project opened by URL (bookmark, reload) was lost when changing page.
+- Run selectors used global widget keys, so a run selection leaked between projects.
+- The *Validate & Run* reuse hint offered SUCCESS runs made by another nf-rna version, which the run then refused after it had started; they are now listed as not reusable with the reason.
+- GSEA running-score listings treated a `_<n>dpi.png` raster of a non-300 dpi profile (`elsevier`, 500 dpi) as a separate plot.
+
+### Compatibility
+
+- No analysis, result table, figure file, manifest, report or delivery package changes. New runs record `nf_rna_version` `1.7.0`.
+- **Upstream reuse across versions.** The frozen upstream identity that `rnaseq run --reuse-upstream` compares includes the nf-rna version (`input_manifest.yaml` `pipeline.version`), so a v1.7.0 run refuses a source run made by v1.6.1 or earlier (`frozen input_manifest.yaml differs in its input, upstream, or reference identity`), as every earlier release did across versions. Rerun the upstream stage with v1.7.0 once; reuse between v1.7.0 runs works as before. The GUI's reuse hint now lists such runs as not reusable with this reason instead of offering them.
+- The runtime environment is keyed by lock and nf-rna build, so the first v1.7.0 run provisions a fresh downstream environment from the unchanged lock.
+- GUI page names changed: *Dashboard* → *Projects*, *Run* → *Validate & Run*; new pages *Datasets* and *Project overview*. The CLI is unchanged.
+
+### Known limitations
+
+- **PDF and raster figure layouts differ slightly** (pre-existing in v1.6.1 output, not changed). R's PDF device measures text slightly differently from its PNG/TIFF devices, so a figure's panel edge can sit 1–3 pt apart between its PDF and its PNG/TIFF, and up to about 10 pt (≈3.6 mm) on enrichment dotplots with long term names. Data, colours, labels and order are identical. The TIFF 600 dpi download follows the PDF's layout; the TIFF 300 dpi download follows the raster layout. The R plotting engine is not changed in this release.
+- FASTQ assigned to a project is copied into it (the project requires `input.path` inside the project); there is no "use in place" mode. The original location of an imported count matrix is not recorded, so it is not shown.
+- No TIFF above 600 dpi, no SVG, no figure editing or presets. Under the `elsevier` profile (500 dpi pipeline TIFF) both TIFF options are rendered from the PDF; this was tested with fixtures only.
+- The GUI remains single-user on 127.0.0.1 with one active GUI run. Access from another computer through an SSH tunnel is documented but was not exercised in the v1.7.0 acceptance. `/dashboard` is not a URL; the *Projects* page is the server root.
+- The FAILED execution state was verified with a synthetic fixture project; no real failed run was available.
+- GUI limitations of v1.6.0 not listed above are unchanged (`docs/gui.md`).
+
 ## 1.6.1 — 2026-10-31
 
 **Result-changing.** Three corrections found by the independent scientific validation of v1.6.0 (`docs/dev/scientific_corrections_v161.md`) change GSEA leading edges and GSEA Monte Carlo results, and DESeq2 independent filtering (padj, DEG sets, ORA). Existing v1.6.0 runs are not rewritten; recompute a project to obtain corrected results. Three further changes add QC, provenance and warning records and change no analysis value (`docs/dev/scientific_reliability_v161.md`). Release readiness, evidence and limitations: `docs/dev/release_readiness_v161.md`.
