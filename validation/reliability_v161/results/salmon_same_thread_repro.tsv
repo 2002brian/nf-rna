@@ -1,0 +1,4 @@
+pair	effective_length_rows_differing	numreads_rows_differing	frag_length_mean_1	frag_length_mean_2
+a vs b	116	0	165.89637957795	165.89429667204385
+a vs c	105	0	165.89637957795	165.8973174203711
+b vs c	117	0	165.89429667204385	165.8973174203711

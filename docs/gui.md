@@ -164,11 +164,20 @@ analysis level: an L1 run shows only *QC & exploratory* and *Provenance*.
 
 - **QC & exploratory**: the L1 summary (genes filtered and retained,
   normalization, VST), PCA, sample correlation, raw and VST boxplots, the QC
-  tables, and the MultiQC report of FASTQ runs.
+  tables, and the MultiQC report of FASTQ runs. FASTQ runs also show the
+  strandedness check (v1.6.1). On the HISAT2 route it shows, per sample,
+  the featureCounts `-s 1`/`-s 2` assignments, their ratio and the status.
+  A warning appears when the reads contradict the declared strandedness, and a
+  note when an unstranded declaration meets stranded reads. Samples without
+  clear evidence are shown as inconclusive. The check never changes the
+  declaration or the counts. The Salmon route shows it as not evaluated.
 - **Differential expression** (one contrast at a time): the numbers of
   significant, up and down genes and the DEG thresholds and rule from
   `contrast_metadata.json`; the LFC shrinkage method and status (a failed
-  shrinkage is shown as an error); volcano, MA plot and heatmap; and the
+  shrinkage is shown as an error); the R warnings recorded during the fit,
+  `results()` and shrinkage, verbatim with their step and count, in an
+  expander (v1.6.1; the analysis completed, so these are not errors);
+  volcano, MA plot and heatmap; and the
   `all_genes.tsv` table, searchable by symbol or gene_id, filterable by padj and
   |log2FC|, sortable, with *Only significant* (the genes of `significant.tsv`).
   DEGs are called on the raw `log2FoldChange`; `log2FoldChange_shrunk` is for
@@ -183,8 +192,11 @@ analysis level: an L1 run shows only *QC & exploratory* and *Provenance*.
   only). Output written before v1.5 has no significance-semantics record and
   is labelled **legacy**.
 - **Provenance**: nf-rna version and commit, Nextflow, the downstream lock
-  SHA-256 and runtime prefix, input and reference, and the R/Bioconductor
-  package versions and KEGG snapshot recorded by the backends.
+  SHA-256 and runtime prefix, input and reference, the R/Bioconductor package
+  versions and the KEGG snapshot recorded by the backends. For FASTQ runs
+  (v1.6.1) it also shows the strandedness-check status and the CPUs (threads)
+  that each relevant upstream process actually used, read from the run's own
+  Nextflow trace, and Salmon's recorded `--threads`.
 
 Tables are read as text, so every number is shown exactly as in the TSV.
 Figures are the pipeline's PNG files, each with PNG and PDF downloads. An

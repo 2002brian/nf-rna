@@ -1,0 +1,63 @@
+check	item	observed	expected	verdict
+EXEC	rel_d5_neg	SUCCESS	SUCCESS	PASS
+F-1	rel_d5_neg: run-level strandedness status	WARNING	WARNING	PASS
+F-1	rel_d5_neg/D5_R_A: status (ratio -s1/-s2 0.096)	CONTRADICTS_DECLARATION	CONTRADICTS_DECLARATION	PASS
+F-1	rel_d5_neg/D5_R_A: declared kept	forward	forward	PASS
+F-1	rel_d5_neg/D5_R_B: status (ratio -s1/-s2 0.0747)	CONTRADICTS_DECLARATION	CONTRADICTS_DECLARATION	PASS
+F-1	rel_d5_neg/D5_R_B: declared kept	forward	forward	PASS
+F-1	rel_d5_neg: frozen contract upstream_qc.strandedness	WARNING	WARNING	PASS
+F-1	rel_d5_neg: run log warnings	2	2	PASS
+F-1	rel_d5_neg: report shows strandedness check	True	True	PASS
+F-1	rel_d5_neg: GUI qc_view strandedness	WARNING	WARNING	PASS
+UNCHANGED	rel_d5_neg: raw_counts.csv vs p3_d5_neg	1/1 identical	all	PASS
+UNCHANGED	rel_d5_neg: featureCounts summaries vs p3_d5_neg	2/2 identical	all	PASS
+UNCHANGED	rel_d5_neg: L1 tables vs p3_d5_neg	7/7 identical []	all	PASS
+F-2	rel_d5_neg: HISAT2_ALIGN cpus from trace	[4]	[4]	PASS
+F-2	rel_d5_neg: FEATURECOUNTS / STRAND_EVIDENCE cpus	([4], [2])	([4], [2])	PASS
+F-2	rel_d5_neg: HISAT2 -p in executed .command.sh equals trace cpus	['4']	['4']	PASS
+F-2	rel_d5_neg: trace header has cpus	True	True	PASS
+F-2	rel_d5_neg: GUI provenance thread rows	4 CPU(s) per task, 2 task(s)	4 CPU(s) per task, 2 task(s)	PASS
+F-2	rel_d5_neg: report thread table	True	True	PASS
+EXEC	rel_d4_hf	SUCCESS	SUCCESS	PASS
+F-1	rel_d4_hf: run-level strandedness status	CONSISTENT	CONSISTENT	PASS
+F-1	rel_d4_hf/RAP1_IAA_30M_REP1: status (ratio -s1/-s2 0.179)	CONSISTENT	CONSISTENT	PASS
+F-1	rel_d4_hf/RAP1_IAA_30M_REP1: declared kept	reverse	reverse	PASS
+F-1	rel_d4_hf/WT_REP2: status (ratio -s1/-s2 0.174)	CONSISTENT	CONSISTENT	PASS
+F-1	rel_d4_hf/WT_REP2: declared kept	reverse	reverse	PASS
+F-1	rel_d4_hf: frozen contract upstream_qc.strandedness	CONSISTENT	CONSISTENT	PASS
+F-1	rel_d4_hf: run log warnings	0	0	PASS
+F-1	rel_d4_hf: report shows strandedness check	True	True	PASS
+F-1	rel_d4_hf: GUI qc_view strandedness	CONSISTENT	CONSISTENT	PASS
+UNCHANGED	rel_d4_hf: raw_counts.csv vs p3_d4_hf	1/1 identical	all	PASS
+UNCHANGED	rel_d4_hf: featureCounts summaries vs p3_d4_hf	2/2 identical	all	PASS
+UNCHANGED	rel_d4_hf: L1 tables vs p3_d4_hf	7/7 identical []	all	PASS
+F-2	rel_d4_hf: HISAT2_ALIGN cpus from trace	[4]	[4]	PASS
+F-2	rel_d4_hf: FEATURECOUNTS / STRAND_EVIDENCE cpus	([4], [2])	([4], [2])	PASS
+F-2	rel_d4_hf: HISAT2 -p in executed .command.sh equals trace cpus	['4']	['4']	PASS
+F-2	rel_d4_hf: trace header has cpus	True	True	PASS
+F-2	rel_d4_hf: GUI provenance thread rows	4 CPU(s) per task, 2 task(s)	4 CPU(s) per task, 2 task(s)	PASS
+F-2	rel_d4_hf: report thread table	True	True	PASS
+EXEC	rel_d4_sal	SUCCESS	SUCCESS	PASS
+F-1	rel_d4_sal: Salmon route strandedness	('NOT_EVALUATED', {'RAP1_IAA_30M_REP1': 'ISR', 'WT_REP2': 'ISR'})	('NOT_EVALUATED', {'WT_REP2': 'ISR', 'RAP1_IAA_30M_REP1': 'ISR'})	PASS
+F-2	rel_d4_sal: SALMON_QUANT cpus (nf-core trace) and --threads (cmd_info.json)	([6], {'RAP1_IAA_30M_REP1': 6, 'WT_REP2': 6})	trace cpus == cmd_info threads	PASS
+F-2	rel_d4_sal: tool versions per process	{'SALMON_QUANT': {'salmon': '1.10.3'}, 'TRIMGALORE': {'trimgalore': '2.1.0'}}	SALMON_QUANT salmon 1.10.3	PASS
+UNCHANGED	rel_d4_sal: estimated_counts.csv vs p3_d4_sal	1/1 identical	all	PASS
+UNCHANGED	rel_d4_sal: quant.sf vs p3_d4_sal	0/2 identical	all	FAIL
+EXEC	rel_d3_counts	SUCCESS	SUCCESS	PASS
+F-3	rel_d3_counts: apeglm line-search warnings recorded (Phase 3: 6 in the nf-rna work-dir stderr)	6	6	PASS
+F-3	rel_d3_counts: warning status / shrinkage status	('WARNINGS', 'success')	('WARNINGS', 'success')	PASS
+F-3	rel_d3_counts: L2 scientific_provenance.json has r_warnings	True	True	PASS
+F-3	rel_d3_counts: contrast_metadata.json delivered with r_warnings	['delivery/methods_and_versions/l2/contrasts/YRI_vs_GBR/contrast_metadata.json']	in delivery	PASS
+F-3	rel_d3_counts: report lists the warning verbatim	True	True	PASS
+F-3	rel_d3_counts: GUI deg_view r_warnings	1	>= 1	PASS
+UNCHANGED	rel_d3_counts: all_genes.tsv vs p3_d3_hf (same counts)	True	True	PASS
+UNCHANGED	rel_d3_counts: significant.tsv vs p3_d3_hf (same counts)	True	True	PASS
+UNCHANGED	rel_d3_counts: upregulated.tsv vs p3_d3_hf (same counts)	True	True	PASS
+UNCHANGED	rel_d3_counts: downregulated.tsv vs p3_d3_hf (same counts)	True	True	PASS
+UNCHANGED	rel_d3_counts: L2 normalized_counts.tsv vs p3_d3_hf	True	True	PASS
+EXEC	rel_d1	SUCCESS	SUCCESS	PASS
+UNCHANGED	rel_d1: every downstream/l1 TSV (DE, ORA, GSEA) vs FIX-D1	7/7 identical	all	PASS
+UNCHANGED	rel_d1: every downstream/l2 TSV (DE, ORA, GSEA) vs FIX-D1	125/125 identical	all	PASS
+F-3	rel_d1: trt_vs_untrt r_warnings status	NONE	recorded	PASS
+F-1	D5_R_A subsampled to 0.2% (-s1 41, -s2 353) declared forward	INCONCLUSIVE	INCONCLUSIVE (insufficient evidence)	PASS
+TRIAGE	rel_d4_sal: quant.sf FAIL explained	NumReads identical (0 rows differ in either sample); EffectiveLength/TPM differ (max rel 0.0033 / 0.0019) via frag_length_mean 165.897 vs 165.840; Salmon command, params and inputs identical; L1 normalized counts max rel diff 1.03e-3, VST 6.4e-5	Salmon same-thread run-to-run variation (salmon_same_thread_repro.tsv), not this change	EXPLAINED

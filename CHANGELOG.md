@@ -12,6 +12,20 @@ All notable changes to this project are documented here.
 - **GSEA seed.** GSEA was called with `seed = TRUE`, which makes DOSE 4.4.0 re-seed with `set.seed(.Random.seed)`, i.e. the fixed state 10403, whatever `annotation.enrichment.gsea.seed` / `kegg.gsea.seed` said. nf-rna now calls `set.seed(seed)` and then GSEA with `seed = FALSE`, so the configured seed determines the fgsea Monte Carlo draw. NES, p-values, FDR and borderline significant sets change within Monte Carlo error; the recorded seed is now the seed actually used, and the provenance records the RNG kind.
 - **DESeq2 independent filtering alpha.** `results()` used DESeq2's default `alpha = 0.1` while DEGs are called at `padj < thresholds.padj` (default 0.05). `alpha` is now `thresholds.padj`, as the DESeq2 vignette recommends. The filter threshold, which genes have `padj = NA`, padj values, DEG sets and the ORA universe/foreground can change; `pvalue`, `stat` and LFCs do not. `backend_summary.json` and `contrast_metadata.json` record the alpha and the chosen baseMean filter threshold. `thresholds.padj` must now lie strictly between 0 and 1.
 
+### Added (QC and provenance; analysis values unchanged)
+
+Findings of the Phase 3 upstream FASTQ validation (`docs/dev/scientific_reliability_v161.md`).
+
+- **Strandedness consistency check (HISAT2 + featureCounts).** A wrongly declared strandedness used to give a successful run with wrong counts and no warning. Each count-only BAM is now also counted with featureCounts `-s 1` and `-s 2`, and the declaration is judged per sample:
+  - `CONSISTENT`;
+  - `CONTRADICTS_DECLARATION` or `APPEARS_UNSTRANDED` (warning);
+  - `APPEARS_STRANDED` (advisory);
+  - `INCONCLUSIVE` (fewer than 1,000 strand-assignable fragments, or no clear direction).
+
+  The result is shown in the run log, the report and the GUI, and is recorded in provenance. The check never changes the declared strandedness or the counts, and never fails a run.
+- **Actual upstream thread counts.** Nextflow traces of FASTQ runs gain `process`, `tag`, `cpus` and `memory` columns. `run_provenance.yaml` (`execution_threads`), the report and the GUI record the CPUs each relevant upstream process actually used (HISAT2, featureCounts, fastp, Trim Galore, Salmon), Salmon's `cmd_info.json` threads and the tool versions per process, with a note that alignment and quantification can depend on the thread count. CPU allocation is unchanged.
+- **Recorded R warnings in L2.** DESeq2, apeglm and ashr warnings are recorded verbatim, by step and with counts, in `contrast_metadata.json` (`r_warnings`), `backend_summary.json` and the L2 provenance, and shown in the report and the GUI. They are not muffled, not escalated, and do not change any result.
+
 ## 1.6.0 — 2026-10-30
 
 **This release includes the v1.5.1 test fixes**: v1.5.1 was prepared but not tagged separately, so its changes ship in v1.6.0 (see [1.5.1](#151--2026-10-30)). **Upgrading from v1.4.x: the enrichment significance semantics changed in v1.5.0.** GO/KEGG ORA and GSEA call a term significant when the Benjamini–Hochberg adjusted p-value is ≤ 0.05, the ORA universe changed, and KEGG gene sets come from a local snapshot that you should pin for published results; read the [1.5.0 notes](#150--2026-10-30) before comparing results across versions. v1.4.x results are not recomputed and keep their v1.4 semantics.
