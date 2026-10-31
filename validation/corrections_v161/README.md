@@ -10,6 +10,7 @@ The frozen Phase 2 evidence is on branch `validation/v1.6.0` (commit `b886f11`) 
 | `scripts/run_nfrna.sh` | The six corrected nf-rna runs (FIX-D1, FIX-D1-REP, FIX-D1-S42, FIX-D1a, FIX-D1b, FIX-D2) |
 | `scripts/compare_v161.py` | Before/after and reference comparison (`python -I compare_v161.py <v1.6.0 root> <v161 root> <outdir>`) |
 | `results/` | `d1_isolation.tsv`, `m1_deseq2_alpha.tsv`, `m1_ora.tsv`, `gsea_fixed_vs_reference_and_v160.tsv`, `reproducibility.tsv`, `seed_1_vs_42.tsv` |
+| `u1/` | U-1 investigation: minimal reproductions (`u1_repro.R`), per-set permutation counts (`u1_counts.R`), the permutations involved (`u1_tie.R`, `u1_tie_es.R`), size against Monte Carlo error (`u1_mc.py`); `run_u1.sh` runs them all and writes `u1/results/` |
 | `evidence/` | Run identities (`fixed_runs.tsv`), install record (`direct_url.json`), the seed-42 project file and its diff from D1 |
 
 Large data stays outside Git, in `/home/brian/nf-rna-validation/`:

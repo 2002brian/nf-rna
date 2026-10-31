@@ -1,0 +1,5 @@
+first differing permutation: 1089 of 10000 (C++ seed 66608964 )
+A reference stats (full precision), prefix size 10: max positive deviation 0.20060169764696, max negative deviation -0.20060169764696, std ES -0.200601697646931, counted >=0: 0, <=0: 1
+A reference stats (full precision), prefix size 11: max positive deviation 0.200612475151786, max negative deviation -0.200612475151786, std ES -0.200612475151786, counted >=0: 0, <=0: 1
+B nf-rna stats (15 significant digits), prefix size 10: max positive deviation 0.20060169764696, max negative deviation -0.20060169764696, std ES 0, counted >=0: 1, <=0: 1
+B nf-rna stats (15 significant digits), prefix size 11: max positive deviation 0.200612475151786, max negative deviation -0.200612475151786, std ES 0, counted >=0: 1, <=0: 1

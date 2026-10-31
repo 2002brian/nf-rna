@@ -1,0 +1,16 @@
+sorted gene order identical: FALSE 
+positions whose gene differs: 0 
+pathways with any count change: 1 
+nLeZero nGeZero   nLeEs   nGeEs 
+      0       0       1       1 
+    size dLeZero dGeZero dLeEs dGeEs     N
+   <int>   <num>   <num> <num> <num> <int>
+1:    10       0       0    -1     1     1
+geZeroMean/leZeroMean changed w/o count change: 0 
+size 10: A nGeZero 4962 nLeZero 5038 geZeroSum 2098.3365506363793 leZeroSum -2136.8435769536918 | B nGeZero 4962 nLeZero 5038 geZeroSum 2098.3365506363793 leZeroSum -2136.8435769536918
+size NA: A nGeZero NA nLeZero NA geZeroSum NA leZeroSum NA | B nGeZero NA nLeZero NA geZeroSum NA leZeroSum NA
+nGeZero+nLeZero A (size10): 10000  B: 10000 
+changed sets with ES<0: 0  NES-relevant leZeroMean rel change max: -Inf 
+  no non-missing arguments to max; returning -Inf
+NES changed (>1e-12 rel): pos 0  neg 0 
+all sets: sizes 10/11 count 138 

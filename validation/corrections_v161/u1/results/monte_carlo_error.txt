@@ -1,0 +1,2 @@
+GO_BP sets differing 571 | max |log2 p ratio|/log2err 0.02 | log2err NA 0 | max NES rel 0.00020048115477577788 | seed1 vs seed42 median |log2 p ratio| for same sets 0.0289 | significance flips 0
+GO_MF sets differing 1 | max |log2 p ratio|/log2err 0.02 | log2err NA 0 | max NES rel 6.661338147750939e-16 | seed1 vs seed42 median |log2 p ratio| for same sets 0.0109 | significance flips 0

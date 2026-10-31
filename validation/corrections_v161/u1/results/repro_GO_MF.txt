@@ -1,0 +1,7 @@
+stats: n = 18624  max rel diff A vs B = NaN 
+exact ties in A: 75  in B: 75 
+A: reference stats, serial                 vs reference: NES    0 p    0 | vs nf-rna: NES    0 p    1
+B: nf-rna stats (15 digits), serial        vs reference: NES    0 p    1 | vs nf-rna: NES    0 p    0
+A, pathway order shuffled                  vs reference: NES 1221 p 1218 | vs nf-rna: NES 1221 p 1218
+A, all collection sets (unfiltered list)   vs reference: NES    0 p    0 | vs nf-rna: NES    0 p    1
+A, MulticoreParam(4)                       vs reference: NES    0 p    0 | vs nf-rna: NES    0 p    1

@@ -5,7 +5,9 @@ Branch `fix/v1.6.1-scientific` was created from the `v1.6.0` tag (ff4fe5c).
 | Commit | Content |
 |---|---|
 | `3cf0386` | The corrections, the regression tests and the CHANGELOG entry |
-| Separate later commit | This document and the evidence in [`validation/corrections_v161/`](../../validation/corrections_v161/) |
+| `7d85046` | Version `1.6.1 — Unreleased`; consistent ES in the offline KEGG GSEA figure fixture |
+| `1cbe8fb` | This document and the evidence in [`validation/corrections_v161/`](../../validation/corrections_v161/) |
+| Later commit | The U-1 investigation, the full-suite result on HEAD and the final acceptance |
 
 The findings come from the Phase 2 independent validation of v1.6.0, recorded on branch `validation/v1.6.0`, commit `b886f11`:
 
@@ -137,7 +139,7 @@ Script: `scripts/compare_v161.py`. Results:
 | Check | Result |
 |---|---|
 | Significant sets (p.adjust ≤ 0.05) identical | **20/20 collections**: 16 for seed 1, 4 for seed 42 |
-| NES / p-value / p.adjust, maximum relative difference | ≤ 6.5e-15 in 18/20 collections. ≤ 2.1e-4 in D2 LP_vs_ML GO_BP (571 sets) and GO_MF (1 set); see open finding U-1 |
+| NES / p-value / p.adjust, maximum relative difference | ≤ 6.5e-15 in 18/20 collections. ≤ 2.1e-4 in D2 LP_vs_ML GO_BP (571 sets) and GO_MF (1 set); explained in [U-1 investigation](#u-1-investigation) |
 | ES | ≤ 6e-15 in all 20 |
 | Leading edge equal to the reference | 100% in all 20 collections, both ES signs |
 
@@ -262,7 +264,15 @@ v1.6.0 runs lack all three fields.
 
 **Version.** The package version on this branch is `1.6.1`, a development version: CHANGELOG `1.6.1 — Unreleased`, and CITATION.cff without a release date. No tag was created.
 
-The corrected validation runs were made from commit `3cf0386`, before the version change, so they still report `1.6.0`. `source_revision` identifies them.
+The corrected validation runs (FIX-*) were made from commit `3cf0386`, before the version change. Their provenance therefore reports `nf_rna_version` `1.6.0`, but `source_revision` `3cf038630ff56301a2d48e672a640121e70a0497` identifies the corrected code unambiguously. The runs have not been rewritten, and their provenance was not edited after the fact.
+
+Checks on HEAD:
+
+- `rnaseq --version` prints `1.6.1`.
+- `CITATION.cff` has `version: "1.6.1"` and no `date-released`.
+- `CHANGELOG.md` has `## 1.6.1 — Unreleased`.
+- A new analysis records `nf_rna_version` from `rnaseq.__version__`, through `PIPELINE_VERSION` and the runtime identity, so it records `1.6.1`.
+- A new analysis records `source_revision` from the git HEAD of a source checkout, or from the commit pip recorded for a git install. A checkout with uncommitted changes reports `+dirty`, and `rnaseq run` refuses it (`tests/test_source_identity.py`).
 
 The release date is set when the release is finalised.
 
@@ -287,12 +297,117 @@ The release date is set when the release is finalised.
 
 `test_figure_dotplots.py`, `test_figure_review_tools.py`, `test_release_metadata.py`, `test_packaging_contract.py` and `test_cli.py` then pass: 70 tests.
 
+**Full suite on `1cbe8fb`** (locked runtime `0e721ff3…`, `NF_RNA_REQUIRE_R=1`, log in `/home/brian/nf-rna-validation/v161/fullsuite/pytest_1cbe8fb.log`): **1,091 passed, 2 skipped, 0 failed** in 26 min 43 s. All four earlier failures are resolved.
+
+Both skips are environment-gated and were also skipped on `3cf0386`:
+
+- `test_featurecounts_real_semantics.py:55` needs real SAMtools and featureCounts.
+- `test_run_status.py:664` needs a real SJ project that is not present.
+
+Commits after `1cbe8fb` change only this document and `validation/` evidence, so the result applies to HEAD's code and tests.
+
+## U-1 investigation
+
+**Question.** With seed 1, D2 LP_vs_ML GO BP (571 sets) and GO MF (1 set) differ from the reference fgsea in NES and p-value by up to 2.1e-4 relative. ES and the significant sets are identical. The investigation asked four things:
+
+- Is the cause RNG consumption order, or RNG state shared across gene sets or contrasts?
+- Can the difference be explained once the seed, RNG kind, ranking and gene sets are fixed?
+- Is there an algorithmic difference?
+- Is the difference within Monte Carlo error?
+
+**Method.** The investigation used minimal reproductions in the locked runtime (fgsea 1.36.2) and the fgsea 1.36.2 source package from Bioconductor 3.22 (`fgsea_1.36.2.tar.gz`, SHA-256 `d6996ff5…5f5a`).
+
+- Scripts: `validation/corrections_v161/u1/` (`run_u1.sh` runs all of them).
+- Outputs: `u1/results/`.
+
+**Acceptance criterion.** This was fixed before the comparison was evaluated, but after the discrepancy had been observed:
+
+- A same-seed difference is acceptable as Monte Carlo-level when |log2(p_nf-rna / p_reference)| ≤ the reference's own `log2err` (fgsea's estimate of the standard deviation of log2 p) for every set.
+- The significant sets must also be identical.
+- Bitwise equality of independent runs is not required.
+
+### Findings
+
+**1. Not RNG consumption, shared state or backend.** The reference's gene sets and fgsea call were held fixed (seed 1, `SerialParam`, the reference parameters). Only the input statistic was varied:
+
+| Input to fgsea | vs reference output | vs nf-rna output |
+|---|---|---|
+| A: reference ranked list (the DESeq2 `stat` at full double precision) | identical | 571 NES / 333 p differ (GO BP) |
+| B: nf-rna ranked list (the same `stat`, as nf-rna reads it from `all_genes.tsv`, written with 15 significant digits) | 571 NES / 333 p differ (GO BP) | **identical** |
+| A, with all collection sets passed unfiltered, as DOSE does | identical | as A |
+| A, with `MulticoreParam(4)` instead of serial | identical | as A |
+
+GO MF behaves the same way: 1 set differs.
+
+- Each fgsea call seeds its own C++ engine from a single `sample.int()` draw. No RNG state is carried across gene sets, collections or contrasts.
+- The backend does not change the result.
+- Passing the unfiltered set list, which is what DOSE does, gives the same result.
+- **Caveat.** Shuffling the *order* of the gene sets does give a different (equally valid) draw for every set. nf-rna and the reference present the sets in the same order, so order is not the cause here. It does mean that a same-seed result also depends on the order of the gene sets, for example after an annotation update.
+
+**2. Mechanism.**
+
+- **Input.** nf-rna builds the GSEA ranking from `all_genes.tsv`, which R's `write.table` writes with 15 significant digits. The reference used the in-memory statistic. Both lists have the same gene order and differ only in the last digits (about 1e-15 relative).
+- **The flip.** That is enough to flip a floating-point comparison in exactly one permutation of the simple stage. The permutation is reached through the same random stream (C++ seed 66608964 from `set.seed(1)`).
+  - **GO BP.** In permutation 1089 of 10,000, the random sets of size 10 and 11 have maximum positive and maximum negative running-sum deviations equal to at least 13 digits (±0.2006017, ±0.2006125).
+    - In `fastGSEA.cpp`, `calcGseaStatCumulative()` sets the `std` ES to 0 when the two are exactly equal (`res == resDown`).
+    - With input B they are exactly equal, so the permutation scores ES = 0 and is counted as both ≥ 0 and ≤ 0.
+    - With input A the negative deviation is larger by a few ulp, so ES = −0.2006.
+    - So for every set of size 10 or 11 (571 sets), `nGeZero` differs by 1 and the zero-side means differ by one permutation's contribution. NES changes by about 1/5,000, and p by 1/(1 + nGeZero) where p depends on that count.
+    - Five sets whose observed ES lies between −0.2006 and 0 also shift their ES-side count by 1.
+  - **GO MF.** In permutation 1079 the random ES of a size-10 set equals the observed ES of GO:0051880 (0.2247770495326) to within rounding. Under A it counts as ≥, under B as ≤. One p-value changes by one count, and NES is unchanged.
+- **Same algorithm.** Both runs use the same algorithm, on the same random draws. The difference is a discontinuity of the permutation statistic at exact ties, exposed by a 1e-15 change in the input.
+- **Phase 2 cases.** The two seed-10403 cases from Phase 2 (D1 GO MF, D2 ML_vs_Basal GO BP) fit the same mechanism with a different random stream. They were not re-examined.
+
+**3. Size against Monte Carlo error.** From `u1/results/monte_carlo_error.txt`:
+
+| Collection | Sets differing | max \|log2 p ratio\| / log2err | Significance changes | Seed 1 vs seed 42 in the reference, median \|log2 p ratio\| for the same sets |
+|---|---|---|---|---|
+| GO BP | 571 | 0.02 | 0 | 0.029 |
+| GO MF | 1 | 0.02 | 0 | 0.011 |
+
+The largest difference is 2% of one Monte Carlo standard deviation. It is about 100 times smaller than the variation between two seeds. The acceptance criterion is met.
+
+**Assessment.**
+
+- U-1 is not a defect in D-2, fgsea, DOSE or nf-rna's GSEA call. It needs no code change.
+- nf-rna results remain a valid fgsea draw for the recorded seed.
+- Exact agreement with an independent run requires both the same seed and a bit-identical input statistic.
+- Writing `all_genes.tsv` at full precision would remove this source of difference. That is a precision-specification question, together with U-2, rather than a scientific correction, and it was not changed here.
+
+**Limits.**
+
+- The investigation did not establish why near-exact ties between permutation deviations (or with an observed ES) arise as often as two in about 20 collections × 10,000 permutations. The ranked list has 75 genes whose statistic is exactly 0, which carry zero weight in the running sum, and 75 duplicated values in total. These may contribute, but this was not shown.
+- Multilevel p-values change only through their denominator `(modeFraction + 1)/(nPermSimple + 1)`, which takes the same ±1 count. The multilevel sampling itself was not involved.
+
+## Acceptance of the v1.6.1 scientific corrections
+
+| Item | Status |
+|---|---|
+| D-1 leading edge | **Accepted.** 33,544 / 33,544 sets equal the independent fgsea `leadingEdge`. ES, NES, p, p.adjust and significance are unchanged by the correction itself |
+| D-2 seed | **Accepted.** The configured seed is effective, recorded and reproducible. Significant sets equal the independent same-seed fgsea in 20/20 collections. The remaining same-seed differences (U-1) are explained and lie within the Monte Carlo criterion |
+| M-1 DESeq2 alpha | **Accepted.** NA pattern, padj, DEG sets and 48/48 ORA analyses equal the reference's alpha 0.05 analysis |
+| U-1 | **Explained**, no code change needed. A residual limit is recorded in [U-1 investigation](#u-1-investigation) |
+| Full test suite on HEAD's code | 1,091 passed, 2 skipped (environment), 0 failed |
+| Version and provenance | `1.6.1` / `1.6.1 — Unreleased` / no release date. New runs record `1.6.1` and the source revision. Existing runs are unchanged |
+
+What this acceptance does **not** cover:
+
+- **Downstream only.** It covers the three corrections, on the downstream analyses (DE, ORA, GSEA) of the Phase 2 datasets.
+- **Upstream FASTQ processing has not been validated.** Phase 3 has not started. Upstream must not be read as having passed.
+- **No method is fully validated.** It does not claim that every scientific method in nf-rna is fully validated.
+- **The Phase 2 v1.6.0 verdict stays FAIL.**
+
+**Release blockers for the scientific corrections:** none known.
+
+**Open before a release:**
+
+- the release decision itself (date, tag), which is left to the maintainer;
+- U-2 and U-3, which are tracked but are not scientific blockers;
+- Phase 3, if upstream validation is a release requirement.
+
 ## Open findings
 
-- **U-1. Monte Carlo-level GSEA differences in 2/20 collections.** For D2 LP_vs_ML, GO BP (571 sets, NES and p up to 2.1e-4 relative) and GO MF (1 set) differ from the reference fgsea run with the same seed, although ES and the significant sets are identical.
-  - Phase 2's fixed-state check (seed 10403) showed the same pattern in two *other* collections (D1 GO MF, D2 ML_vs_Basal GO BP), so it moves with the seed.
-  - The likely cause is a difference in how the random stream is consumed between `gseGO`'s fgsea call and the reference's call. Candidates are the order of the pathway list or the parallel and serial backends. This was not isolated.
-  - It does not affect the correctness of D-2. The configured seed is used and reproducible, and the statistics are a valid fgsea draw.
+- **U-1. Explained; see [U-1 investigation](#u-1-investigation).** The differences in 2/20 collections come from the last-digit precision of the gene-level statistic that is passed to fgsea. They do not come from RNG consumption or from an algorithmic difference, and they lie far inside the Monte Carlo error. One part is not explained: why near-exact ties in permutation ES occur this often. That does not change the assessment.
 - **U-2. Precision of recorded values.** `backend_summary.json` rounds `independent_filtering_threshold` to 4 decimals (jsonlite's default). This is the same specification gap as Phase 2 T-2 for mapping rates. The computation uses full precision.
 - **U-3. Upstream reporting.** The DOSE `leading_edge()` ES < 0 defect and the `seed = TRUE` behaviour should be reported to DOSE upstream. Neither has been reported.
 - **Not addressed here.**
