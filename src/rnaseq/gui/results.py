@@ -184,6 +184,17 @@ class QcView:
     tables: dict[str, Path]
     figures: list[Figure]
     multiqc: Path | None
+    upstream_qc: dict[str, Any] | None = None
+
+    @property
+    def strandedness(self) -> dict[str, Any]:
+        value = (self.upstream_qc or {}).get("strandedness")
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def execution_threads(self) -> dict[str, Any]:
+        value = (self.upstream_qc or {}).get("execution_threads")
+        return value if isinstance(value, dict) else {}
 
 
 def qc_view(run: ResultRun) -> QcView:
@@ -198,7 +209,8 @@ def qc_view(run: ResultRun) -> QcView:
     ]
     tables = {name: l1 / name for name in ("library_size_qc.tsv", "sample_distribution_qc.tsv", "pca_variance.tsv", "sample_correlation.tsv") if (l1 / name).is_file()}
     multiqc = next(iter(sorted(run.delivery.glob("multiqc/*.html"))), None)
-    return QcView(read_json(l1 / "backend_summary.json"), tables, figures, multiqc)
+    upstream_qc = run.contract.get("upstream_qc")
+    return QcView(read_json(l1 / "backend_summary.json"), tables, figures, multiqc, upstream_qc if isinstance(upstream_qc, dict) else None)
 
 
 # --------------------------------------------------------------------- L2 / DEG
@@ -231,6 +243,15 @@ class DegView:
     def shrinkage(self) -> dict[str, Any]:
         value = (self.metadata or {}).get("shrinkage")
         return value if isinstance(value, dict) else {}
+
+    @property
+    def r_warnings(self) -> list[dict[str, Any]] | None:
+        """Recorded R warnings of the shared fit and this contrast; None for runs before v1.6.1."""
+
+        record = (self.metadata or {}).get("r_warnings")
+        if not isinstance(record, dict):
+            return None
+        return [item for part in ("fit", "contrast") for item in (record.get(part) or []) if isinstance(item, dict)]
 
 
 def deg_view(run: ResultRun, contrast_id: str) -> DegView:
@@ -490,7 +511,16 @@ def provenance(run: ResultRun) -> list[tuple[str, str]]:
         ("input type", (project.get("input") or {}).get("type")),
         ("reference", ", ".join(f"{name}: {value}" for name, value in reference.items() if value) or None),
         ("upstream", record.get("upstream_implementation") or record.get("fastq_backend")),
+        ("strandedness check", (record.get("strandedness_qc") or {}).get("status")),
     ]
+    threads = record.get("execution_threads") if isinstance(record.get("execution_threads"), dict) else {}
+    for name, item in (threads.get("processes") or {}).items():
+        if isinstance(item, dict):
+            rows.append((f"threads: {name}", f"{', '.join(map(str, item.get('cpus') or [])) or 'not recorded'} CPU(s) per task, {item.get('tasks')} task(s)"))
+    for sample, value in (threads.get("salmon_quant_threads_cmd_info") or {}).items():
+        rows.append((f"Salmon --threads: {sample}", value))
+    if threads and threads.get("status") != "RECORDED":
+        rows.append(("upstream threads", f"not recorded: {threads.get('reason')}"))
     l1_summary = read_json(run.l1 / "backend_summary.json") or {}
     if run.is_l2:
         metadata = {item: read_json(run.l2 / "contrasts" / item / "contrast_metadata.json") for item in contrast_ids(run)}

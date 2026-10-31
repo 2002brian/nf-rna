@@ -43,15 +43,31 @@ dds <- dds[keep, ]
 # Start with DESeq2 defaults.  The documented gene-wise fallback is only used
 # for the exceptional case where DESeq2 says a dispersion trend cannot be fit.
 fit_method <- "DESeq2::DESeq() default dispersion fit"
-fit <- tryCatch(DESeq(dds), error = function(e) e)
+# R warnings are recorded with their step and original text, then still reach R's
+# own warning output: recording never muffles, changes or escalates them.  An
+# error keeps its existing handling (fallback, shrinkage failure, or stop).
+r_warnings <- list()
+record_warnings <- function(step, expr) withCallingHandlers(expr, warning = function(w) {
+  r_warnings[[length(r_warnings) + 1L]] <<- list(step = step, message = conditionMessage(w),
+                                                call = paste(deparse(conditionCall(w), nlines = 1L), collapse = " "))
+})
+summarise_warnings <- function(items) {
+  if (!length(items)) return(list())
+  keys <- vapply(items, function(item) paste(item$step, item$call, item$message, sep = "\r"), character(1))
+  lapply(unique(keys), function(key) { first <- items[[match(key, keys)]]; c(first, list(count = as.numeric(sum(keys == key)))) })
+}
+fit <- tryCatch(record_warnings("fit: DESeq2::DESeq()", DESeq(dds)), error = function(e) e)
 if (inherits(fit, "error")) {
   if (!grepl("all gene-wise dispersion estimates", conditionMessage(fit), fixed = TRUE)) stop(fit)
-  dds <- estimateSizeFactors(dds)
-  dds <- estimateDispersionsGeneEst(dds)
-  dispersions(dds) <- mcols(dds)$dispGeneEst
-  dds <- nbinomWaldTest(dds)
+  dds <- record_warnings("fit: gene-wise dispersion fallback", {
+    dds <- estimateSizeFactors(dds)
+    dds <- estimateDispersionsGeneEst(dds)
+    dispersions(dds) <- mcols(dds)$dispGeneEst
+    nbinomWaldTest(dds)
+  })
   fit_method <- "DESeq2 gene-wise dispersion fallback after default trend-fit failure"
 } else dds <- fit
+fit_warnings <- summarise_warnings(r_warnings)
 
 # This is intentionally derived after DESeq2 has constructed and fitted the
 # object.  It therefore records the actual typed colData and model matrix, not
@@ -112,20 +128,20 @@ shrink_lfc <- function(result, factor, numerator, denominator) {
   shrunk <- tryCatch({
     if (coef %in% resultsNames(dds)) {
       info$method <- "apeglm"; info$coef <- coef
-      lfcShrink(dds, coef = coef, type = "apeglm", quiet = TRUE)
+      record_warnings("shrinkage: lfcShrink(type = apeglm)", lfcShrink(dds, coef = coef, type = "apeglm", quiet = TRUE))
     } else {
       copy <- dds
       copy[[factor]] <- relevel(copy[[factor]], ref = denominator)
-      copy <- nbinomWaldTest(copy, quiet = TRUE)
+      copy <- record_warnings("shrinkage: relevel refit nbinomWaldTest()", nbinomWaldTest(copy, quiet = TRUE))
       check <- if (coef %in% resultsNames(copy)) results(copy, name = coef) else NULL
       verified <- !is.null(check) && same_values(check$log2FoldChange, result$log2FoldChange) && same_values(check$pvalue, result$pvalue)
       info$relevel_verification <- if (is.null(check)) "coefficient absent after relevel; copy not used" else if (verified) "raw log2FoldChange and pvalue of the releveled copy match the original fit (all.equal mean relative difference <= 1e-4)" else "raw log2FoldChange or pvalue of the releveled copy differ from the original fit; copy not used"
       if (verified) {
         info$method <- "apeglm"; info$coef <- coef; info$releveled <- TRUE
-        lfcShrink(copy, coef = coef, type = "apeglm", quiet = TRUE)
+        record_warnings("shrinkage: lfcShrink(type = apeglm, releveled copy)", lfcShrink(copy, coef = coef, type = "apeglm", quiet = TRUE))
       } else {
         info$method <- "ashr"; info$contrast <- c(factor, numerator, denominator)
-        lfcShrink(dds, contrast = c(factor, numerator, denominator), type = "ashr", quiet = TRUE)
+        record_warnings("shrinkage: lfcShrink(type = ashr)", lfcShrink(dds, contrast = c(factor, numerator, denominator), type = "ashr", quiet = TRUE))
       }
     }
   }, error = function(e) { info$error <<- conditionMessage(e); NULL })
@@ -139,6 +155,7 @@ hfig <- nf_rna_figure_scope(fig, "heatmap")  # the context DEG heatmaps are draw
 vfig <- nf_rna_figure_scope(fig, "volcano")  # the context volcano and MA plots are drawn with (standard preset when requested)
 deg_figure_formats <- c("png", "png_raster", "tiff", "pdf")  # adds a raster-dpi PNG beside the report preview
 volcano_top_labels <- 10
+all_contrast_warnings <- list()
 for (item in cfg$contrasts) {
   contrast_id <- item$contrast_id; factor <- item$factor; numerator <- item$numerator; denominator <- item$denominator
   if (!(factor %in% names(metadata))) stop(paste("contrast factor absent from metadata:", factor))
@@ -147,12 +164,18 @@ for (item in cfg$contrasts) {
   directory <- file.path(cfg$output_dir, "contrasts", contrast_id); dir.create(directory, recursive = TRUE, showWarnings = FALSE)
   # Independent filtering maximises rejections at padj < alpha, so alpha is the
   # declared DEG FDR threshold (DESeq2 vignette); the DESeq2 default 0.1 is not used.
-  result <- results(dds, contrast = c(factor, numerator, denominator), independentFiltering = TRUE, alpha = cfg$thresholds$padj)
+  r_warnings <- list()
+  result <- record_warnings("results()", results(dds, contrast = c(factor, numerator, denominator), independentFiltering = TRUE, alpha = cfg$thresholds$padj))
   filter_threshold <- unname(S4Vectors::metadata(result)$filterThreshold)
   result_df <- data.frame(gene_id = rownames(result), as.data.frame(result), check.names = FALSE)
   result_df <- result_df[, c("gene_id", "baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj")]
   stopifnot(identical(result_df$gene_id, gene_annotation$gene_id))
   shrink <- shrink_lfc(result, factor, numerator, denominator)
+  contrast_warnings <- summarise_warnings(r_warnings)
+  warning_record <- list(
+    status = if (length(fit_warnings) || length(contrast_warnings)) "WARNINGS" else "NONE",
+    meaning = "the analysis completed; these R warnings were raised on the way and are recorded verbatim. Errors and shrinkage failures are reported separately.",
+    fit = fit_warnings, contrast = contrast_warnings)
   level_of <- as.character(colData(dds)[[factor]])
   # Descriptive group means of normalized counts, not model estimates.
   deg_df <- data.frame(gene_annotation[, c("gene_id", "symbol", "description")], result_df[, -1, drop = FALSE],
@@ -307,7 +330,8 @@ for (item in cfg$contrasts) {
     } else heatmap_reason <- "no selected gene has a defined row z-score"
   }
   tested <- sum(!is.na(result_df$pvalue))
-  summary <- list(input_genes = nrow(source_counts), filtered_genes = sum(!keep), retained_genes = sum(keep), tested_genes = tested, pvalue_na = sum(is.na(result_df$pvalue)), padj_na = sum(is.na(result_df$padj)), independent_filtering = TRUE, independent_filtering_alpha = cfg$thresholds$padj, independent_filtering_threshold = filter_threshold, multiple_testing_method = "Benjamini-Hochberg (DESeq2 default)", fit_method = fit_method, heatmap_status = heatmap_status, heatmap_top_n = cfg$heatmap_top_n)
+  summary <- list(input_genes = nrow(source_counts), filtered_genes = sum(!keep), retained_genes = sum(keep), tested_genes = tested, pvalue_na = sum(is.na(result_df$pvalue)), padj_na = sum(is.na(result_df$padj)), independent_filtering = TRUE, independent_filtering_alpha = cfg$thresholds$padj, independent_filtering_threshold = filter_threshold, multiple_testing_method = "Benjamini-Hochberg (DESeq2 default)", fit_method = fit_method, heatmap_status = heatmap_status, heatmap_top_n = cfg$heatmap_top_n,
+                  r_warning_status = warning_record$status, r_warning_count = sum(vapply(c(fit_warnings, contrast_warnings), function(item) item$count, numeric(1))))
   if (!is.null(heatmap_reason) && nrow(significant_df) > 0) summary$heatmap_reason <- heatmap_reason
   write(toJSON(summary, auto_unbox = TRUE, pretty = TRUE), file.path(directory, "backend_summary.json"))
   contrast_metadata <- list(
@@ -321,17 +345,20 @@ for (item in cfg$contrasts) {
                           independent_filtering = list(alpha = cfg$thresholds$padj, filter_statistic = "baseMean", filter_threshold = filter_threshold,
                                                        rule = "DESeq2 results(alpha = padj threshold): the baseMean quantile maximising rejections at padj < alpha")),
     shrinkage = c(shrink$info, list(column = "log2FoldChange_shrunk", use = "display and ranking only")),
+    r_warnings = warning_record,
     group_means = list(columns = c("mean_normcount_numerator", "mean_normcount_denominator"),
                        definition = "arithmetic mean of counts(dds, normalized = TRUE) over the analysed samples of each level; descriptive, not a model estimate"),
     annotation = annotation_result$info,
     software = shrinkage_versions
   )
   write(toJSON(contrast_metadata, auto_unbox = TRUE, pretty = TRUE, null = "null", na = "null"), file.path(directory, "contrast_metadata.json"))
+  all_contrast_warnings[[contrast_id]] <- contrast_warnings
 }
 nf_rna_write_figure_manifest(fig, cfg$output_dir)
 nf_rna_write_provenance(
   cfg, cfg$output_dir, "L2", "SUCCESS",
   c("DESeq2", "apeglm", "ashr", "AnnotationDbi", cfg$gene_annotation$orgdb_package, "tximport", "ggplot2", "ggrepel", "pheatmap", "scales", "systemfonts", "jsonlite"),
-  list(contrast_count = length(cfg$contrasts), independent_filtering = TRUE, fit_method = fit_method, gene_annotation = annotation_result$info),
+  list(contrast_count = length(cfg$contrasts), independent_filtering = TRUE, fit_method = fit_method, gene_annotation = annotation_result$info,
+       r_warnings = list(fit = fit_warnings, contrasts = all_contrast_warnings)),
   design_details
 )

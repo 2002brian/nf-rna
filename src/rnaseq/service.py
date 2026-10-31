@@ -58,6 +58,8 @@ from rnaseq.execution import (
     resolve_project_resources,
     RESOURCE_CONTRACTS,
     render_local_resource_config,
+    render_trace_fields_config,
+    upstream_execution_threads,
     require_fresh_plan,
     resolve_execution_workspace,
     RuntimeSnapshot,
@@ -823,7 +825,7 @@ def freeze_case_inputs(
         runtime = frozen / "nfcore.local.config"
         config_text = render_local_resource_config(ResourceContract(
             "EFFECTIVE_LOCAL", resolved.effective_cpus, resolved.effective_memory_gib, LOCAL_RESOURCE_CEILING.time_hours
-        ))
+        )) + render_trace_fields_config()
         _write_text(runtime, config_text)
         _write_text(frozen / "nfcore.conda.config", render_upstream_conda_config(upstream_conda_cache()))
         method = report.config.upstream.quantification.method if report.config.upstream.quantification else "salmon"
@@ -1160,8 +1162,25 @@ def finalize_fastq_handoff(report: ValidationReport, run: CaseRun, contract: Pat
         contract,
         {"source": {"type": "salmon_tximport" if method == "salmon" else "featurecounts_raw_counts", "construction_method": "DESeqDataSetFromTximport" if method == "salmon" else "DESeqDataSetFromMatrix", "upstream_handoff": str(frozen_handoff.resolve()), "reused_from": reused_from}},
     )
+    payload = _read_yaml_mapping(frozen_handoff, "frozen upstream handoff manifest")
+    upstream_qc = {
+        "strandedness": payload.get("strandedness_qc") or {"status": "NOT_EVALUATED", "reason": "not recorded by this upstream handoff"},
+        "execution_threads": upstream_execution_threads(run.run_dir, method),
+    }
+    if reused_from:
+        upstream_qc["execution_threads"]["reused_from"] = reused_from
+    _update_contract(contract, {"upstream_qc": upstream_qc})
+    provenance_path = run.run_dir / "provenance" / "run_provenance.yaml"
+    if provenance_path.is_file():
+        provenance = _read_yaml_mapping(provenance_path, "run provenance")
+        provenance["execution_threads"] = upstream_qc["execution_threads"]
+        provenance["strandedness_qc"] = {key: upstream_qc["strandedness"].get(key) for key in ("status", "declared", "path", "reason") if upstream_qc["strandedness"].get(key)}
+        _write_yaml(provenance_path, provenance)
+    strandedness = upstream_qc["strandedness"]
+    for sample, item in (strandedness.get("samples") or {}).items():
+        if isinstance(item, dict) and item.get("severity") in {"warning", "advisory"}:
+            _log_event(run, f"{'WARNING' if item['severity'] == 'warning' else 'NOTE'}: strandedness QC {item['status']} for {sample}: {item['message']}")
     if method == "salmon":
-        payload = _read_yaml_mapping(frozen_handoff, "frozen upstream handoff manifest")
         salmon = payload.get("salmon")
         if isinstance(salmon, dict):
             mapping_path, mapping = _salmon_mapping_contract(run.run_dir, salmon.get("tx2gene"))

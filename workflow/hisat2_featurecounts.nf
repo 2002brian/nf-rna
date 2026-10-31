@@ -194,6 +194,28 @@ process FEATURECOUNTS {
     """
 }
 
+process STRAND_EVIDENCE {
+    // Strandedness QC only: the same count-only BAM and options as FEATURECOUNTS,
+    // counted under both strand hypotheses.  The counts used downstream come from
+    // FEATURECOUNTS with the declared strandedness and are not affected.
+    tag { sample }
+    container params.subread_container
+    conda params.hisat2_linux_conda
+    cpus 2
+    memory '6 GB'
+    publishDir "${params.outdir}/qc/strandedness", mode: 'copy', overwrite: false
+    input:
+    tuple val(sample), path(bam), path(bai), path(flagstat), path(gtf)
+    output:
+    tuple val(sample), path("${sample}.strand_s1.txt.summary"), path("${sample}.strand_s2.txt.summary"), emit: evidence
+    script:
+    def pairArgs = params.layout == 'paired_end' ? '-p --countReadPairs -B -C' : ''
+    """
+    featureCounts -T ${task.cpus} -a ${gtf} -o ${sample}.strand_s1.txt -t exon -g gene_id -s 1 -Q 0 --primary ${pairArgs} ${bam}
+    featureCounts -T ${task.cpus} -a ${gtf} -o ${sample}.strand_s2.txt -t exon -g gene_id -s 2 -Q 0 --primary ${pairArgs} ${bam}
+    """
+}
+
 process PREPARE_COUNT_BAM {
     tag { sample }
     container params.samtools_container
@@ -272,6 +294,7 @@ workflow {
     MERGE_AND_INDEX(SORT_LANE_BAM.out.sorted.groupTuple())
     PREPARE_COUNT_BAM(MERGE_AND_INDEX.out.merged)
     FEATURECOUNTS(PREPARE_COUNT_BAM.out.countable.combine(Channel.value(file(params.gtf))).map { sample, bam, bai, flagstat, gtf -> tuple(sample, bam, bai, flagstat, gtf) })
+    STRAND_EVIDENCE(PREPARE_COUNT_BAM.out.countable.combine(Channel.value(file(params.gtf))).map { sample, bam, bai, flagstat, gtf -> tuple(sample, bam, bai, flagstat, gtf) })
     ASSEMBLE_COUNTS(FEATURECOUNTS.out.counted.map { sample, counts, summary -> counts }.collect(), Channel.value(file(params.assembly_script)))
     multiqc_reports = FEATURECOUNTS.out.counted
         .map { sample, counts, summary -> summary }

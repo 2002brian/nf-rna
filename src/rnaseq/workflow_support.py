@@ -679,7 +679,67 @@ def _reference_quantification_html(contract: dict[str, Any], project: dict[str, 
         )
     if annotation:
         items.append(f"<li>Gene identifiers: {escape(str(annotation.get('input_id_type') or 'not recorded'))}; organism {escape(str(annotation.get('organism') or 'not recorded'))}.</li>")
-    return ["<h2>Reference and quantification</h2>", "<ul>" + "".join(items) + "</ul>"]
+    return ["<h2>Reference and quantification</h2>", "<ul>" + "".join(items) + "</ul>", *_upstream_qc_html(contract)]
+
+
+def _upstream_qc_html(contract: dict[str, Any]) -> list[str]:
+    """Strandedness consistency and the thread counts the upstream tools actually used (FASTQ runs)."""
+
+    upstream_qc = contract.get("upstream_qc") if isinstance(contract.get("upstream_qc"), dict) else None
+    if upstream_qc is None:
+        return []
+    html: list[str] = []
+    strand = upstream_qc.get("strandedness") if isinstance(upstream_qc.get("strandedness"), dict) else {}
+    status = str(strand.get("status") or "NOT_EVALUATED")
+    samples = strand.get("samples") if isinstance(strand.get("samples"), dict) else {}
+    html.append("<h3>Strandedness check</h3>")
+    if status == "NOT_EVALUATED" or not samples:
+        html.append(f"<p>Not evaluated: {escape(str(strand.get('reason') or 'no strand evidence recorded'))}</p>")
+        library_types = strand.get("salmon_library_types") if isinstance(strand.get("salmon_library_types"), dict) else {}
+        if library_types:
+            html.append("<p>Library type used by Salmon: " + "; ".join(f"{escape(str(name))}: <code>{escape(str(value))}</code>" for name, value in library_types.items()) + ".</p>")
+    else:
+        lead = {
+            "WARNING": "<strong>WARNING:</strong> for at least one sample the reads contradict the declared strandedness. The counts were made with the declared strandedness and were not changed; check the library preparation protocol and, if needed, rerun with the correct declaration.",
+            "ADVISORY": "Note: the library was declared unstranded but the reads look stranded. Unstranded counting is valid; check the library preparation protocol.",
+            "INCONCLUSIVE": "The reads did not give clear strand evidence for every sample; no judgement was made for those samples.",
+            "CONSISTENT": "The reads are consistent with the declared strandedness for every sample.",
+        }.get(status, "")
+        html.append(f"<p>Declared: <code>{escape(str(strand.get('declared')))}</code>. Status <strong>{escape(status)}</strong>. {lead}</p>")
+        rows = "".join(
+            f"<tr><td>{escape(str(name))}</td><td>{escape(str(item.get('assigned_forward_s1')))}</td><td>{escape(str(item.get('assigned_reverse_s2')))}</td>"
+            f"<td>{escape(_ratio_text(item.get('forward_over_reverse')))}</td><td>{escape(str(item.get('observed')))}</td><td>{escape(str(item.get('status')))}</td><td>{escape(str(item.get('message')))}</td></tr>"
+            for name, item in samples.items() if isinstance(item, dict)
+        )
+        html.append("<table><thead><tr><th>Sample</th><th>Assigned, featureCounts -s 1</th><th>Assigned, -s 2</th><th>-s 1 / -s 2</th><th>Observed</th><th>Status</th><th>Detail</th></tr></thead>"
+                    f"<tbody>{rows}</tbody></table>")
+        policy = strand.get("policy") if isinstance(strand.get("policy"), dict) else {}
+        html.append(f"<p>Rule: a strand is called when one direction has at least {escape(str(policy.get('stranded_if_ratio_at_least')))}&times; the assigned fragments of the other, "
+                    f"unstranded when the ratio is within {escape(str(policy.get('unstranded_if_ratio_within')))}, and nothing is called below {escape(str(policy.get('minimum_strand_assigned')))} "
+                    "strand-assignable fragments. Overlapping genes on opposite strands move the ratio towards 1. The check reports only.</p>")
+    threads = upstream_qc.get("execution_threads") if isinstance(upstream_qc.get("execution_threads"), dict) else {}
+    html.append("<h3>Upstream execution threads</h3>")
+    processes = threads.get("processes") if isinstance(threads.get("processes"), dict) else {}
+    if threads.get("status") == "RECORDED" and processes:
+        rows = "".join(
+            f"<tr><td>{escape(name)}</td><td>{escape(', '.join(str(value) for value in item.get('cpus') or []) or 'not recorded')}</td><td>{escape(str(item.get('tasks')))}</td></tr>"
+            for name, item in processes.items() if isinstance(item, dict)
+        )
+        html.append(f"<table><thead><tr><th>Process</th><th>CPUs (threads) per task</th><th>Tasks</th></tr></thead><tbody>{rows}</tbody></table>")
+        salmon = threads.get("salmon_quant_threads_cmd_info") if isinstance(threads.get("salmon_quant_threads_cmd_info"), dict) else {}
+        if salmon:
+            html.append("<p>Salmon <code>--threads</code> recorded in each sample's <code>cmd_info.json</code>: " + "; ".join(f"{escape(str(name))}: {escape(str(value))}" for name, value in salmon.items()) + ".</p>")
+    else:
+        html.append(f"<p>Not recorded: {escape(str(threads.get('reason') or 'no thread record'))}.</p>")
+    if threads.get("note"):
+        html.append(f"<p>{escape(str(threads['note']))}</p>")
+    return html
+
+
+def _ratio_text(value: object) -> str:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f"{value:.3g}"
+    return "not available" if value is None else str(value)
 
 
 def _shrinkage_html(metadata: dict[str, Any] | None) -> str:
@@ -696,7 +756,26 @@ def _shrinkage_html(metadata: dict[str, Any] | None) -> str:
     return (
         f"<li>DEG rule: {escape(str(rule or 'not recorded'))}</li>"
         f"<li>LFC shrinkage (<code>log2FoldChange_shrunk</code>, effect-size display and ranking only): {text}</li>"
+        + _r_warnings_html(metadata.get("r_warnings"))
     )
+
+
+def _r_warnings_html(record: object) -> str:
+    """DESeq2/apeglm/ashr warnings of this contrast and the shared fit, verbatim with their step."""
+
+    if not isinstance(record, dict):
+        return "<li>R warnings: not recorded (L2 results from before nf-rna v1.6.1).</li>"
+    items = [item for part in ("fit", "contrast") for item in (record.get(part) or []) if isinstance(item, dict)]
+    if not items:
+        return "<li>R warnings during the fit, results() and shrinkage: none.</li>"
+    rows = "".join(
+        f"<li>{escape(str(item.get('step')))}: <code>{escape(str(item.get('message')))}</code>"
+        f"{' &times; ' + escape(str(int(item['count']))) if isinstance(item.get('count'), (int, float)) and item['count'] > 1 else ''}"
+        f" (in <code>{escape(str(item.get('call')))}</code>)</li>"
+        for item in items
+    )
+    return ("<li>R warnings (the analysis completed; warnings are recorded verbatim and are not errors; "
+            f"the shared fit's warnings are listed for every contrast):<ul>{rows}</ul></li>")
 
 
 def _software_provenance_html(execution: object, versions: dict[str, object], kegg_snapshot: str | None) -> list[str]:

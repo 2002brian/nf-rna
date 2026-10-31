@@ -886,6 +886,7 @@ def _qc_section(run: results.ResultRun, config: GuiConfig) -> None:
             "normalization": (summary.get("normalization") or {}).get("method"), "VST": (summary.get("vst") or {}).get("method"),
             "flags": ", ".join(map(str, summary.get("flags") or [])) or "none",
         })
+    _strandedness_section(view)
     if view.multiqc is not None:
         st.markdown("**Upstream QC (MultiQC)**")
         download(view.multiqc, f"MultiQC report ({view.multiqc.name})", "qc::multiqc", config)
@@ -897,6 +898,34 @@ def _qc_section(run: results.ResultRun, config: GuiConfig) -> None:
         with st.expander(name):
             st.dataframe(frame(table(path)), hide_index=True, width="stretch")
             download(path, f"Download {name}", f"qc::table::{name}", config)
+
+
+def _strandedness_section(view: results.QcView) -> None:
+    """Strandedness consistency of FASTQ runs (report only; counts use the declared strandedness)."""
+
+    strand = view.strandedness
+    if not strand:
+        return
+    status = strand.get("status")
+    samples = strand.get("samples") or {}
+    if status == "WARNING":
+        st.warning("**Strandedness check: WARNING** — the reads contradict the declared strandedness "
+                   f"(`{strand.get('declared')}`) for at least one sample. The counts were made with the declared strandedness and "
+                   "were not changed; check the library preparation protocol.")
+    elif status == "ADVISORY":
+        st.info("**Strandedness check: note** — declared unstranded, but the reads look stranded. Unstranded counting is valid; check the protocol.")
+    elif status == "INCONCLUSIVE":
+        st.info("**Strandedness check: inconclusive** for at least one sample (too few strand-assignable fragments or no clear direction).")
+    elif status == "CONSISTENT":
+        st.success(f"**Strandedness check:** consistent with the declared `{strand.get('declared')}` for every sample.")
+    else:
+        st.caption(f"Strandedness check: not evaluated — {strand.get('reason') or 'no strand evidence recorded'}.")
+    if samples:
+        st.dataframe(pd.DataFrame([
+            {"sample": name, "assigned -s 1": item.get("assigned_forward_s1"), "assigned -s 2": item.get("assigned_reverse_s2"),
+             "-s 1 / -s 2": item.get("forward_over_reverse"), "observed": item.get("observed"), "status": item.get("status"), "detail": item.get("message")}
+            for name, item in samples.items() if isinstance(item, dict)
+        ]), hide_index=True, width="stretch")
 
 
 def _deg_section(run: results.ResultRun, contrast: str, config: GuiConfig) -> None:
@@ -919,6 +948,12 @@ def _deg_section(run: results.ResultRun, contrast: str, config: GuiConfig) -> No
         st.info(explanation + f" Shrinkage method: **{shrinkage.get('method')}** (coef `{shrinkage.get('coef')}`), status **{shrinkage.get('status')}**.")
     else:
         st.error(explanation + f" Shrinkage **{shrinkage.get('status')}** (method {shrinkage.get('method')}): {shrinkage.get('error') or 'no error recorded'}. `log2FoldChange_shrunk` is not a valid shrunken estimate for this contrast.")
+    warnings = view.r_warnings
+    if warnings:
+        with st.expander(f"R warnings recorded during the fit and this contrast ({sum(int(item.get('count') or 1) for item in warnings)}) — the analysis completed"):
+            st.dataframe(pd.DataFrame([
+                {"step": item.get("step"), "message": item.get("message"), "count": item.get("count"), "call": item.get("call")} for item in warnings
+            ]), hide_index=True, width="stretch")
     figure_cols = st.columns(3)
     for index, item in enumerate(view.figures):
         with figure_cols[index]:

@@ -176,6 +176,13 @@ def test_real_l2_replicated_raw_counts_outputs_and_determinism(tmp_path):
     filtering = json.loads((contrast / "contrast_metadata.json").read_text())["deg_definition"]["independent_filtering"]
     assert filtering["alpha"] == 0.05 and isinstance(filtering["filter_threshold"], (int, float))
     assert "fallback" in summary["fit_method"]
+    # R warnings are recorded (verbatim, by step) without changing the analysis outcome.
+    warnings = json.loads((contrast / "contrast_metadata.json").read_text())["r_warnings"]
+    recorded = [*warnings["fit"], *warnings["contrast"]]
+    assert warnings["status"] == ("WARNINGS" if recorded else "NONE")
+    assert all({"step", "message", "call", "count"} <= set(item) and item["count"] >= 1 for item in recorded)
+    backend = json.loads((contrast / "backend_summary.json").read_text())
+    assert backend["r_warning_status"] == warnings["status"] and backend["r_warning_count"] == sum(item["count"] for item in recorded)
     assert "biological interpretation" in (contrast / "contrast_report.md").read_text()
     assert json.loads((first.output_dir / "l2_state.json").read_text())["status"] == "SUCCESS"
     before = {_path.name: _digest(_path) for _path in (contrast / "all_genes.tsv", contrast / "significant.tsv", contrast / "upregulated.tsv", contrast / "downregulated.tsv", contrast / "summary.yaml", contrast / "heatmap_genes.tsv", contrast / "heatmap_zscores.tsv")}

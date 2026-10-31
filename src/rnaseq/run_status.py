@@ -508,7 +508,7 @@ _NFCORE_QC_PROCESSES = ("FASTQC", "TRIMGALORE", "FASTP", "FQ_LINT", "FQ_LINT_AFT
 HISAT2_STAGES = (
     StageSpec("FASTQ QC / preprocessing", _process_in("FASTQC_RAW", "FASTP_PREPARE", "FASTQC_PROCESSED"), per_sample=("FASTQC_PROCESSED",)),
     StageSpec("HISAT2 alignment", _process_in("HISAT2_ALIGN", "SORT_LANE_BAM", "MERGE_AND_INDEX"), per_sample=("MERGE_AND_INDEX",)),
-    StageSpec("featureCounts", _process_in("PREPARE_COUNT_BAM", "FEATURECOUNTS", "ASSEMBLE_COUNTS"), per_sample=("FEATURECOUNTS",), final="ASSEMBLE_COUNTS"),
+    StageSpec("featureCounts", _process_in("PREPARE_COUNT_BAM", "FEATURECOUNTS", "STRAND_EVIDENCE", "ASSEMBLE_COUNTS"), per_sample=("FEATURECOUNTS",), final="ASSEMBLE_COUNTS"),
     StageSpec("MultiQC", _process_in("MULTIQC"), final="MULTIQC"),
 )
 

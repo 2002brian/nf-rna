@@ -24,7 +24,9 @@ import yaml
 from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
 from rnaseq.downstream_runtime import native_platform
 from rnaseq.models import FastqPreprocessing, InputType, NFCORE_RNASEQ_VERSION, PIPELINE_VERSION, ReferenceConfig
-from rnaseq.hisat2_featurecounts import COUNTING_POLICY, HISAT2_VERSION, SAMTOOLS_VERSION, SUBREAD_VERSION
+from rnaseq.hisat2_featurecounts import (
+    COUNTING_POLICY, FASTP_VERSION, HISAT2_VERSION, SAMTOOLS_VERSION, STRAND_QC_POLICY, SUBREAD_VERSION, evaluate_strandedness,
+)
 from rnaseq.planner import render_manifest, render_samplesheet
 from rnaseq.references import LocalReferenceError, load_local_reference, sha256_file
 from rnaseq.resource_policy import AUTO, GIB, DetectedResources, ResourcePolicy, describe_policy, detect_process_limits, resolve_policy
@@ -557,6 +559,19 @@ def render_local_resource_config(budget: ResourceContract = LOCAL_RESOURCE_CEILI
         f"  resourceLimits = [cpus: {budget.cpus}, memory: '{budget.memory_gib}.GB', time: '{budget.time_hours}.h']\n"
         "}\n"
     )
+
+
+# Nextflow's default trace columns plus the per-task process, tag, cpus and memory.
+# Observability only: trace fields never change scheduling or task.cpus.
+TRACE_FIELDS = (
+    "task_id,hash,native_id,process,tag,name,status,exit,submit,duration,realtime,%cpu,peak_rss,peak_vmem,rchar,wchar,cpus,memory"
+)
+
+
+def render_trace_fields_config() -> str:
+    """Trace columns for every Nextflow run of a FASTQ project (nf-core, HISAT2 route, downstream)."""
+
+    return f"trace.fields = '{TRACE_FIELDS}'\n"
 
 
 def classify_execution_failure(stage: str, returncode: int, stderr_path: Path, *, resource: ResourceContract) -> str:
@@ -1329,6 +1344,73 @@ def _relative_to_run(run_dir: Path, path: Path) -> str:
     return path.resolve().relative_to(run_dir.resolve()).as_posix()
 
 
+THREAD_REPRODUCIBILITY_NOTE = (
+    "Alignment and quantification can depend on the thread count: HISAT2 places multimapping reads, and Salmon's "
+    "multithreaded EM orders its updates, differently with different thread counts. A rerun with other thread counts "
+    "reproduces counts only up to these differences (Phase 3 validation, findings N-1 and N-3)."
+)
+# Processes whose thread count can change results or that run the counting.
+THREAD_PROCESSES = {
+    "hisat2_featurecounts": ("FASTP_PREPARE", "HISAT2_ALIGN", "FEATURECOUNTS", "STRAND_EVIDENCE"),
+    "salmon": ("TRIMGALORE", "FASTP", "SALMON_QUANT"),
+}
+
+
+def upstream_execution_threads(run_dir: Path, method: str) -> dict[str, Any]:
+    """Actual per-task CPU counts of the upstream run, from its own Nextflow trace and Salmon's cmd_info.json.
+
+    Every recorded process passes ``task.cpus`` to its tool (``hisat2 -p``, ``featureCounts -T``,
+    ``salmon --threads``), so the trace ``cpus`` column is the thread count used, after any
+    ``resourceLimits`` cap.  Nothing here changes how tasks are scheduled.
+    """
+
+    upstream = run_dir / "upstream" / ("nfcore_rnaseq" if method == "salmon" else "hisat2_featurecounts")
+    traces = sorted((upstream / "pipeline_info").glob("execution_trace_*.txt")) if method == "salmon" else [run_dir / "provenance" / "upstream.trace.txt"]
+    trace = traces[-1] if traces and traces[-1].is_file() else None
+    result: dict[str, Any] = {"status": "NOT_RECORDED", "trace": None, "processes": {}, "note": THREAD_REPRODUCIBILITY_NOTE}
+    if trace is not None:
+        with trace.open(encoding="utf-8", errors="replace", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            rows = list(reader)
+            fields = reader.fieldnames or []
+        result["trace"] = _relative_to_run(run_dir, trace)
+        if "cpus" not in fields:
+            result["reason"] = "the trace has no cpus column (run before nf-rna 1.6.1)"
+        else:
+            processes: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                if row.get("status") not in {"COMPLETED", "CACHED"}:
+                    continue
+                full = (row.get("process") or row.get("name") or "").split(" (")[0]
+                short = full.rsplit(":", 1)[-1]
+                if short not in THREAD_PROCESSES.get(method, ()):
+                    continue
+                entry = processes.setdefault(short, {"process": full, "tasks": 0, "cpus": set()})
+                entry["tasks"] += 1
+                if (row.get("cpus") or "").isdigit():
+                    entry["cpus"].add(int(row["cpus"]))
+            result["processes"] = {name: {**entry, "cpus": sorted(entry["cpus"])} for name, entry in sorted(processes.items())}
+            result["status"] = "RECORDED"
+    else:
+        result["reason"] = "no upstream trace in this run directory (for example an upstream reused from another run)"
+    if method == "salmon":
+        threads = {}
+        for cmd_info in sorted((upstream / "salmon").glob("*/cmd_info.json")):
+            try:
+                threads[cmd_info.parent.name] = int(json.loads(cmd_info.read_text(encoding="utf-8")).get("threads"))
+            except (OSError, ValueError, TypeError, AttributeError):
+                threads[cmd_info.parent.name] = None
+        result["salmon_quant_threads_cmd_info"] = threads
+        versions = upstream / "pipeline_info" / "nf_core_rnaseq_software_mqc_versions.yml"
+        if versions.is_file():
+            recorded = yaml.safe_load(versions.read_text(encoding="utf-8")) or {}
+            result["tool_versions"] = {name: tools for name, tools in recorded.items() if name in THREAD_PROCESSES["salmon"]}
+    else:
+        result["tool_versions"] = {"FASTP_PREPARE": {"fastp": FASTP_VERSION}, "HISAT2_ALIGN": {"hisat2": HISAT2_VERSION},
+                                   "FEATURECOUNTS": {"featureCounts": SUBREAD_VERSION}, "STRAND_EVIDENCE": {"featureCounts": SUBREAD_VERSION}}
+    return result
+
+
 def generate_handoff_manifest(prepared: PreparedRun, run_dir: Path) -> Path:
     """Record documented nf-core output locations only after a successful run."""
 
@@ -1365,6 +1447,13 @@ def generate_handoff_manifest(prepared: PreparedRun, run_dir: Path) -> Path:
             "nf-core completed but required Salmon transcript-level handoff artifacts were not found: "
             + ", ".join(missing_salmon)
         )
+    library_types = {}
+    for sample in report.fastq.sample_ids:
+        lib_format = output / "salmon" / sample / "lib_format_counts.json"
+        try:
+            library_types[sample] = json.loads(lib_format.read_text(encoding="utf-8")).get("expected_format")
+        except (OSError, ValueError, AttributeError):
+            library_types[sample] = None
     manifest = {
         "pipeline": {"name": "nf-core/rnaseq", "version": report.config.upstream.pipeline_version},
         "quantification": {
@@ -1415,6 +1504,15 @@ def generate_handoff_manifest(prepared: PreparedRun, run_dir: Path) -> Path:
             "html": _relative_to_run(run_dir, multiqc),
             "data_directory": _relative_to_run(run_dir, multiqc_data),
         },
+        "strandedness_qc": {
+            "status": "NOT_EVALUATED",
+            "declared": report.config.upstream.strandedness,
+            "reason": (
+                "Salmon route: nf-core infers the library type under 'auto' or applies the declared one; with a declared "
+                "library type Salmon records only compatible orientations, so nf-rna's -s 1/-s 2 strand check does not apply."
+            ),
+            "salmon_library_types": library_types,
+        },
     }
     path = run_dir / "handoff" / "upstream_manifest.yaml"
     _write_text(path, yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True))
@@ -1438,6 +1536,18 @@ def generate_hisat2_featurecounts_handoff(report: ValidationReport, run_dir: Pat
     samples = list(report.fastq.sample_ids)
     if header != ["gene_id", *samples]:
         raise UpstreamExecutionError("Canonical featureCounts matrix columns do not match declared sample IDs.")
+    strand_dir = output / "qc" / "strandedness"
+    declared = report.config.upstream.strandedness
+    evidence = {sample: (strand_dir / f"{sample}.strand_s1.txt.summary", strand_dir / f"{sample}.strand_s2.txt.summary") for sample in samples}
+    if all(s1.is_file() and s2.is_file() for s1, s2 in evidence.values()):
+        strandedness_qc = evaluate_strandedness(declared, evidence)
+        strand_dir.mkdir(parents=True, exist_ok=True)
+        _write_text(strand_dir / "strandedness_qc.json", json.dumps(strandedness_qc, indent=2) + "\n")
+        strandedness_qc = {**strandedness_qc, "path": _relative_to_run(run_dir, strand_dir / "strandedness_qc.json")}
+    else:
+        # Upstream outputs from before nf-rna 1.6.1 (for example a reused run) have no strand evidence.
+        strandedness_qc = {"status": "NOT_EVALUATED", "declared": declared, "policy": STRAND_QC_POLICY, "samples": {},
+                           "reason": "this upstream output has no -s 1/-s 2 strand evidence (produced before nf-rna 1.6.1)"}
     manifest = {
         "pipeline": {**hisat2_workflow_identity(), "versions": {"hisat2": HISAT2_VERSION, "samtools": SAMTOOLS_VERSION, "subread": SUBREAD_VERSION}},
         "quantification": {"method": "hisat2_featurecounts", "route": "first_party_alignment_counting"},
@@ -1456,6 +1566,7 @@ def generate_hisat2_featurecounts_handoff(report: ValidationReport, run_dir: Pat
             "count_only_transformation": "samtools view -bh -F 0x900; retain the original coordinate-sorted BAM and its tags",
         },
         "multiqc": {"html": _relative_to_run(run_dir, multiqc)},
+        "strandedness_qc": strandedness_qc,
         "reference": report.local_reference.provenance() if report.local_reference is not None else report.config.reference.model_dump(),
     }
     path = run_dir / "handoff" / "upstream_manifest.yaml"
