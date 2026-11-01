@@ -181,6 +181,18 @@ FASTQ only, L1, L2), the experimental design and pairing column, a known
 technical batch, L2 enrichment, the gene identifier type, and CPU/memory
 limits (`auto` by default).
 
+Managed references come only from this workstation's registry
+(`~/.config/nf-rna/references.yaml`, filled with `rnaseq reference register
+ROOT`); the list follows the species and the quantification backend, and a
+choice made for one combination is not carried over to another. When no
+registered reference fits, the page says "<species> <backend> reference not
+prepared", lists registered references of that species that cannot be used
+with the reason and the preparation command (`rnaseq reference prepare-hisat2
+ROOT`, `rnaseq reference prepare ROOT`), and fills in no path. Before the
+project is created, a managed reference is loaded again and checked against
+the species and backend (a Salmon index never counts as a HISAT2 index); the
+validator checks it once more at run time.
+
 *Other (advanced)* shows its fields under the reference choice as soon as it
 is chosen: a managed reference folder (with its manifest file name), or a
 genome FASTA and an annotation GTF (and optionally a prepared HISAT2 index).

@@ -108,6 +108,81 @@ def registered_references() -> tuple[list[LocalReference], str | None]:
         return [], str(exc)
 
 
+BACKEND_LABELS = {"salmon": "Salmon", "hisat2_featurecounts": "HISAT2"}
+
+
+def reference_unusable_reason(reference: LocalReference, species: str, method: str, *, require_production: bool = True) -> str | None:
+    """Why a managed reference cannot serve a project of ``species`` with ``method`` (None when it can).
+
+    The same rule as ``compatible_registered_references`` and the project
+    validator: same species, a production manifest, and the backend's own
+    index (a Salmon index never stands in for a HISAT2 genome index).
+    """
+
+    if reference.species != species:
+        return f"it is a {reference.species} reference, not {species}"
+    if require_production and reference.purpose != "production":
+        return f"its manifest purpose is {reference.purpose!r}, not production"
+    if method == "salmon" and reference.salmon_index is None:
+        return f"it has no Salmon index (build one with `rnaseq reference prepare {reference.root}`)"
+    if method == "hisat2_featurecounts":
+        if reference.hisat2_index is None:
+            return f"it has no HISAT2 index (build one with `rnaseq reference prepare-hisat2 {reference.root}`)"
+        if not reference.hisat2_runtime_ready:
+            return "its HISAT2 index has no validated runtime compatibility (manifest hisat2.runtime_compatibility)"
+    return None
+
+
+@dataclass(frozen=True)
+class ReferenceAvailability:
+    compatible: list[LocalReference]
+    unusable: list[tuple[LocalReference, str]]  # registered for this species, with the reason it cannot be used
+    error: str | None = None
+
+
+def reference_availability(species: str, method: str) -> ReferenceAvailability:
+    """Registered references for a species and backend, from the workstation registry only (nothing is scanned)."""
+
+    from rnaseq.references import compatible_registered_references
+
+    try:
+        registered = registered_local_references()
+        compatible = compatible_registered_references(species, method)
+    except LocalReferenceError as exc:
+        return ReferenceAvailability([], [], str(exc))
+    usable = {(item.root, item.manifest_path) for item in compatible}
+    unusable = []
+    for item in registered:
+        if item.species != species or (item.root, item.manifest_path) in usable:
+            continue
+        unusable.append((item, reference_unusable_reason(item, species, method) or "not selected by the registry rule"))
+    return ReferenceAvailability(compatible, unusable)
+
+
+def check_project_reference(reference: dict[str, Any] | None, species: str, method: str) -> str | None:
+    """Re-check a managed (``source: local``) reference against the project before it is created.
+
+    Loads the manifest with the same loader as the project validator and
+    applies :func:`reference_unusable_reason`; returns the problem, or None.
+    Custom FASTA/GTF and iGenomes references are checked by the validator.
+    """
+
+    from rnaseq.references import _load_local_reference_root
+
+    if not reference or reference.get("source") != "local":
+        return None
+    root = Path(str(reference.get("root") or ""))
+    manifest = str(reference.get("manifest") or "reference_manifest.yaml")
+    try:
+        loaded, _manifest = _load_local_reference_root(root.expanduser().resolve(), manifest, None)
+    except LocalReferenceError as exc:
+        return f"The reference at {root} cannot be used: {exc}"
+    reason = reference_unusable_reason(loaded, species, method, require_production=False)
+    if reason:
+        return f"The reference at {root} cannot be used for a {species} {BACKEND_LABELS.get(method, method)} project: {reason}."
+    return None
+
+
 # --------------------------------------------------------------------- metadata
 
 def _csv_header(path: Path) -> list[str]:

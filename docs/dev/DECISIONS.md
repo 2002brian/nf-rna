@@ -215,3 +215,12 @@ Non-blocking implementation choices, recorded as they are made.
 | The full validation report is stored with a fingerprint (mtime/size of project.yaml, metadata.csv, contrasts.csv, input) and removed when it no longer matches; *Save contrasts* reruns the page. | A stored "PASS" could otherwise describe an older configuration. |
 | Browser acceptance is `scripts/dev/gui_hardening_acceptance.py` against a GUI on port 8703 with its own `gui.yaml` and fixtures in `/home/brian/nf-rna-validation/gui-hardening-170/`; the original behaviour was reproduced on port 8704 from `git archive ac6471d`. GUI-6B-L2 is only read (SHA-256 checked). | No formal run or FASTQ pipeline may be touched; the user's GUIs (8501, 8701) are left alone. |
 | Version stays 1.7.0 and the release date 2026-10-31 is unchanged. | Brief. If the tag is made later, the dates change together as described in `release_readiness_v170.md` §3. |
+
+## v1.7.0 Human HISAT2 reference resolution (2026-11-01)
+
+| Decision | Reason |
+|---|---|
+| The missing Human + HISAT2 reference was fixed by registering the existing, verified root with `rnaseq reference register` (registry backed up first), not by code that scans for references. | Root cause was a workstation registry without a Human entry; the reference was complete (checksums, index names = FASTA, runtime-validated). The registry is the documented source of managed references. |
+| The New Project reference selectbox is keyed per species and backend. | With a single key, "Other" (the only Human option) stayed selected after switching to Mouse and hid the registered Mouse reference. |
+| No registered fit → "<species> <backend> reference not prepared", with unusable registered references, their reason and the preparation command; no path filled in. | Brief: never populate an invalid path; give preparation instructions; nothing is downloaded or built. |
+| A managed reference is re-checked (same loader, same species/index rule as the registry) before creation and live under *Other*; the validator's run-time check is unchanged. | Compatibility must not depend on the dropdown alone; a Salmon index never stands in for a HISAT2 index. |

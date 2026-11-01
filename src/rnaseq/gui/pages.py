@@ -766,6 +766,39 @@ def _dataset_samplesheet(config: GuiConfig, scan: datasets.DatasetScan, project:
 OTHER_REFERENCE = "Other (advanced)"
 
 
+REFERENCE_REGISTRY_HELP = (
+    "Managed references are offered from this workstation's registry (`{registry}`). "
+    "A prepared reference folder (with `reference_manifest.yaml`) is added with `rnaseq reference register /absolute/reference-root`; "
+    "an index is built with `rnaseq reference prepare-hisat2 ROOT` (HISAT2) or `rnaseq reference prepare ROOT` (Salmon). "
+    "See docs/runtime.md. Nothing is downloaded or built from the GUI."
+)
+
+
+def reference_not_prepared(species: str, method: str, available: services.ReferenceAvailability) -> None:
+    """Say that no registered reference fits, and why, instead of offering an empty or unrelated path."""
+
+    from rnaseq.references import reference_registry_path
+
+    backend = services.BACKEND_LABELS.get(method, method)
+    lines = [f"**{species} {backend} reference not prepared** — no registered reference of this species has a usable {backend} index."]
+    for item, reason in available.unusable:
+        lines.append(f"- `{item.root}` ({item.provider} {item.release} / {item.assembly_identity}): {reason}")
+    st.warning("\n".join(lines))
+    st.caption(REFERENCE_REGISTRY_HELP.format(registry=reference_registry_path()))
+
+
+def _mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+@st.cache_data(max_entries=16, show_spinner="Checking the reference manifest ...")
+def _cached_reference_check(root: str, manifest: str, species: str, method: str, mtime: float | None) -> str | None:
+    return services.check_project_reference({"source": "local", "root": root, "manifest": manifest}, species, method)
+
+
 def _other_reference(species: str, method: str) -> dict[str, object] | None:
     """The fields of an unregistered reference, shown as soon as *Other* is chosen.
 
@@ -782,8 +815,13 @@ def _other_reference(species: str, method: str) -> dict[str, object] | None:
         if not root.strip():
             box.caption("Enter the managed reference folder to use this reference.")
             return None
-        return wizard.reference_options(source="local", species=wizard.species_value(species), method=method, local_root=Path(root.strip()),
-                                        local_manifest=manifest.strip() or None, fasta=None, gtf=None, transcript_fasta=None, salmon_index=None, hisat2_index=None)
+        reference = wizard.reference_options(source="local", species=wizard.species_value(species), method=method, local_root=Path(root.strip()),
+                                             local_manifest=manifest.strip() or None, fasta=None, gtf=None, transcript_fasta=None, salmon_index=None, hisat2_index=None)
+        problem = _cached_reference_check(str(reference["root"]), str(reference["manifest"]), wizard.species_value(species).value, method, _mtime(Path(str(reference["root"])) / str(reference["manifest"])))
+        if problem:
+            box.error(problem)
+            return None
+        return reference
     fasta = box.text_input("Genome FASTA", key="np_fasta").strip()
     gtf = box.text_input("Annotation GTF", key="np_gtf").strip()
     hisat2 = box.text_input("Prepared HISAT2 index (optional)", key="np_hisat2").strip()
@@ -798,7 +836,6 @@ def _other_reference(species: str, method: str) -> dict[str, object] | None:
 def new_project_page() -> None:
     from rnaseq.execution import detect_local_resource_capacity, validate_local_execution_budget
     from rnaseq.project import create_project
-    from rnaseq.references import compatible_registered_references
     from rnaseq.resource_policy import AUTO
 
     config = gui_config()
@@ -822,14 +859,23 @@ def new_project_page() -> None:
             st.info(STRANDEDNESS_HELP)
         else:
             strandedness = cols[2].selectbox("Strandedness", strand_options, index=strand_options.index(wizard.default_strandedness(method)), format_func=lambda value: f"{value} ({dict(wizard.strandedness_choices(method))[value]})", key="np_strand_salmon")
+        species_name = wizard.species_value(species).value
         try:
-            registered = compatible_registered_references(wizard.species_value(species).value, method)
+            available = services.reference_availability(species_name, method)
         except Exception as exc:  # a broken registry must not block the other reference routes
-            registered = []
-            st.warning(f"Reference registry could not be read: {exc}")
+            available = services.ReferenceAvailability([], [], str(exc))
+        if available.error:
+            st.warning(f"Reference registry could not be read: {available.error}")
+        registered = available.compatible
+        if not registered:
+            reference_not_prepared(species_name, method, available)
         labels = {f"{ref.provider} {ref.release} / {ref.assembly_identity} ({ref.root})": ref for ref in registered}
         other = ["iGenomes (Salmon only)"] if method == "salmon" else []
-        choice = st.selectbox("Reference", [*labels, *other, OTHER_REFERENCE], key="np_reference")
+        # Keyed by species and backend: a choice made for one combination (for
+        # example "Other", the only option while Human has no registered
+        # reference) is never carried over to another, where it would hide the
+        # registered reference that applies there.
+        choice = st.selectbox("Reference", [*labels, *other, OTHER_REFERENCE], key=f"np_reference::{species}::{method}")
         with st.expander("Advanced settings"):
             preprocessing = st.selectbox("FASTQ preprocessing", [value for value, _ in wizard.PREPROCESSING_CHOICES], format_func=lambda value: f"{value} — {dict(wizard.PREPROCESSING_CHOICES)[value]}", key="np_pre")
         try:
@@ -870,6 +916,11 @@ def new_project_page() -> None:
                 raise ProjectCreationError("Choose the strandedness explicitly for HISAT2 + featureCounts.")
             if input_type == "fastq" and reference is None:
                 raise ProjectCreationError("Choose a reference, or fill in the required fields of the other reference.")
+            if input_type == "fastq":
+                # Checked again here (the selection may predate a species or backend change); the validator checks it once more at run time.
+                problem = services.check_project_reference(reference, wizard.species_value(species).value, str(method))
+                if problem:
+                    raise ProjectCreationError(problem)
             selected_cpus, selected_memory = int(cpus) or AUTO, int(memory) or AUTO
             validate_local_execution_budget(selected_cpus, selected_memory, detect_local_resource_capacity())
             raw = input_type == "raw_counts"

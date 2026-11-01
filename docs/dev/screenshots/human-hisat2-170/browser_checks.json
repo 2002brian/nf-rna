@@ -1,0 +1,56 @@
+{
+  "reference: Homo sapiens + pseudoalignment shows its own registered reference": {
+    "pass": true,
+    "detail": "Ensembl 116 / GRCh38.p14 (/home/brian/reference/homo_sapiens/ensembl_116_GRCh38)"
+  },
+  "reference: Homo sapiens + HISAT2 alignment shows its own registered reference": {
+    "pass": true,
+    "detail": "Ensembl 116 / GRCh38.p14 (/home/brian/reference/homo_sapiens/ensembl_116_GRCh38)"
+  },
+  "reference: Mus musculus + pseudoalignment shows its own registered reference": {
+    "pass": true,
+    "detail": "Ensembl 116 / GRCm39 (/home/brian/reference/mus_musculus/ensembl_116_GRCm39)"
+  },
+  "reference: Mus musculus + HISAT2 alignment shows its own registered reference": {
+    "pass": true,
+    "detail": "Ensembl 116 / GRCm39 (/home/brian/reference/mus_musculus/ensembl_116_GRCm39)"
+  },
+  "reference: Mouse -> Human switch shows the Human reference": {
+    "pass": true,
+    "detail": "Ensembl 116 / GRCh38.p14 (/home/brian/reference/homo_sapiens/ensembl_116_GRCh38)"
+  },
+  "reference: Human -> Mouse switch shows the Mouse reference": {
+    "pass": true,
+    "detail": "Ensembl 116 / GRCm39 (/home/brian/reference/mus_musculus/ensembl_116_GRCm39)"
+  },
+  "reference: Salmon -> HISAT2 does not keep iGenomes": {
+    "pass": true,
+    "detail": "Ensembl 116 / GRCh38.p14 (/home/brian/reference/homo_sapiens/ensembl_116_GRCh38)"
+  },
+  "reference: no 'not prepared' notice for a registered Human HISAT2 reference": {
+    "pass": true,
+    "detail": ""
+  },
+  "reference: Human + HISAT2 project created with the Human root": {
+    "pass": true,
+    "detail": {
+      "source": "local",
+      "root": "/home/brian/reference/homo_sapiens/ensembl_116_GRCh38",
+      "manifest": "reference_manifest.yaml"
+    }
+  },
+  "reference: the project validator loads the Human HISAT2 reference (runtime-ready) with no reference error": {
+    "pass": true,
+    "detail": {
+      "assembly": "GRCh38.p14",
+      "errors": [
+        "missing_fastq_files",
+        "missing_metadata_rows"
+      ]
+    }
+  },
+  "reference: no reference error among the findings": {
+    "pass": true,
+    "detail": []
+  }
+}

@@ -511,7 +511,7 @@ def test_a_full_validation_report_of_an_older_project_state_is_not_shown(gui_hom
 def test_other_reference_fields_are_visible_and_not_an_error_before_they_are_filled(gui_home):
     page = _page("new_project_page").run()
     page.text_input(key="np_name").set_value("ref_other").run()
-    page.selectbox(key="np_reference").set_value("Other (advanced)").run()
+    page.selectbox(key="np_reference::human::salmon").set_value("Other (advanced)").run()
     assert not page.exception and not page.error, [item.value for item in page.error]
     assert any(item.key == "np_ref_root" for item in page.text_input)
     assert any("Enter the managed reference folder" in item.value for item in page.caption)
