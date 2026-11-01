@@ -7,7 +7,11 @@ checks (§5); no analysis and no FASTQ pipeline was run.
 
 **Verdict: ready for release, subject to the maintainer's decision and to a
 green `Release gate` CI run on the pushed `main` (no v1.7.0 commit has run in
-CI).** No release blocker is known (§7).
+CI).** No release blocker is known (§7). A pre-release GUI hardening
+(2026-11-01, §9) fixed two P0 GUI defects found in a usability review: a
+path-picker crash and silent loss of unsaved metadata edits. It also fixed
+the project-URL guard and several usability issues. The scientific engine is
+unchanged.
 
 ## 1. Git state and ancestry
 
@@ -118,3 +122,29 @@ None known. Before tagging, the `Release gate` CI must pass on the pushed
   user on 127.0.0.1.
 * All scientific limitations and frozen validation verdicts of v1.6.1 stand
   (`release_readiness_v161.md`).
+* No GUI stop button (§9); a running run shows the safe `kill -TERM` command.
+  FASTQ copying has no progress bar.
+
+## 9. Pre-release GUI hardening (2026-11-01)
+
+Report: `docs/dev/gui_hardening_v170.md` (finding matrix, root causes,
+fixes, evidence, FASTQ acceptance checklist). Decisions: `DECISIONS.md`,
+"v1.7.0 pre-release GUI hardening".
+
+| Item | State |
+|---|---|
+| Scope | `src/rnaseq/gui/{pages,services,results}.py`, tests, `scripts/dev/gui_hardening_acceptance.py`, docs; `git diff ac6471d -- src ':!src/rnaseq/gui' workflow pyproject.toml environment.yml` is empty |
+| P0-1 path picker crash | confirmed on `ac6471d` (AppTest and browser), fixed with callbacks; symlinks out of the roots are no longer listed or opened |
+| P0-2 metadata loss | confirmed on `ac6471d` in the browser (bulk assignment erased typed donors); fixed: tools act on the edited table and merge by `sample_id`, replacements need a tick, unsaved-changes banner, edits survive page switches |
+| `?project=` outside the roots | confirmed, fixed (refused) |
+| Run status | auto-refresh fragment (10 s, no re-validation, stops at a final state) |
+| Cancel | **not implemented**: SIGTERM is handled cleanly only during Nextflow stages, and runtime provisioning is not atomic. A running run shows a `kill -TERM` command with its caveats. Documented limitation, not a blocker. |
+| Numeric sorting, disabled reasons, Other reference, stale report, contrasts redraw, FASTQ import status | fixed |
+| GUI tests | `tests/test_gui*.py` + `test_release_metadata.py`: 66 passed (20 new in `test_gui_hardening.py`; 18 of them fail on `ac6471d`) |
+| Browser (port 8703, own `gui.yaml`) | 47/47 (`docs/dev/screenshots/hardening-170/browser_checks.json`), including the Phase 7b PDF/TIFF download checks on GUI-6B-L2 |
+| Formal runs | `airway-gui-demo` (2,640 files incl. GUI-6B-L2) SHA-256 identical before/after |
+| Full suite (locked runtime `0e721ff3…-200d98f8759eaf17`) | 1,156 passed, 2 skipped (environment: real SAMtools/featureCounts, real SJ project), 0 failed, 26 min (`/home/brian/nf-rna-validation/gui-hardening-170/fullsuite.log`) |
+| Real FASTQ end-to-end in the GUI | **not run**; manual checklist in `gui_hardening_v170.md` §6 |
+
+Version 1.7.0 and the release date 2026-10-31 were not changed. If the tag
+is made on a later day, update the dates as described in §3.

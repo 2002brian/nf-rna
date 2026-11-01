@@ -132,6 +132,13 @@ def metadata_columns(report: ValidationReport) -> list[str]:
     return list(dict.fromkeys([*columns, *existing]))
 
 
+def metadata_file_columns(report: ValidationReport) -> list[str]:
+    """The header of metadata.csv as written (empty when the file is missing)."""
+
+    assert report.loaded is not None
+    return _csv_header(report.loaded.metadata_path)
+
+
 def read_metadata(report: ValidationReport) -> list[dict[str, str]]:
     assert report.loaded is not None
     try:
@@ -169,6 +176,176 @@ def parse_table_text(text: str) -> tuple[list[str], list[dict[str, str]]]:
     header = [name.strip() for name in parsed[0]]
     rows = [{name: (values[index].strip() if index < len(values) else "") for index, name in enumerate(header)} for values in parsed[1:]]
     return header, rows
+
+
+@dataclass(frozen=True)
+class MetadataChange:
+    """The table that results from applying pasted, imported or assigned values to the table being edited.
+
+    Nothing is dropped: samples absent from the new values keep every value,
+    columns absent from them are kept, and an empty new cell leaves the current
+    value unchanged.  Non-empty values that would be replaced are listed in
+    ``overwritten`` so the GUI can ask before applying them.
+    """
+
+    columns: list[str]
+    rows: list[dict[str, str]]
+    filled: int = 0
+    overwritten: tuple[tuple[str, str, str, str], ...] = ()  # sample_id, column, current value, new value
+    added: tuple[str, ...] = ()
+    new_columns: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+
+    @property
+    def changes(self) -> int:
+        return self.filled + len(self.overwritten) + len(self.added) + len(self.new_columns)
+
+
+def clean_cell(value: Any) -> str:
+    """A table cell as stripped text; None and NaN (an empty data_editor cell) become ""."""
+
+    return _clean(value)
+
+
+def _clean(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if value != value:  # NaN from an empty data_editor cell
+            return ""
+    except TypeError:
+        pass
+    return str(value).strip()
+
+
+def _table_rows(columns: list[str], rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    return [{column: _clean(row.get(column)) for column in columns} for row in rows]
+
+
+def merge_metadata_table(columns: list[str], rows: list[dict[str, Any]], new_header: list[str], new_rows: list[dict[str, Any]]) -> MetadataChange:
+    """Merge a pasted or imported table into the current one by ``sample_id``."""
+
+    current = _table_rows(columns, rows)
+    if "sample_id" not in new_header:
+        return MetadataChange(list(columns), current, errors=("The new table needs a header row with a sample_id column.",))
+    incoming = _table_rows(new_header, new_rows)
+    errors: list[str] = []
+    blank = sum(1 for row in incoming if not row["sample_id"] and any(row.values()))
+    if blank:
+        errors.append(f"{blank} row(s) of the new table have no sample_id.")
+    seen: dict[str, int] = {}
+    for row in incoming:
+        if row["sample_id"]:
+            seen[row["sample_id"]] = seen.get(row["sample_id"], 0) + 1
+    duplicated = sorted(sample for sample, count in seen.items() if count > 1)
+    if duplicated:
+        errors.append("sample_id repeated in the new table: " + ", ".join(duplicated[:10]))
+    index: dict[str, list[int]] = {}
+    for position, row in enumerate(current):
+        if row.get("sample_id"):
+            index.setdefault(row["sample_id"], []).append(position)
+    ambiguous = sorted(sample for sample in seen if len(index.get(sample, [])) > 1)
+    if ambiguous:
+        errors.append("sample_id repeated in the table being edited (fix these rows first): " + ", ".join(ambiguous[:10]))
+    if errors:
+        return MetadataChange(list(columns), current, errors=tuple(errors))
+    new_columns = [column for column in new_header if column and column not in columns]
+    merged_columns = [*columns, *new_columns]
+    merged = [{column: row.get(column, "") for column in merged_columns} for row in current]
+    filled, overwritten, added = 0, [], []
+    for row in incoming:
+        sample = row["sample_id"]
+        if not sample:
+            continue
+        if sample not in index:
+            merged.append({column: row.get(column, "") for column in merged_columns})
+            added.append(sample)
+            continue
+        target = merged[index[sample][0]]
+        for column in new_header:
+            if column == "sample_id" or not column:
+                continue
+            value, old = row[column], target.get(column, "")
+            if not value or value == old:
+                continue
+            if old:
+                overwritten.append((sample, column, old, value))
+            else:
+                filled += 1
+            target[column] = value
+    return MetadataChange(merged_columns, merged, filled, tuple(overwritten), tuple(added), tuple(new_columns))
+
+
+def assign_metadata_value(columns: list[str], rows: list[dict[str, Any]], samples: list[str], column: str, value: str) -> MetadataChange:
+    """Set ``column`` to ``value`` for the rows of ``samples``; every other cell is unchanged."""
+
+    current = _table_rows(columns, rows)
+    if column not in columns:
+        return MetadataChange(list(columns), current, errors=(f"Unknown column {column!r}.",))
+    value = _clean(value)
+    wanted = set(samples)
+    filled, overwritten = 0, []
+    for row in current:
+        if row.get("sample_id") not in wanted or row[column] == value:
+            continue
+        if row[column]:
+            overwritten.append((row["sample_id"], column, row[column], value))
+        else:
+            filled += 1
+        row[column] = value
+    return MetadataChange(list(columns), current, filled, tuple(overwritten))
+
+
+@dataclass(frozen=True)
+class MetadataDifference:
+    changed_cells: int
+    added_rows: tuple[str, ...]
+    removed_rows: tuple[str, ...]
+    columns_added: tuple[str, ...]
+    columns_removed: tuple[str, ...]
+
+    @property
+    def unsaved(self) -> bool:
+        return bool(self.changed_cells or self.added_rows or self.removed_rows or self.columns_added or self.columns_removed)
+
+    def describe(self) -> str:
+        parts = []
+        if self.changed_cells:
+            parts.append(f"{self.changed_cells} changed value(s)")
+        if self.added_rows:
+            parts.append(f"{len(self.added_rows)} row(s) not in metadata.csv ({', '.join(self.added_rows[:8])}{' …' if len(self.added_rows) > 8 else ''})")
+        if self.removed_rows:
+            parts.append(f"{len(self.removed_rows)} row(s) of metadata.csv removed ({', '.join(self.removed_rows[:8])}{' …' if len(self.removed_rows) > 8 else ''})")
+        if self.columns_added:
+            parts.append("new column(s) " + ", ".join(self.columns_added))
+        if self.columns_removed:
+            parts.append("column(s) of metadata.csv missing: " + ", ".join(self.columns_removed))
+        return "; ".join(parts)
+
+
+def metadata_difference(saved_columns: list[str], saved_rows: list[dict[str, Any]], columns: list[str], rows: list[dict[str, Any]]) -> MetadataDifference:
+    """How the table being edited differs from metadata.csv (rows matched by sample_id, in order for blank IDs).
+
+    Rows and columns that are entirely empty are ignored, as :func:`save_metadata` does not write them.
+    """
+
+    def keyed(names: list[str], table: list[dict[str, Any]]) -> list[tuple[str, dict[str, str]]]:
+        cleaned = [row for row in _table_rows(names, table) if any(row.values())]
+        return [(row.get("sample_id", "") or f"(row {number})", row) for number, row in enumerate(cleaned, 1)]
+
+    saved_names = [column for column in saved_columns if column]
+    names = [column for column in columns if column]
+    before, after = dict(keyed(saved_names, saved_rows)), dict(keyed(names, rows))
+    used = [column for column in names if any(row.get(column) for row in after.values()) or column in saved_names]
+    columns_added = tuple(column for column in used if column not in saved_names)
+    columns_removed = tuple(column for column in saved_names if column not in names)
+    shared = [column for column in names if column in saved_names]
+    changed = sum(1 for sample, row in after.items() if sample in before for column in shared if row.get(column, "") != before[sample].get(column, ""))
+    changed += sum(1 for sample, row in after.items() if sample in before for column in columns_added if row.get(column))
+    return MetadataDifference(
+        changed, tuple(sample for sample in after if sample not in before), tuple(sample for sample in before if sample not in after),
+        columns_added, columns_removed,
+    )
 
 
 @dataclass

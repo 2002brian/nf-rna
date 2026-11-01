@@ -191,7 +191,11 @@ def test_results_page_shows_deg_summary_shrinkage_failure_and_search(results_hom
     key = f"deg::{run_dir}::B_vs_A"
     page.text_input(key=f"{key}::query").set_value("DUSP1").run()
     table = next(frame.value for frame in page.dataframe if "log2FoldChange_shrunk" in frame.value)
-    assert table.iloc[0]["padj"] == "1.82328987063955e-125"
+    # Numeric columns are numbers for display (numeric sorting), parsed from the file's exact text.
+    assert table["padj"].dtype == "float64" and table.iloc[0]["padj"] == float("1.82328987063955e-125")
+    from pandas.api.types import is_numeric_dtype
+
+    assert table.iloc[0]["gene_id"].startswith("ENSG") and not is_numeric_dtype(table["symbol"])
     page.radio(key=section).set_value("Enrichment").run()
     assert not page.exception
     assert any("Legacy results" in item.value for item in page.warning)  # GO ORA of the fixture is pre-v1.5

@@ -81,6 +81,46 @@ def _number(value: str) -> float | None:
         return None  # NA and empty cells
 
 
+# Cells R writes for a missing value; they are shown as empty and sort last.
+NA_TOKENS = frozenset({"", "NA", "NaN", "nan", "NULL"})
+
+
+def is_identifier_column(name: str) -> bool:
+    """gene_id, ID, entrez_id, geneID ...: identifiers stay text even when they look like numbers."""
+
+    return name.lower().endswith("id")
+
+
+def numeric_columns(table: Table) -> dict[str, str]:
+    """Columns whose every non-missing cell is a number: ``{column: "int" | "float"}``.
+
+    Used only to give the GUI's table display a numeric type so it sorts
+    numerically; the table itself and every download stay the text of the file.
+    ``Inf``/``-Inf`` are numbers; identifier columns and text columns are left out.
+    """
+
+    found: dict[str, str] = {}
+    for column in table.columns:
+        if is_identifier_column(column):
+            continue
+        kind, seen = "int", False
+        for row in table.rows:
+            text = (row.get(column) or "").strip()
+            if text in NA_TOKENS:
+                continue
+            try:
+                value = float(text)
+            except ValueError:
+                kind = ""
+                break
+            seen = True
+            if kind == "int" and not (text.lstrip("+-").isdigit() and value == value):
+                kind = "float"
+        if kind and seen:
+            found[column] = kind
+    return found
+
+
 def tsv_rows(path: Path) -> int | None:
     if not path.is_file():
         return None

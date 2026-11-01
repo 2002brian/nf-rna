@@ -1,0 +1,5 @@
+{
+ "use_this_folder_exception": "streamlit.errors.StreamlitWidgetAlreadyInstantiatedError: st.session_state['ds_text'] cannot be modified after the widget with that key is instantiated. Assign st.session_state['ds_text'] before creat",
+ "before_bulk": "sample_iddonorbatchconditionC1P1C2P2C3P3T1P1T2P2T3P3",
+ "after_bulk": "sample_iddonorbatchconditionC1C2C3T1TreatmentT2TreatmentT3Treatment"
+}

@@ -48,6 +48,33 @@ Nothing is redrawn from data, nothing is written into runs, and a raster is
 never enlarged. Every TIFF is RGB, LZW, with its dpi in the resolution tags and
 `round(page_pt / 72 × dpi)` pixels.
 
+## Safer data entry and run monitoring
+
+Found in a usability review and fixed before release
+([`docs/dev/gui_hardening_v170.md`](https://github.com/2002brian/nf-rna/blob/v1.7.0/docs/dev/gui_hardening_v170.md)):
+
+- **Metadata is never discarded silently.** Assigning values, pasting a table,
+  importing a CSV or loading metadata from *Datasets* now works on the table
+  as it is on screen, unsaved edits included, and merges by `sample_id`.
+  Replacing an existing value lists each cell and needs a tick. An *Unsaved
+  changes* banner shows what is not yet in metadata.csv, and unsaved edits are
+  kept when you switch pages or projects.
+- **Folder and file browser** — *Use this folder* / *Use this file* no longer
+  fail with a Streamlit error, and links that point outside the allowed data
+  folders are not shown or opened.
+- **Project links** — a `?project=` URL outside the allowed data folders is
+  refused.
+- **Run status updates itself** every 10 s while a run is active (only the
+  status section; the project is not re-validated) and stops when the run
+  ends. A running run shows how to stop it safely from a terminal.
+- **Result tables sort numerically** when you click a column header
+  (baseMean, log2FoldChange, p-values, NES, …); identifiers stay text, and
+  downloads are the original files.
+- Disabled *Run*, *Save contrasts* and *Add* say why; the *Other* reference
+  fields appear at once without an early error; an outdated full validation
+  report is no longer shown; FASTQ copying says that it blocks the page and
+  reports what was copied.
+
 ## Install
 
 ```bash
@@ -92,5 +119,12 @@ v1.7.0 run provisions a fresh downstream environment from the unchanged lock.
 - Single user on 127.0.0.1, one active GUI run. SSH-tunnel access is documented
   but was not exercised in the v1.7.0 acceptance. The FAILED state was verified
   with a synthetic fixture.
+- **No stop button** in the GUI: `rnaseq run` stops cleanly on SIGTERM only
+  during a Nextflow stage, and stopping while the downstream runtime is being
+  created would leave it half-built. A running run shows the `kill -TERM`
+  command and when not to use it.
+- FASTQ copying shows no progress bar (the importer has none). Result-table
+  numbers are displayed with 6 significant digits; the TSV files are
+  unchanged.
 - The scientific limitations of v1.6.1 are unchanged (CHANGELOG 1.6.1, Known
   limitations).

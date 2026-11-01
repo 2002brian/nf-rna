@@ -1,0 +1,324 @@
+{
+  "picker: a symlink leaving the allowed roots is not offered": {
+    "pass": true,
+    "detail": [
+      "fastq",
+      "projects"
+    ]
+  },
+  "picker: hidden links are reported": {
+    "pass": true,
+    "detail": "caption present"
+  },
+  "picker: Use this folder selects the folder, no exception": {
+    "pass": true,
+    "detail": "/home/brian/nf-rna-validation/gui-hardening-170/data/fastq/hard-fq"
+  },
+  "picker: Use this file selects the file, no exception": {
+    "pass": true,
+    "detail": "/home/brian/nf-rna-validation/gui-hardening-170/data/counts.csv"
+  },
+  "url: ?project= outside the roots is refused (direct)": {
+    "pass": true,
+    "detail": "http://127.0.0.1:8703/project"
+  },
+  "url: ?project= outside the roots is refused (symlink)": {
+    "pass": true,
+    "detail": "http://127.0.0.1:8703/project"
+  },
+  "url: ?project= outside the roots is refused (dotdot)": {
+    "pass": true,
+    "detail": "http://127.0.0.1:8703/project"
+  },
+  "url: ?project= inside the roots opens": {
+    "pass": true,
+    "detail": "http://127.0.0.1:8703/project?project=/home/brian/nf-rna-validation/gui-hardening-170/data/projects/hard-meta"
+  },
+  "metadata: grid edits are marked unsaved": {
+    "pass": true,
+    "detail": [
+      "Unsaved changes \u2014 6 row(s) not in metadata.csv (C1, C2, C3, T1, T2, T3). Press Save metadata to write them to metadata.csv."
+    ]
+  },
+  "metadata: typed donor/batch values survive bulk assignment": {
+    "pass": true,
+    "detail": "sample_iddonorbatchconditionC1P1b1ControlC2P2b1ControlC3P3b2ControlT1P1b2TreatmentT2P2b2TreatmentT3P3b1Treatment"
+  },
+  "metadata: an unsaved grid edit survives a page switch": {
+    "pass": true,
+    "detail": "sample_iddonorbatchconditionC1P1bb1ControlC2P2b1ControlC3P3b2ControlT1P1b2TreatmentT2P2b2TreatmentT3P3b1Treatment"
+  },
+  "metadata: a paste that replaces a typed value needs a tick": {
+    "pass": true,
+    "detail": [
+      "1 existing value(s) would be replaced"
+    ]
+  },
+  "metadata: saved metadata.csv has every typed, assigned and pasted value": {
+    "pass": true,
+    "detail": "sample_id,donor,batch,condition,RIN\nC1,P1,b1,Control,9.1\nC2,P2,b1,Control,8.7\nC3,P3,b2,Control,\nT1,P1,b2,Treatment,\nT2,P2,b2,Treatment,\nT3,P3,b1,Treatment,\n"
+  },
+  "metadata: no unsaved changes after saving": {
+    "pass": true,
+    "detail": "caption"
+  },
+  "contrasts: Save contrasts says why it is disabled": {
+    "pass": true,
+    "detail": "caption"
+  },
+  "contrasts: Add says why it is disabled": {
+    "pass": true,
+    "detail": "caption"
+  },
+  "contrasts: saved, and the saved table is redrawn": {
+    "pass": true,
+    "detail": "success + table"
+  },
+  "run: Run says why it is disabled (no case ID)": {
+    "pass": true,
+    "detail": "caption"
+  },
+  "run: full validation report shown": {
+    "pass": true,
+    "detail": "expander"
+  },
+  "run: the report of an older project state is removed": {
+    "pass": true,
+    "detail": "caption"
+  },
+  "live: a RUNNING run announces automatic updates": {
+    "pass": true,
+    "detail": "12:03:11"
+  },
+  "live: the status section re-reads the run files without a click": {
+    "pass": true,
+    "detail": [
+      "12:03:11",
+      "12:03:31"
+    ]
+  },
+  "live: other widgets are not reset by the refresh": {
+    "pass": true,
+    "detail": "case ID kept"
+  },
+  "live: the page shows the final state on its own": {
+    "pass": true,
+    "detail": "12:03:41"
+  },
+  "live: refreshing stops after the run ended": {
+    "pass": true,
+    "detail": [
+      "12:03:41",
+      "12:03:41"
+    ]
+  },
+  "sorting: DEG table baseMean sorts numerically by its header": {
+    "pass": true,
+    "detail": {
+      "header": "\u2191 baseMean",
+      "first rows": [
+        "0.936453399473909",
+        "0.970044392471613",
+        "1.01061968725984",
+        "1.04264527391378",
+        "1.04421068025754"
+      ],
+      "file numeric min": "0.936453399473909",
+      "file lexical min": "0.936453399473909"
+    }
+  },
+  "sorting: DEG table log2FoldChange (negative values) sorts numerically by its header": {
+    "pass": true,
+    "detail": {
+      "header": "\u2191 log2FoldChange",
+      "first rows": [
+        "-5.32528184739127",
+        "-4.61130227337311",
+        "-4.58073209610874",
+        "-4.32469265075228",
+        "-4.26321125259621"
+      ],
+      "file numeric min": "-5.32528184739127",
+      "file lexical min": "-0.000119933966579051"
+    }
+  },
+  "sorting: KEGG GSEA terms NES sorts numerically by its header": {
+    "pass": true,
+    "detail": {
+      "header": "\u2191 NES",
+      "first rows": [
+        "-1.86430806702695",
+        "-1.75440453634895",
+        "-1.72685284230647",
+        "-1.71669050095444",
+        "-1.66478585656002"
+      ],
+      "file numeric min": "-1.86430806702695",
+      "file lexical min": "-0.707908422920959"
+    }
+  },
+  "reference: Other shows its fields at once, without an error": {
+    "pass": true,
+    "detail": []
+  },
+  "reference: no project was created": {
+    "pass": true,
+    "detail": ""
+  },
+  "results: volcano PDF download equals the pipeline PDF": {
+    "pass": true,
+    "detail": "results__volcano.pdf"
+  },
+  "results: downloaded PDF opens": {
+    "pass": true,
+    "detail": [
+      "Producer:        cairo 1.18.6 (https://cairographics.org)",
+      "Pages:           1",
+      "Page size:       241 x 241 pts"
+    ]
+  },
+  "results: volcano TIFF 300 equals the pipeline TIFF and is 300 dpi": {
+    "pass": true,
+    "detail": {
+      "file": "results__volcano.tiff",
+      "format": "TIFF",
+      "mode": "RGB",
+      "compression": "tiff_lzw",
+      "dpi": [
+        300,
+        300
+      ],
+      "size": [
+        1004,
+        1004
+      ],
+      "expected_size": [
+        1004,
+        1004
+      ]
+    }
+  },
+  "results: volcano TIFF 600 is 600 dpi at the figure's physical size": {
+    "pass": true,
+    "detail": {
+      "file": "results__volcano_600dpi.tiff",
+      "format": "TIFF",
+      "mode": "RGB",
+      "compression": "tiff_lzw",
+      "dpi": [
+        600,
+        600
+      ],
+      "size": [
+        2008,
+        2008
+      ],
+      "expected_size": [
+        2008,
+        2008
+      ]
+    }
+  },
+  "reports: Figures (PDF / TIFF) section with 73 figures, TIFF 300 dpi by default": {
+    "pass": true,
+    "detail": "caption shown"
+  },
+  "reports: PCA TIFF 300 equals the pipeline TIFF": {
+    "pass": true,
+    "detail": "reports__pca.tiff"
+  },
+  "reports: running-score TIFF 300 is the pipeline 300 dpi PNG, pixel for pixel": {
+    "pass": true,
+    "detail": {
+      "file": "reports__negative_1_hsa04115_300dpi.tiff",
+      "format": "TIFF",
+      "mode": "RGB",
+      "compression": "tiff_lzw",
+      "dpi": [
+        300,
+        300
+      ],
+      "size": [
+        2125,
+        1488
+      ],
+      "expected_size": [
+        2125,
+        1488
+      ]
+    }
+  },
+  "reports: dotplot PDF equals the pipeline PDF": {
+    "pass": true,
+    "detail": "reports__dotplot_BP_simplified.pdf"
+  },
+  "reports: dotplot TIFF 600 is 600 dpi at the figure's physical size": {
+    "pass": true,
+    "detail": {
+      "file": "reports__dotplot_BP_600dpi.tiff",
+      "format": "TIFF",
+      "mode": "RGB",
+      "compression": "tiff_lzw",
+      "dpi": [
+        600,
+        600
+      ],
+      "size": [
+        2725,
+        2658
+      ],
+      "expected_size": [
+        2725,
+        2658
+      ]
+    }
+  },
+  "pages: projects opens without an exception": {
+    "pass": true,
+    "detail": [
+      "Research projects"
+    ]
+  },
+  "pages: datasets opens without an exception": {
+    "pass": true,
+    "detail": [
+      "Datasets"
+    ]
+  },
+  "pages: project opens without an exception": {
+    "pass": true,
+    "detail": [
+      "airway-gui-demo"
+    ]
+  },
+  "pages: results opens without an exception": {
+    "pass": true,
+    "detail": [
+      "Results"
+    ]
+  },
+  "pages: reports opens without an exception": {
+    "pass": true,
+    "detail": [
+      "Reports & downloads"
+    ]
+  },
+  "pages: contrasts opens without an exception": {
+    "pass": true,
+    "detail": [
+      "Contrasts"
+    ]
+  },
+  "pages: inputs opens without an exception": {
+    "pass": true,
+    "detail": [
+      "Input & metadata"
+    ]
+  },
+  "pages: run opens without an exception": {
+    "pass": true,
+    "detail": [
+      "Validate & Run"
+    ]
+  }
+}

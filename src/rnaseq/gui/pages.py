@@ -57,13 +57,29 @@ def current_project() -> Path | None:
     value = st.session_state.get(PROJECT_KEY) or st.query_params.get(PROJECT_KEY)
     if not value:
         return None
-    path = Path(value)
-    if not (path / "project.yaml").is_file():
+    path = allowed_project(load_config(), value)
+    if path is None:
+        # A URL (or a stale session value) naming a folder outside the allowed
+        # roots is dropped; it is never opened, read or written.
+        st.session_state.pop(PROJECT_KEY, None)
+        if PROJECT_KEY in st.query_params:
+            st.query_params.pop(PROJECT_KEY, None)
+        st.session_state["_project_refused"] = f"The project `{value}` was not opened: it is not a project inside an available data folder (allowed roots in the GUI settings)."
         return None
     st.session_state[PROJECT_KEY] = str(path)
     if st.query_params.get(PROJECT_KEY) != str(path):
         st.query_params[PROJECT_KEY] = str(path)
     return path
+
+
+def allowed_project(config: GuiConfig, value: str | Path) -> Path | None:
+    """``value`` resolved, when it is a project folder inside an available allowed root (else None)."""
+
+    try:
+        path = config.resolve_allowed(value)
+    except PathNotAllowed:
+        return None
+    return path if (path / "project.yaml").is_file() else None
 
 
 def select_project(path: Path | None) -> None:
@@ -78,6 +94,9 @@ def select_project(path: Path | None) -> None:
 def require_project() -> Path | None:
     project = current_project()
     if project is None:
+        refused = st.session_state.pop("_project_refused", None)
+        if refused:
+            st.error(refused)
         st.info("Select a project in the sidebar, or create one on the New Project page.")
     return project
 
@@ -90,6 +109,9 @@ def sidebar(config: GuiConfig) -> None:
         options.insert(0, str(current))
     with st.sidebar:
         st.caption(f"nf-rna {PIPELINE_VERSION}")
+        refused = st.session_state.pop("_project_refused", None)
+        if refused:
+            st.error(refused)
         if options:
             # The widget follows the current project, which other pages can change.
             st.session_state["sidebar_project"] = str(current) if current is not None else None
@@ -173,46 +195,88 @@ def path_picker(config: GuiConfig, label: str, key: str, *, want: str, suffixes:
     if not roots:
         st.error("No allowed root is available; check the GUI settings and mounted disks.")
         return None
-    text_key, cwd_key = f"{key}_text", f"{key}_cwd"
+    text_key, cwd_key, error_key = f"{key}_text", f"{key}_cwd", f"{key}_pick_error"
+    resolved_roots = [root.resolve() for root in roots]
     if cwd_key not in st.session_state:
         st.session_state[cwd_key] = str(start if start is not None and start.is_dir() else roots[0])
+    # The browsed folder is always a resolved path inside an available root; a
+    # stale or forged value (an unmounted disk, a link) falls back to the first root.
+    try:
+        cwd = config.resolve_allowed(st.session_state[cwd_key])
+        if not cwd.is_dir():
+            raise PathNotAllowed(f"{cwd} is not a folder.")
+    except PathNotAllowed:
+        cwd = resolved_roots[0]
+    st.session_state[cwd_key] = str(cwd)
+
+    # Buttons change other widgets' values only in callbacks, which run before
+    # the widgets are created in the next rerun (Streamlit forbids changing the
+    # value of a widget that was already drawn in the current run).
+    def browse_to(target: Path) -> None:
+        try:
+            resolved = config.resolve_allowed(target)
+        except PathNotAllowed as exc:
+            st.session_state[error_key] = f"Not opened: {exc}"
+            return
+        st.session_state[cwd_key] = str(resolved)
+        st.session_state.pop(error_key, None)
+
+    def use(target: Path, kind: str) -> None:
+        try:
+            resolved = config.resolve_allowed(target)
+            if (kind == "dir" and not resolved.is_dir()) or (kind == "file" and not resolved.is_file()):
+                raise PathNotAllowed(f"{resolved} is not a {'folder' if kind == 'dir' else 'file'}.")
+        except PathNotAllowed as exc:
+            st.session_state[error_key] = f"Not selected: {exc}"
+            return
+        st.session_state[text_key] = str(resolved)
+        st.session_state.pop(error_key, None)
+
+    def use_file() -> None:
+        name = st.session_state.get(f"{key}_file")
+        if name:
+            use(cwd / name, "file")
+
+    def open_sub() -> None:
+        name = st.session_state.get(f"{key}_sub")
+        if name:
+            browse_to(cwd / name)
+
     typed = st.text_input(label, key=text_key, placeholder=f"A {'directory' if want == 'dir' else 'file'} inside {', '.join(map(str, roots))}")
+    if st.session_state.get(error_key):
+        st.error(st.session_state[error_key])
     with st.expander("Browse", expanded=not typed):
-        cwd = Path(st.session_state[cwd_key])
         top = st.columns([1, 3])
         root_choice = top[0].selectbox("Root", [str(root) for root in roots], key=f"{key}_root")
-        if top[0].button("Go to root", key=f"{key}_goroot"):
-            st.session_state[cwd_key] = root_choice
-            st.rerun()
+        top[0].button("Go to root", key=f"{key}_goroot", on_click=browse_to, args=(Path(root_choice),))
         top[1].markdown(f"Folder: `{cwd}`")
         try:
             entries = sorted(cwd.iterdir(), key=lambda item: item.name.lower())
         except OSError as exc:
             st.error(f"Cannot list {cwd}: {exc}")
             entries = []
-        directories = [entry for entry in entries if entry.is_dir() and not entry.name.startswith(".")]
-        files = [entry for entry in entries if entry.is_file() and not entry.name.startswith(".") and (not suffixes or entry.name.endswith(suffixes))]
+        visible = [entry for entry in entries if not entry.name.startswith(".")]
+        inside = []
+        for entry in visible:
+            try:
+                config.resolve_allowed(entry)
+            except PathNotAllowed:
+                continue
+            inside.append(entry)
+        directories = [entry for entry in inside if entry.is_dir()]
+        files = [entry for entry in inside if entry.is_file() and (not suffixes or entry.name.endswith(suffixes))]
+        if len(inside) < len(visible):
+            st.caption(f"{len(visible) - len(inside)} link(s) pointing outside the allowed data folders are not shown.")
         row = st.columns([3, 1, 1])
         sub = row[0].selectbox("Subfolders", [entry.name for entry in directories], index=None, placeholder="(none selected)", key=f"{key}_sub")
-        if row[1].button("Open folder", key=f"{key}_open", disabled=sub is None):
-            st.session_state[cwd_key] = str(cwd / sub)
-            st.rerun()
-        if row[2].button("Up", key=f"{key}_up", disabled=any(cwd == root for root in roots)):
-            try:
-                st.session_state[cwd_key] = str(config.resolve_allowed(cwd.parent))
-            except PathNotAllowed:
-                pass
-            st.rerun()
+        row[1].button("Open folder", key=f"{key}_open", disabled=sub is None, on_click=open_sub)
+        row[2].button("Up", key=f"{key}_up", disabled=cwd in resolved_roots, on_click=browse_to, args=(cwd.parent,))
         if want == "dir":
-            if st.button("Use this folder", key=f"{key}_usedir"):
-                st.session_state[text_key] = str(cwd)
-                st.rerun()
+            st.button("Use this folder", key=f"{key}_usedir", on_click=use, args=(cwd, "dir"))
         else:
             row = st.columns([3, 1])
             chosen = row[0].selectbox("Files", [entry.name for entry in files], index=None, placeholder="(none selected)", key=f"{key}_file")
-            if row[1].button("Use this file", key=f"{key}_usefile", disabled=chosen is None):
-                st.session_state[text_key] = str(cwd / chosen)
-                st.rerun()
+            row[1].button("Use this file", key=f"{key}_usefile", disabled=chosen is None, on_click=use_file)
     if not typed:
         return None
     try:
@@ -360,7 +424,7 @@ def open_run(project: Path, run: workspace.RunRow, page: str) -> None:
 def project_page() -> None:
     from rnaseq.validators import validate_project
 
-    config = gui_config()
+    gui_config()
     project = require_project()
     if project is None:
         return
@@ -370,11 +434,6 @@ def project_page() -> None:
     if summary.error:
         st.error(f"project.yaml cannot be read: {summary.error}")
         return
-    try:
-        config.resolve_allowed(project)
-    except PathNotAllowed as exc:
-        st.warning(f"This project is outside the available data folders ({exc}). It can be viewed, but check that the data disk is mounted.")
-
     cols = st.columns(4)
     cols[0].metric("Species", summary.species)
     cols[1].metric("Input", summary.input_type.replace("_", " "))
@@ -481,14 +540,14 @@ def import_fastq(config: GuiConfig, project: Path, records, sheet_text: str | No
         st.error(f"Not enough free space in `{plan.target}` for {datasets.human_size(plan.bytes)}; nothing is copied.")
         return
     if sheet_path is not None:
-        _import_samplesheet(project, sheet_path, import_fastq_samplesheet)
+        _import_samplesheet(project, sheet_path, import_fastq_samplesheet, plan)
         return
     assert sheet_text is not None
     scratch = gui_state_dir() / "samplesheets" / f"{project.name}-{datetime.now():%Y%m%d-%H%M%S}.csv"
     scratch.parent.mkdir(parents=True, exist_ok=True)
     scratch.write_text(sheet_text, encoding="utf-8")
     try:
-        _import_samplesheet(project, scratch, import_fastq_samplesheet)
+        _import_samplesheet(project, scratch, import_fastq_samplesheet, plan)
     finally:
         scratch.unlink(missing_ok=True)
 
@@ -565,6 +624,8 @@ def datasets_page() -> None:
         return
     st.subheader("Recognise samples and use in a project")
     st.caption(f"Target project: **{project.name if project else 'none selected'}** (change it in the sidebar).")
+    if project is not None:
+        show_import_result(project)
     for tab, name in zip(st.tabs(tabs_wanted), tabs_wanted):
         with tab:
             if name == "FASTQ":
@@ -656,13 +717,22 @@ def _dataset_metadata(scan: datasets.DatasetScan, project: Path | None) -> None:
     if loaded.config.project.preset is Preset.QC:
         st.info("QC-only projects do not use metadata.")
         return
-    if st.button(f"Load into the metadata editor of {project.name}", key="ds_meta_load"):
-        text = chosen.path.read_text(encoding="utf-8-sig")
-        parsed_header, parsed_rows = services.parse_table_text(text)
-        report = validate_project(project)
-        columns = list(dict.fromkeys([*services.metadata_columns(report), *parsed_header]))
-        _set_editor_table(project, pd.DataFrame(services.merge_sample_ids(parsed_rows, columns, []), columns=columns))
-        st.success("Loaded, not saved yet. Check the table and press *Save metadata* on Input & Metadata.")
+    report = validate_project(project)
+    if report.config is None:
+        show_issues(report.errors)
+        return
+    parsed_header, parsed_rows = services.parse_table_text(chosen.path.read_text(encoding="utf-8-sig"))
+    columns, rows = _table_rows(editor_table(project, report))
+    change = services.merge_metadata_table(columns, rows, parsed_header, parsed_rows)
+    st.caption(f"Merged by sample_id into the metadata being edited for {project.name} (unsaved edits included).")
+    ok = metadata_change_preview(change, report, f"ds_meta_confirm::{project}::{chosen.relative}")
+    if st.button(f"Load into the metadata editor of {project.name}", key="ds_meta_load", disabled=not ok):
+        _apply_metadata_change(project, change, f"{chosen.relative} applied")
+        st.session_state["_ds_meta_loaded"] = _change_summary(change)
+        st.rerun()
+    loaded_summary = st.session_state.pop("_ds_meta_loaded", None)
+    if loaded_summary:
+        st.success(f"Loaded ({loaded_summary}), not saved yet. Check the table and press *Save metadata* on Input & Metadata.")
         if "inputs" in PAGES:
             st.page_link(PAGES["inputs"], label="Input & Metadata →")
 
@@ -692,6 +762,38 @@ def _dataset_samplesheet(config: GuiConfig, scan: datasets.DatasetScan, project:
 
 
 # --------------------------------------------------------------------- B. New Project
+
+OTHER_REFERENCE = "Other (advanced)"
+
+
+def _other_reference(species: str, method: str) -> dict[str, object] | None:
+    """The fields of an unregistered reference, shown as soon as *Other* is chosen.
+
+    Returns None (with a note, not an error) until the required fields are filled.
+    """
+
+    box = st.container(border=True)
+    box.markdown("**Other reference**")
+    source = box.radio("Reference type", ["local", "custom"], horizontal=True, key="np_ref_source",
+                       format_func=lambda value: {"local": "Managed reference folder (with a reference manifest)", "custom": "Genome FASTA + annotation GTF"}[value])
+    if source == "local":
+        root = box.text_input("Managed reference folder", key="np_ref_root", help="The folder that holds the reference manifest, as prepared by `rnaseq reference`.")
+        manifest = box.text_input("Reference manifest file name", value="reference_manifest.yaml", key="np_ref_manifest")
+        if not root.strip():
+            box.caption("Enter the managed reference folder to use this reference.")
+            return None
+        return wizard.reference_options(source="local", species=wizard.species_value(species), method=method, local_root=Path(root.strip()),
+                                        local_manifest=manifest.strip() or None, fasta=None, gtf=None, transcript_fasta=None, salmon_index=None, hisat2_index=None)
+    fasta = box.text_input("Genome FASTA", key="np_fasta").strip()
+    gtf = box.text_input("Annotation GTF", key="np_gtf").strip()
+    hisat2 = box.text_input("Prepared HISAT2 index (optional)", key="np_hisat2").strip()
+    missing = [name for name, value in (("genome FASTA", fasta), ("annotation GTF", gtf)) if not value]
+    if missing:
+        box.caption(f"Enter the {' and the '.join(missing)} to use this reference.")
+        return None
+    return wizard.reference_options(source="custom", species=wizard.species_value(species), method=method, local_root=None, local_manifest=None,
+                                    fasta=Path(fasta), gtf=Path(gtf), transcript_fasta=None, salmon_index=None, hisat2_index=Path(hisat2) if hisat2 else None)
+
 
 def new_project_page() -> None:
     from rnaseq.execution import detect_local_resource_capacity, validate_local_execution_budget
@@ -727,33 +829,17 @@ def new_project_page() -> None:
             st.warning(f"Reference registry could not be read: {exc}")
         labels = {f"{ref.provider} {ref.release} / {ref.assembly_identity} ({ref.root})": ref for ref in registered}
         other = ["iGenomes (Salmon only)"] if method == "salmon" else []
-        choice = st.selectbox("Reference", [*labels, *other, "Other (advanced)"], key="np_reference")
+        choice = st.selectbox("Reference", [*labels, *other, OTHER_REFERENCE], key="np_reference")
         with st.expander("Advanced settings"):
             preprocessing = st.selectbox("FASTQ preprocessing", [value for value, _ in wizard.PREPROCESSING_CHOICES], format_func=lambda value: f"{value} — {dict(wizard.PREPROCESSING_CHOICES)[value]}", key="np_pre")
-            if choice == "Other (advanced)":
-                source = st.selectbox("Reference source", ["local", "custom"], key="np_ref_source")
-                if source == "local":
-                    root = st.text_input("Managed reference root", key="np_ref_root")
-                    manifest = st.text_input("Reference manifest", value="reference_manifest.yaml", key="np_ref_manifest")
-                    reference_inputs = {"source": "local", "local_root": Path(root) if root else None, "local_manifest": manifest}
-                else:
-                    reference_inputs = {"source": "custom", "fasta": st.text_input("Genome FASTA", key="np_fasta") or None, "gtf": st.text_input("Annotation GTF", key="np_gtf") or None, "hisat2_index": st.text_input("Prepared HISAT2 index (optional)", key="np_hisat2") or None}
-            else:
-                reference_inputs = None
         try:
             if choice in labels:
                 root, manifest = wizard.managed_reference_settings(labels[choice])
                 reference = wizard.reference_options(source="local", species=wizard.species_value(species), method=method, local_root=root, local_manifest=manifest, fasta=None, gtf=None, transcript_fasta=None, salmon_index=None, hisat2_index=None)
             elif choice in other:
                 reference = wizard.reference_options(source="igenomes", species=wizard.species_value(species), method=method, local_root=None, local_manifest=None, fasta=None, gtf=None, transcript_fasta=None, salmon_index=None, hisat2_index=None)
-            elif reference_inputs is not None:
-                to_path = lambda value: Path(value) if value else None  # noqa: E731
-                reference = wizard.reference_options(
-                    source=str(reference_inputs["source"]), species=wizard.species_value(species), method=method,
-                    local_root=reference_inputs.get("local_root"), local_manifest=reference_inputs.get("local_manifest"),
-                    fasta=to_path(reference_inputs.get("fasta")), gtf=to_path(reference_inputs.get("gtf")), transcript_fasta=None,
-                    salmon_index=None, hisat2_index=to_path(reference_inputs.get("hisat2_index")),
-                )
+            else:
+                reference = _other_reference(species, method)
         except ProjectCreationError as exc:
             st.error(str(exc))
 
@@ -783,7 +869,7 @@ def new_project_page() -> None:
             if input_type == "fastq" and method == "hisat2_featurecounts" and not strandedness:
                 raise ProjectCreationError("Choose the strandedness explicitly for HISAT2 + featureCounts.")
             if input_type == "fastq" and reference is None:
-                raise ProjectCreationError("Choose a reference.")
+                raise ProjectCreationError("Choose a reference, or fill in the required fields of the other reference.")
             selected_cpus, selected_memory = int(cpus) or AUTO, int(memory) or AUTO
             validate_local_execution_budget(selected_cpus, selected_memory, detect_local_resource_capacity())
             raw = input_type == "raw_counts"
@@ -817,6 +903,7 @@ def _input_section(config: GuiConfig, project: Path, report) -> None:
     assert report.config is not None and report.loaded is not None
     st.subheader("1. Input data")
     st.caption("Tip: the **Datasets** page lists everything in the data folders and can assign it to this project.")
+    show_import_result(project)
     if report.config.input.type is InputType.RAW_COUNTS:
         if report.counts is not None:
             st.success(f"Count matrix `{report.loaded.input_path}`: {report.counts.gene_count} genes × {len(report.counts.sample_ids)} samples.")
@@ -878,18 +965,38 @@ def _input_section(config: GuiConfig, project: Path, report) -> None:
             import_fastq(config, project, view.records, sheet_path=sheet_path)
 
 
-def _import_samplesheet(project: Path, sheet: Path, importer) -> None:
+IMPORT_RESULT_KEY = "_fastq_import_result"
+
+
+def _import_samplesheet(project: Path, sheet: Path, importer, plan: datasets.CopyPlan | None = None) -> None:
+    """Run the existing importer; it reports no per-file progress, so the page says it is blocked and then what was copied."""
+
+    size = f" ({plan.files} file(s), {datasets.human_size(plan.bytes)})" if plan is not None else ""
+    notice = st.warning(f"Copying FASTQ files{size} into the project. This blocks the GUI until every file is copied; "
+                        "keep this tab open and do not start another import. The importer does not report per-file progress.")
+    started = datetime.now()
     try:
         with st.spinner("Copying FASTQ files into the project ..."):
             records = importer(project, sheet)
     except (ProjectCreationError, ProjectConfigError) as exc:
-        st.error(str(exc))
+        notice.empty()
+        st.error(f"Not imported: {exc}")
         return
     except OSError as exc:
-        st.error(f"System error while copying: {exc}")
+        notice.empty()
+        st.error(f"System error while copying: {exc}. Files already copied stay in the project input folder; check it before importing again.")
         return
-    st.success(f"Imported {len(records)} samplesheet row(s).")
+    seconds = int((datetime.now() - started).total_seconds())
+    st.session_state[IMPORT_RESULT_KEY] = (str(project), f"Copied the FASTQ files of {len(records)} samplesheet row(s){size} into the project in {seconds} s. "
+                                           "The originals were not changed; the samplesheet is kept as planning/imported_fastq_samplesheet.csv.")
     st.rerun()
+
+
+def show_import_result(project: Path) -> None:
+    result = st.session_state.get(IMPORT_RESULT_KEY)
+    if result and result[0] == str(project):
+        st.success(result[1])
+        st.session_state.pop(IMPORT_RESULT_KEY, None)
 
 
 def _metadata_state_key(project: Path) -> str:
@@ -897,8 +1004,82 @@ def _metadata_state_key(project: Path) -> str:
 
 
 def _set_editor_table(project: Path, frame: pd.DataFrame) -> None:
-    st.session_state[_metadata_state_key(project)] = frame
-    st.session_state[f"{_metadata_state_key(project)}::version"] = st.session_state.get(f"{_metadata_state_key(project)}::version", 0) + 1
+    """Make ``frame`` the table being edited, in a fresh editor (no pending edits are applied on top of it)."""
+
+    key = _metadata_state_key(project)
+    frame = frame.reset_index(drop=True)
+    st.session_state[key] = frame  # the data handed to st.data_editor
+    st.session_state[f"{key}::working"] = frame  # what the user sees: the data plus the editor's own edits
+    st.session_state[f"{key}::version"] = st.session_state.get(f"{key}::version", 0) + 1
+    st.session_state.pop(f"{key}::result", None)  # a save message would describe an older table
+
+
+def editor_table(project: Path, report) -> pd.DataFrame:
+    """The metadata table being edited, unsaved edits included.
+
+    Initialised from metadata.csv plus the input's sample IDs. The editor's
+    cell edits are copied to ``<key>::working`` on every rerun, so they survive
+    bulk assignment, pasting, importing and visits to other pages.
+    """
+
+    key = _metadata_state_key(project)
+    if f"{key}::working" in st.session_state:
+        return st.session_state[f"{key}::working"]
+    columns = services.metadata_columns(report)
+    rows = services.merge_sample_ids(services.read_metadata(report), columns, services.input_sample_ids(report))
+    frame = pd.DataFrame(rows, columns=columns)
+    _set_editor_table(project, frame)
+    return frame
+
+
+def _table_rows(table: pd.DataFrame) -> tuple[list[str], list[dict]]:
+    return [str(column) for column in table.columns], table.to_dict("records")
+
+
+def _apply_metadata_change(project: Path, change: services.MetadataChange, what: str) -> None:
+    _set_editor_table(project, pd.DataFrame(change.rows, columns=change.columns))
+    st.session_state[f"{_metadata_state_key(project)}::notice"] = f"{what}: {_change_summary(change)}. Not saved yet."
+
+
+def _change_summary(change: services.MetadataChange) -> str:
+    parts = []
+    if change.filled:
+        parts.append(f"filled {change.filled} empty value(s)")
+    if change.overwritten:
+        parts.append(f"replaced {len(change.overwritten)} value(s)")
+    if change.added:
+        parts.append(f"added {len(change.added)} sample row(s) ({', '.join(change.added[:8])}{' …' if len(change.added) > 8 else ''})")
+    if change.new_columns:
+        parts.append("added column(s) " + ", ".join(change.new_columns))
+    return ", ".join(parts) or "no change"
+
+
+def metadata_change_preview(change: services.MetadataChange, report, confirm_key: str, *, merged: bool = True) -> bool:
+    """Show what applying ``change`` does to the table being edited; True when it may be applied.
+
+    Replacing existing non-empty values needs an explicit tick.
+    """
+
+    for error in change.errors:
+        st.error(error)
+    if change.errors:
+        return False
+    if not change.changes:
+        st.caption("Nothing would change: the table already has these values.")
+        return False
+    text = _change_summary(change).replace("filled", "fills").replace("replaced", "replaces").replace("added", "adds")
+    note = " Samples and columns that are not in the new values keep their current values; empty cells in the new values change nothing." if merged else ""
+    st.info(f"Applying {text}.{note}")
+    known = services.input_sample_ids(report)
+    unknown = [sample for sample in change.added if known and sample not in known]
+    if unknown:
+        st.warning(f"{len(unknown)} added sample(s) are not samples of the input (count matrix or FASTQ): {', '.join(unknown[:10])}. Saving will report the disagreement.")
+    if change.overwritten:
+        st.warning(f"{len(change.overwritten)} existing value(s) would be replaced:")
+        st.dataframe(pd.DataFrame([{"sample_id": sample, "column": column, "current value": old, "new value": new} for sample, column, old, new in change.overwritten]),
+                     hide_index=True, width="stretch")
+        return st.checkbox(f"Replace these {len(change.overwritten)} existing value(s)", key=confirm_key)
+    return True
 
 
 def _metadata_section(project: Path, report) -> None:
@@ -907,81 +1088,103 @@ def _metadata_section(project: Path, report) -> None:
     if report.config.project.preset is Preset.QC:
         st.info("QC-only projects make no statistical design claim; metadata is not used.")
         return
-    columns = services.metadata_columns(report)
     design_vars = services.design_variables(report)
     st.caption(
         f"Design formula `{report.config.design.formula}`; required columns: sample_id, {', '.join(design_vars)}. "
         "Conditions are entered by you; they are never derived from file names."
     )
     key = _metadata_state_key(project)
-    if key not in st.session_state:
-        rows = services.merge_sample_ids(services.read_metadata(report), columns, services.input_sample_ids(report))
-        _set_editor_table(project, pd.DataFrame(rows, columns=columns))
-    frame: pd.DataFrame = st.session_state[key]
+    current = editor_table(project, report)
+    editor_key = f"{key}::editor::{st.session_state.get(f'{key}::version', 0)}"
+    if editor_key not in st.session_state and not current.equals(st.session_state[key]):
+        # Streamlit dropped the editor's own state (the page was left); its
+        # edits, kept in ::working, become the editor's data.
+        st.session_state[key] = current.reset_index(drop=True)
+    # Always drawn (empty or not) so the tabs below keep their position and the
+    # chosen tab stays open after an Apply.
+    notice_box = st.empty()
+    notice = st.session_state.pop(f"{key}::notice", None)
+    if notice:
+        notice_box.success(notice)
 
-    tools = st.tabs(["Paste table (TSV / Excel)", "Import CSV", "Assign values to samples", "Reload"])
-    with tools[0]:
-        pasted = st.text_area("Paste rows copied from Excel (tab-separated) or CSV, header row first", key=f"{key}::paste", height=150)
-        if st.button("Apply pasted table", key=f"{key}::paste_apply"):
-            header, rows = services.parse_table_text(pasted)
-            if "sample_id" not in header:
-                st.error("The pasted table needs a header row with a sample_id column.")
-            else:
-                merged_columns = list(dict.fromkeys([*columns, *header]))
-                _set_editor_table(project, pd.DataFrame(services.merge_sample_ids(rows, merged_columns, services.input_sample_ids(report)), columns=merged_columns))
-                st.rerun()
-    with tools[1]:
-        uploaded = st.file_uploader("Metadata CSV/TSV", type=["csv", "tsv", "txt"], key=f"{key}::upload")
-        if uploaded is not None and st.button("Load into the editor", key=f"{key}::upload_apply"):
-            header, rows = services.parse_table_text(uploaded.getvalue().decode("utf-8-sig"))
-            if "sample_id" not in header:
-                st.error("The file needs a sample_id column.")
-            else:
-                merged_columns = list(dict.fromkeys([*columns, *header]))
-                _set_editor_table(project, pd.DataFrame(services.merge_sample_ids(rows, merged_columns, []), columns=merged_columns))
-                st.rerun()
-    with tools[2]:
-        # A fresh widget key after each Apply clears the previous selection.
-        bulk = f"{key}::bulk::{st.session_state.get(f'{key}::version', 0)}"
-        cols = st.columns([3, 2, 2, 1])
-        samples = cols[0].multiselect("Samples", [str(value) for value in frame["sample_id"].tolist() if str(value)], key=f"{bulk}::samples")
-        column = cols[1].selectbox("Column", [column for column in frame.columns if column != "sample_id"], key=f"{bulk}::column")
-        value = cols[2].text_input("Value", key=f"{bulk}::value")
-        if cols[3].button("Apply", key=f"{bulk}::apply", disabled=not samples or column is None):
-            updated = frame.copy()
-            updated.loc[updated["sample_id"].astype(str).isin(samples), column] = value
-            _set_editor_table(project, updated)
-            st.rerun()
-    with tools[3]:
-        if st.button("Discard unsaved edits and reload metadata.csv", key=f"{key}::reload"):
-            st.session_state.pop(key, None)
-            st.rerun()
-
+    tools_box = st.container()  # drawn above the table, filled after it so the tools act on the current edits
+    base: pd.DataFrame = st.session_state[key]
     edited = st.data_editor(
-        frame, num_rows="dynamic", hide_index=True, width="stretch",
-        key=f"{key}::editor::{st.session_state.get(f'{key}::version', 0)}",
-        column_config={column: st.column_config.TextColumn(column, required=column in ("sample_id", *design_vars)) for column in frame.columns},
+        base, num_rows="dynamic", hide_index=True, width="stretch", key=editor_key,
+        column_config={column: st.column_config.TextColumn(column, required=column in ("sample_id", *design_vars)) for column in base.columns},
     )
+    st.session_state[f"{key}::working"] = edited
+    columns, rows = _table_rows(edited)
+    difference = services.metadata_difference(services.metadata_file_columns(report), services.read_metadata(report), columns, rows)
+    if difference.unsaved:
+        st.warning(f"**Unsaved changes** — {difference.describe()}. Press *Save metadata* to write them to metadata.csv.")
+    else:
+        st.caption("No unsaved changes: the table matches metadata.csv.")
+
+    with tools_box:
+        tools = st.tabs(["Paste table (TSV / Excel)", "Import CSV", "Assign values to samples", "Reload"])
+        with tools[0]:
+            pasted = st.text_area("Paste rows copied from Excel (tab-separated) or CSV, header row first (must include sample_id)", key=f"{key}::paste", height=150)
+            if pasted.strip():
+                header, new_rows = services.parse_table_text(pasted)
+                change = services.merge_metadata_table(columns, rows, header, new_rows)
+                ok = metadata_change_preview(change, report, f"{key}::paste_confirm")
+                if st.button("Apply pasted table", key=f"{key}::paste_apply", disabled=not ok):
+                    _apply_metadata_change(project, change, "Pasted table applied")
+                    st.rerun()
+        with tools[1]:
+            uploaded = st.file_uploader("Metadata CSV/TSV (must include sample_id)", type=["csv", "tsv", "txt"], key=f"{key}::upload")
+            if uploaded is not None:
+                header, new_rows = services.parse_table_text(uploaded.getvalue().decode("utf-8-sig"))
+                change = services.merge_metadata_table(columns, rows, header, new_rows)
+                ok = metadata_change_preview(change, report, f"{key}::upload_confirm")
+                if st.button("Load into the editor", key=f"{key}::upload_apply", disabled=not ok):
+                    _apply_metadata_change(project, change, f"{uploaded.name} applied")
+                    st.rerun()
+        with tools[2]:
+            # A fresh widget key after each Apply clears the previous selection.
+            bulk = f"{key}::bulk::{st.session_state.get(f'{key}::version', 0)}"
+            cols = st.columns([3, 2, 2, 1])
+            samples = cols[0].multiselect("Samples", [str(value) for value in edited["sample_id"].tolist() if _filled(value)], key=f"{bulk}::samples")
+            column = cols[1].selectbox("Column", [column for column in columns if column != "sample_id"], key=f"{bulk}::column")
+            value = cols[2].text_input("Value", key=f"{bulk}::value")
+            change = services.assign_metadata_value(columns, rows, samples, column, value) if samples and column else None
+            ok = change is not None and metadata_change_preview(change, report, f"{bulk}::confirm", merged=False)
+            if cols[3].button("Apply", key=f"{bulk}::apply", disabled=not ok, help=None if samples and column else "Choose samples and a column first."):
+                _apply_metadata_change(project, change, f"{column} = {value!r} applied")
+                st.rerun()
+        with tools[3]:
+            confirm = not difference.unsaved or st.checkbox(f"Discard the unsaved changes ({difference.describe()})", key=f"{key}::reload_confirm")
+            if st.button("Reload metadata.csv", key=f"{key}::reload", disabled=not confirm):
+                fresh = services.merge_sample_ids(services.read_metadata(report), services.metadata_columns(report), services.input_sample_ids(report))
+                _set_editor_table(project, pd.DataFrame(fresh, columns=services.metadata_columns(report)))
+                st.rerun()
+
     if st.button("Save metadata", type="primary", key=f"{key}::save"):
-        rows = edited.fillna("").astype(str).to_dict("records")
-        result = services.save_metadata(project, list(edited.columns), rows)
-        st.session_state[f"{key}::result"] = result
+        result = services.save_metadata(project, columns, [{column: services.clean_cell(row.get(column)) for column in columns} for row in rows])
         if result.saved:
-            st.session_state[key] = edited
-    result = st.session_state.get(f"{key}::result")
-    if result is not None:
+            _set_editor_table(project, edited)
+        st.session_state[f"{key}::result"] = (result, columns)
+        st.rerun()
+    stored = st.session_state.get(f"{key}::result")
+    if stored is not None:
+        result, saved_columns = stored
         if result.saved:
             st.success(f"Saved {report.loaded.metadata_path}.")
         else:
             st.error("metadata.csv was not changed; fix these first:")
         by_column: dict[str, list] = {}
         for issue in [*result.errors, *result.incomplete, *result.agreement]:
-            by_column.setdefault(services.issue_column(issue, list(edited.columns)), []).append(issue)
+            by_column.setdefault(services.issue_column(issue, saved_columns), []).append(issue)
         for column, issues in by_column.items():
             st.markdown(f"**{column}**")
             show_issues(issues)
         if result.saved and not (result.incomplete or result.agreement):
             st.caption("All design values are filled. Next: Contrasts (L2) or Run.")
+
+
+def _filled(value) -> bool:
+    return bool(services.clean_cell(value))
 
 
 def inputs_page() -> None:
@@ -1058,13 +1261,25 @@ def contrasts_page() -> None:
     if key not in st.session_state:
         st.session_state[key] = [(c.numerator, c.denominator) for c in existing]
     chosen: list[tuple[str, str]] = st.session_state[key]
+    stale = [pair for pair in chosen if pair[0] not in view.levels or pair[1] not in view.levels]
+    if stale:
+        # The metadata changed since these were composed; a contrast of a level
+        # that no longer exists is never saved.
+        chosen[:] = [pair for pair in chosen if pair not in stale]
+        st.warning("Removed composed contrast(s) whose levels are no longer in metadata.csv: " + ", ".join(f"{num} vs {den}" for num, den in stale))
+    saved_message = st.session_state.pop(f"{key}::saved", None)
+    if saved_message:
+        st.success(saved_message)
     cols = st.columns([2, 2, 1, 2])
     numerator = cols[0].selectbox("Numerator (test group)", view.levels, index=len(view.levels) - 1, key=f"{key}::num")
     denominator = cols[1].selectbox("Denominator (reference group)", view.levels, index=0, key=f"{key}::den")
-    if cols[2].button("Add", key=f"{key}::add", disabled=numerator == denominator):
-        if (numerator, denominator) not in chosen:
-            chosen.append((numerator, denominator))
+    add_reason = ("Numerator and denominator must be different levels." if numerator == denominator
+                  else "This contrast is already in the list." if (numerator, denominator) in chosen else None)
+    if cols[2].button("Add", key=f"{key}::add", disabled=add_reason is not None, help=add_reason):
+        chosen.append((numerator, denominator))
         st.rerun()
+    if add_reason:
+        st.caption(f"*Add* is disabled: {add_reason}")
     if cols[3].button("Propose all pairs (rnaseq design rule)", key=f"{key}::propose"):
         st.session_state[key] = [(item.numerator, item.denominator) for item in build_proposal(report, condition_order=view.levels).contrasts]
         st.rerun()
@@ -1089,7 +1304,11 @@ def contrasts_page() -> None:
     if config.project.preset is Preset.L1:
         st.caption("Saving contrasts moves this project to L2, exactly as `rnaseq design` does.")
     replace = not existing or st.checkbox("Replace the saved contrasts", key=f"{key}::replace")
-    if st.button("Save contrasts", type="primary", key=f"{key}::save", disabled=not chosen or not replace):
+    save_reason = ("Add at least one contrast first." if not chosen
+                   else "Tick *Replace the saved contrasts* to overwrite contrasts.csv." if not replace else None)
+    if save_reason:
+        st.caption(f"*Save contrasts* is disabled: {save_reason}")
+    if st.button("Save contrasts", type="primary", key=f"{key}::save", disabled=save_reason is not None, help=save_reason):
         try:
             no_df = residual_df_blocker(report)
             if no_df is not None:
@@ -1103,7 +1322,9 @@ def contrasts_page() -> None:
         except DesignSetupError as exc:
             st.error(str(exc))
         else:
-            st.success(f"Wrote {len(definitions)} contrast(s), froze the condition order ({', '.join(view.levels)}), scope L2; validation {after.state}. Planning artifacts refreshed.")
+            st.session_state[f"{key}::saved"] = f"Wrote {len(definitions)} contrast(s), froze the condition order ({', '.join(view.levels)}), scope L2; validation {after.state}. Planning artifacts refreshed."
+            st.session_state.pop(f"{key}::replace", None)
+            st.rerun()  # redraw the saved contrasts and the validation state from the files just written
 
     pin = services.kegg_pin_status(validate_project(project))
     if pin.applies:
@@ -1209,11 +1430,48 @@ def _validation_overview(report) -> None:
         show_issues(issues)
 
 
+STATUS_REFRESH_SECONDS = 10
+LIVE_RECORDED_STATES = {"CREATED", "PLANNED", "RUNNING"}
+
+
+def live_run_in_project(project: Path, active: jobs.Launch | None) -> bool:
+    """Whether a run of this project is starting or running (cheap: run_state.json and process liveness only)."""
+
+    if active is not None and active.project == str(project.resolve()):
+        return True
+    cache = _Cache()
+    for run_dir, state in discover_runs(project):
+        if str(state.get("status")) in LIVE_RECORDED_STATES:
+            shown, _note = jobs.run_display_state(run_dir, state, cache)
+            if workspace.execution_status(shown) == "RUNNING":
+                return True
+    return False
+
+
 def _run_status_section(config: GuiConfig, project: Path, active: jobs.Launch | None) -> None:
+    """Runs of the project; while one is active this section alone re-reads the run files every few seconds.
+
+    It is a Streamlit fragment: an automatic refresh reruns only this
+    function, so the project is not re-validated. When the run reaches a
+    final state the whole page is redrawn once and the timer stops.
+    """
+
     st.subheader("Runs of this project")
-    if st.button("Refresh", key="run_refresh"):
-        st.rerun()
-    st.caption(f"Read from the run files at {datetime.now().strftime('%H:%M:%S')}; press Refresh to update.")
+    live = live_run_in_project(project, active)
+    st.fragment(_run_status_body, run_every=STATUS_REFRESH_SECONDS if live else None)(config, project, live)
+
+
+def _run_status_body(config: GuiConfig, project: Path, live: bool) -> None:
+    active = jobs.active_launch()
+    if live != live_run_in_project(project, active):
+        st.rerun()  # started or finished: redraw the page (Run button, timer) once
+    cols = st.columns([1, 5])
+    cols[0].button("Refresh", key="run_refresh")
+    if live:
+        cols[1].caption(f"A run of this project is active: this section updates automatically every {STATUS_REFRESH_SECONDS} s "
+                        f"(last read {datetime.now().strftime('%H:%M:%S')}; the project is not re-validated). It stops when the run ends.")
+    else:
+        cols[1].caption(f"Read from the run files at {datetime.now().strftime('%H:%M:%S')}; press Refresh to update.")
     launches = jobs.list_launches(project)
     for launch in launches[:1]:
         run_dir = jobs.launch_run_dir(launch)
@@ -1244,11 +1502,13 @@ def _run_status_section(config: GuiConfig, project: Path, active: jobs.Launch | 
     elif row.execution == "RUNNING" and state.get("status") == "CREATED":
         st.info("RUNNING — preparing: freezing inputs and creating or verifying the downstream runtime. With a new nf-rna build this first step takes several minutes; the analysis stages follow.")
     elif row.execution == "RUNNING":
-        st.info("RUNNING — press Refresh to follow the stages below.")
+        st.info("RUNNING — the stages below follow the run.")
     elif row.execution == "FAILED":
         st.error(f"FAILED: {state.get('error') or 'see the logs'}")
     elif row.execution == "SUCCESS":
         st.success(f"SUCCESS. Results: `{state.get('delivery') or run_dir / 'delivery'}`")
+    if row.execution == "RUNNING":
+        stop_instructions(run_dir, state)
     show_run_qc(row.qc)
     if row.has_results:
         cols = st.columns(2)
@@ -1281,6 +1541,69 @@ def _run_status_section(config: GuiConfig, project: Path, active: jobs.Launch | 
     st.code(text or "(empty)", language=None)
 
 
+def project_fingerprint(report) -> tuple:
+    """Modification times and sizes of the files a validation report depends on."""
+
+    loaded = report.loaded
+    if loaded is None:
+        return ()
+    paths = [loaded.config_path, loaded.metadata_path, loaded.contrasts_path, loaded.input_path]
+    if loaded.input_path.is_dir():
+        paths.extend(sorted(loaded.input_path.iterdir()))
+    stamp = []
+    for path in paths:
+        try:
+            info = path.stat()
+        except OSError:
+            stamp.append((str(path), None))
+            continue
+        stamp.append((str(path), info.st_mtime_ns, info.st_size))
+    return tuple(stamp)
+
+
+def run_blocked_reason(report, case_id: str, active: jobs.Launch | None) -> str | None:
+    """Why *Run* cannot start now, in words (None when it can)."""
+
+    from rnaseq.service import validate_case_id
+
+    if active is not None:
+        return f"a GUI run is active (case {active.case_id}); only one GUI run can be active at a time."
+    if not report.is_valid:
+        return f"the project has {len(report.errors)} validation problem(s) to fix (section 1)."
+    if not case_id:
+        return "enter a case ID (a name for this analysis, for example the date or the experiment)."
+    try:
+        validate_case_id(case_id)
+    except (ExecutionPreflightError, ValueError) as exc:
+        return f"the case ID is not usable: {exc}"
+    return None
+
+
+def stop_instructions(run_dir: Path, state: dict) -> None:
+    """How to stop a running run by hand. There is no stop button (see docs/dev/gui_hardening_v170.md)."""
+
+    record = results.read_json(run_dir / "logs" / "rnaseq.process.json") or {}
+    pid = record.get("pid")
+    with st.expander("How to stop this run"):
+        st.markdown(
+            "The GUI has no stop button: it cannot yet guarantee that every process of a run is stopped "
+            "cleanly in every phase. To stop the run, use a terminal on the server."
+        )
+        if not isinstance(pid, int):
+            st.caption("This run recorded no process identity (`logs/rnaseq.process.json`); find its `rnaseq run` process with `ps`.")
+            return
+        st.code(f"ps -o pid,lstart,args -p {pid}    # check that this is the rnaseq run of {run_dir.parent.name}\nkill -TERM {pid}", language="bash")
+        st.markdown(
+            "- `kill -TERM` (not `kill -9`) lets `rnaseq` stop Nextflow, which stops its tasks; the run is then recorded as "
+            "**INTERRUPTED** and can be retried with `rnaseq retry`. `kill -9` leaves Nextflow and its tasks running.\n"
+            "- Outside a Nextflow stage (preparing, or between stages) `rnaseq` stops at once without recording it; the GUI then shows the run as **INCOMPLETE**.\n"
+            "- Do not stop a run that is **preparing** (recorded CREATED) while it creates the downstream runtime: the Conda "
+            "environment would be left half-built, and later runs refuse it until it is removed by hand."
+        )
+        if state.get("status") == "CREATED":
+            st.warning("This run is preparing (CREATED). Prefer to let it reach the analysis stages before stopping it.")
+
+
 def runner_page() -> None:
     from rnaseq.cli import render_validation_report
     from rnaseq.planner import generate_plan
@@ -1300,15 +1623,22 @@ def runner_page() -> None:
 
     st.subheader("1. Validate")
     _validation_overview(report)
+    fingerprint = project_fingerprint(report)
     if st.button("Validate and refresh the plan", key="run_validate"):
         text = render_validation_report(report)
         if report.is_valid:
             generate_plan(report)
             text += "\n\nPlanning artifacts refreshed (as `rnaseq plan`)."
-        st.session_state[f"validation::{project}"] = text
-    if f"validation::{project}" in st.session_state:
-        with st.expander("Full validation report (rnaseq validate)", expanded=True):
-            st.code(st.session_state[f"validation::{project}"], language=None)
+        st.session_state[f"validation::{project}"] = (fingerprint, text)
+    stored = st.session_state.get(f"validation::{project}")
+    if stored is not None:
+        if stored[0] != fingerprint:
+            # Written for an earlier version of the project; never shown as current.
+            st.session_state.pop(f"validation::{project}", None)
+            st.caption("The full validation report was removed because project.yaml, the metadata, the contrasts or the input changed since it was made. The findings above are current.")
+        else:
+            with st.expander("Full validation report (rnaseq validate)", expanded=True):
+                st.code(stored[1], language=None)
 
     st.subheader("2. Settings")
     preset = report.config.project.preset
@@ -1337,13 +1667,12 @@ def runner_page() -> None:
 
     st.subheader("3. Run")
     label = {Preset.QC: "Run QC", Preset.L1: "Run L1", Preset.L2: "Run L2"}[preset]
+    reason = run_blocked_reason(report, case_id, active)
     if active is not None:
         st.warning(f"A GUI run is active (case {active.case_id} of `{active.project}`); a new run can start when it ends.")
-    elif not report.is_valid:
-        st.caption("Fix the validation problems above first.")
-    elif not case_id:
-        st.caption("Enter a case ID to start.")
-    if st.button(label, type="primary", key="run_start", disabled=active is not None or not case_id or not report.is_valid):
+    elif reason:
+        st.caption(f"*{label}* is disabled: {reason}")
+    if st.button(label, type="primary", key="run_start", disabled=reason is not None, help=reason):
         try:
             with st.spinner("Checking the run preflight ..."):
                 services.run_preflight(project, case_id, reuse)
@@ -1372,7 +1701,28 @@ def table(path: Path) -> results.Table:
 
 
 def frame(data: results.Table) -> pd.DataFrame:
-    return pd.DataFrame(list(data.rows), columns=list(data.columns), dtype=str)
+    """A table for display: numeric columns as numbers (so sorting by a column header is numeric), the rest as text.
+
+    Missing values (``NA``) become empty cells and sort last. Values are parsed
+    from the file's text for display only; downloads are the files themselves.
+    """
+
+    table = pd.DataFrame(list(data.rows), columns=list(data.columns), dtype=str)
+    for column, kind in results.numeric_columns(data).items():
+        values = table[column].map(lambda text: None if (text or "").strip() in results.NA_TOKENS else float(text))
+        table[column] = values.astype("Int64") if kind == "int" else values.astype("float64")
+    return table
+
+
+def show_frame(data: pd.DataFrame, **kwargs):
+    return st.dataframe(data, column_config=number_format(data), **kwargs)
+
+
+def number_format(data: pd.DataFrame) -> dict[str, object]:
+    """Column settings that show floating-point statistics without rounding small p-values to 0."""
+
+    return {str(column): st.column_config.NumberColumn(str(column), format="%.6g")
+            for column, dtype in data.dtypes.items() if pd.api.types.is_float_dtype(dtype)}
 
 
 def download(path: Path, label: str, key: str, config: GuiConfig) -> None:
@@ -1465,7 +1815,7 @@ def _qc_section(run: results.ResultRun, config: GuiConfig) -> None:
             show_figure(item, f"qc::{index}", config)
     for name, path in view.tables.items():
         with st.expander(name):
-            st.dataframe(frame(table(path)), hide_index=True, width="stretch")
+            show_frame(frame(table(path)), hide_index=True, width="stretch")
             download(path, f"Download {name}", f"qc::table::{name}", config)
 
 
@@ -1545,7 +1895,7 @@ def _deg_section(run: results.ResultRun, contrast: str, config: GuiConfig) -> No
     selected = results.filter_deg(genes, results.significant_ids(view), query=query, only_significant=only, padj_max=padj_max, abs_lfc_min=lfc_min, sort_by=sort_by, descending=descending)
     st.caption(f"{len(selected.rows)} of {len(genes.rows)} genes. 'Only significant' = the genes in significant.tsv.")
     first = [column for column in ("gene_id", "symbol", "log2FoldChange", "log2FoldChange_shrunk", "padj", "pvalue", "baseMean") if column in selected.columns]
-    st.dataframe(frame(selected), hide_index=True, width="stretch", key=f"{key}::table", column_order=[*first, *(column for column in selected.columns if column not in first)])
+    show_frame(frame(selected), hide_index=True, width="stretch", key=f"{key}::table", column_order=[*first, *(column for column in selected.columns if column not in first)])
     cols = st.columns(4)
     for col, name in zip(cols, ("all_genes", "significant", "upregulated", "downregulated")):
         if (view.root / f"{name}.tsv").is_file():
@@ -1593,7 +1943,7 @@ def _enrichment_section(run: results.ResultRun, contrast: str, config: GuiConfig
         return
     found = table(terms)
     st.caption(f"`{terms.name}`: {len(found.rows)} terms. Select a row to see its member genes.")
-    event = st.dataframe(frame(found), hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key=f"{key}::terms")
+    event = show_frame(frame(found), hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key=f"{key}::terms")
     download(terms, f"Download {terms.name}", f"{key}::dl::terms", config)
     if result.members is None:
         st.warning("**Member genes: unavailable** — no member table in these results.")
@@ -1617,7 +1967,7 @@ def _enrichment_section(run: results.ResultRun, contrast: str, config: GuiConfig
     if pathway is not None:
         genes = results.pathway_members(result.members, pathway)
         st.caption(f"{pathway}: {len(genes.rows)} member genes.")
-        st.dataframe(frame(genes), hide_index=True, width="stretch", height=min(38 + 35 * len(genes.rows), 1200), key=f"{key}::members")
+        show_frame(frame(genes), hide_index=True, width="stretch", height=min(38 + 35 * len(genes.rows), 1200), key=f"{key}::members")
     download(result.members, f"Download {result.members.name}", f"{key}::dl::members", config)
 
 

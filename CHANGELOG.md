@@ -25,6 +25,13 @@ All notable changes to this project are documented here.
 - Run selectors used global widget keys, so a run selection leaked between projects.
 - The *Validate & Run* reuse hint offered SUCCESS runs made by another nf-rna version, which the run then refused after it had started; they are now listed as not reusable with the reason.
 - GSEA running-score listings treated a `_<n>dpi.png` raster of a non-300 dpi profile (`elsevier`, 500 dpi) as a separate plot.
+- Pre-release hardening (`docs/dev/gui_hardening_v170.md`):
+  - *Use this folder* / *Use this file* raised a Streamlit error. The browser no longer lists or opens links that resolve outside the allowed roots.
+  - `?project=` opened any local project; it must now be inside an available allowed root.
+  - Metadata: bulk assignment, *Paste table*, *Import CSV* and the Datasets metadata load discarded unsaved grid edits, and paste/import replaced the whole table. They now act on the table on screen and merge by `sample_id`. Replacing non-empty values needs a tick, an *Unsaved changes* banner compares the table with metadata.csv, unsaved edits survive page switches, and *Reload* needs a tick.
+  - Result tables sorted lexically by column header; numeric columns are now numeric for display, with `NA` last. Identifiers and ratios stay text, and downloads are unchanged.
+  - The run section of *Validate & Run* refreshes itself every 10 s while a run is active, without re-validating the project, and stops at a final state. It shows how to stop a running run from a terminal.
+  - Disabled *Run*, *Save contrasts* and *Add* state their reason. *Other (advanced)* reference fields show at once without a premature error or CLI flag names. An outdated full validation report is removed. The Contrasts page redraws after saving. FASTQ copying warns that it blocks the page and reports the result.
 
 ### Compatibility
 
@@ -40,6 +47,7 @@ All notable changes to this project are documented here.
 - No TIFF above 600 dpi, no SVG, no figure editing or presets. Under the `elsevier` profile (500 dpi pipeline TIFF) both TIFF options are rendered from the PDF; this was tested with fixtures only.
 - The GUI remains single-user on 127.0.0.1 with one active GUI run. Access from another computer through an SSH tunnel is documented but was not exercised in the v1.7.0 acceptance. `/dashboard` is not a URL; the *Projects* page is the server root.
 - The FAILED execution state was verified with a synthetic fixture project; no real failed run was available.
+- The GUI has no stop button: `rnaseq run` stops cleanly on SIGTERM only during a Nextflow stage, and stopping while the downstream runtime is being created leaves it half-built. A running run shows `kill -TERM <pid>` with these caveats. FASTQ copying shows no progress bar.
 - GUI limitations of v1.6.0 not listed above are unchanged (`docs/gui.md`).
 
 ## 1.6.1 — 2026-10-31
