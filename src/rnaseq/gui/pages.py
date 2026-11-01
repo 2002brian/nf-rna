@@ -851,7 +851,8 @@ def new_project_page() -> None:
     reference: dict[str, object] | None = None
     if input_type == "fastq":
         cols = st.columns(3)
-        method = cols[0].selectbox("Quantification", [value for value, _ in wizard.METHOD_CHOICES], format_func=lambda value: dict(wizard.METHOD_CHOICES)[value], key="np_method")
+        methods = [value for value, _ in wizard.METHOD_CHOICES]
+        method = cols[0].selectbox("Quantification", methods, index=methods.index(workspace.DEFAULT_METHOD), format_func=lambda value: workspace.METHOD_LABELS.get(value, value), key="np_method")
         layout = cols[1].selectbox("Sequencing layout", [value for value, _ in wizard.LAYOUT_CHOICES], format_func=lambda value: f"{value} ({dict(wizard.LAYOUT_CHOICES)[value]})", key="np_layout")
         strand_options = [value for value, _ in wizard.strandedness_choices(method)]
         if method == "hisat2_featurecounts":

@@ -53,19 +53,19 @@ def main() -> int:
         page.get_by_text("fastq — Reads requiring upstream processing", exact=True).click()
         gui.settle(page)
         for species, method, root, other in (
-            ("Homo sapiens", "pseudoalignment", HUMAN, MOUSE), ("Homo sapiens", "HISAT2 alignment", HUMAN, MOUSE),
-            ("Mus musculus", "pseudoalignment", MOUSE, HUMAN), ("Mus musculus", "HISAT2 alignment", MOUSE, HUMAN),
+            ("Homo sapiens", "Salmon (pseudoalignment)", HUMAN, MOUSE), ("Homo sapiens", "HISAT2 + featureCounts (genome alignment)", HUMAN, MOUSE),
+            ("Mus musculus", "Salmon (pseudoalignment)", MOUSE, HUMAN), ("Mus musculus", "HISAT2 + featureCounts (genome alignment)", MOUSE, HUMAN),
         ):
             shown = state(page, species, method)
             ws.expect(f"reference: {species} + {method} shows its own registered reference", root in shown and other not in shown, shown)
-        shown = state(page, "Homo sapiens", "HISAT2 alignment")
+        shown = state(page, "Homo sapiens", "HISAT2 + featureCounts (genome alignment)")
         ws.expect("reference: Mouse -> Human switch shows the Human reference", HUMAN in shown, shown)
-        shown = state(page, "Mus musculus", "HISAT2 alignment")
+        shown = state(page, "Mus musculus", "HISAT2 + featureCounts (genome alignment)")
         ws.expect("reference: Human -> Mouse switch shows the Mouse reference", MOUSE in shown, shown)
         ws.pick(page, "Species", "Homo sapiens")
-        ws.pick(page, "Quantification", "pseudoalignment")
+        ws.pick(page, "Quantification", "Salmon (pseudoalignment)")
         ws.pick(page, "Reference", "iGenomes")
-        shown = state(page, "Homo sapiens", "HISAT2 alignment")
+        shown = state(page, "Homo sapiens", "HISAT2 + featureCounts (genome alignment)")
         ws.expect("reference: Salmon -> HISAT2 does not keep iGenomes", "iGenomes" not in shown and HUMAN in shown, shown)
         ws.expect("reference: no 'not prepared' notice for a registered Human HISAT2 reference", "not prepared" not in ws.main_text(page), "")
         gui.shot(page, args.shots, "R1_human_hisat2_reference")

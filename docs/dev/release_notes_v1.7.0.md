@@ -74,6 +74,9 @@ Found in a usability review and fixed before release
   fields appear at once without an early error; an outdated full validation
   report is no longer shown; FASTQ copying says that it blocks the page and
   reports what was copied.
+- **Clearer backend names** — New Project, Project overview and the project
+  list show *Salmon (pseudoalignment)* (the default) and *HISAT2 +
+  featureCounts (genome alignment)*. Project files are unchanged.
 
 ## Install
 

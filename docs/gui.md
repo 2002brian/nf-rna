@@ -174,7 +174,9 @@ on the corresponding page.
 
 The questions of the interactive `rnaseq new` wizard, with the same choices
 and defaults: name, location, species, FASTQ or raw counts; for FASTQ the
-quantification backend (Salmon or HISAT2 + featureCounts), layout,
+quantification backend (*Salmon (pseudoalignment)*, the default, or
+*HISAT2 + featureCounts (genome alignment)*; `project.yaml` stores `salmon` or
+`hisat2_featurecounts`), layout,
 strandedness and reference (registered references first; iGenomes for Salmon;
 local or custom roots under *Advanced settings*); the analysis scope (qc for
 FASTQ only, L1, L2), the experimental design and pairing column, a known

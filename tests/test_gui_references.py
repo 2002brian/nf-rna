@@ -247,3 +247,32 @@ def test_the_validator_still_refuses_a_mismatched_reference_at_run_time(home):
     (project / "project.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
     issues = [issue for issue in validate_project(project).errors if issue.code == "invalid_local_reference"]
     assert issues and "does not match project organism 'Homo sapiens'" in issues[0].message
+
+
+def test_quantification_backends_use_the_same_labels_in_new_project_and_overview(home):
+    """Display labels only: project.yaml keeps the backend identifiers, and Salmon is the default."""
+
+    from streamlit.testing.v1 import AppTest
+
+    from rnaseq.gui import workspace
+
+    labels = {"salmon": "Salmon (pseudoalignment)", "hisat2_featurecounts": "HISAT2 + featureCounts (genome alignment)"}
+    human = _reference(home / "refs", "human", HUMAN)
+    _register(human)
+    page = _page()
+    method = page.selectbox(key="np_method")
+    assert method.value == "salmon" and method.options == list(labels.values())
+    for value, label in labels.items():
+        page = _page()
+        _set(page, "human", value)
+        _create(page, f"label_{value}")
+        assert not page.error, [item.value for item in page.error]
+        project = home / "data" / "projects" / f"label_{value}"
+        assert yaml.safe_load((project / "project.yaml").read_text())["upstream"]["quantification"]["method"] == value
+        assert workspace.project_summary(project).quantification == label
+        overview = AppTest.from_string("from rnaseq.gui import pages\npages.project_page()\n", default_timeout=60)
+        overview.session_state["project"] = str(project)
+        overview.run()
+        assert not overview.exception, overview.exception
+        shown = [frame.value.to_csv() for frame in overview.dataframe]
+        assert any(f"quantification,{label}" in table for table in shown), shown

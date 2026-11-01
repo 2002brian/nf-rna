@@ -44,7 +44,9 @@ EXECUTION_ICONS = {"RUNNING": "🔵", "SUCCESS": "✅", "FAILED": "❌", "INCOMP
 # is surfaced as WARNING so it is looked at; its own text says counting is valid.
 STRAND_LEVELS = {"CONSISTENT": "PASS", "WARNING": "WARNING", "ADVISORY": "WARNING", "INCONCLUSIVE": "INCONCLUSIVE", "NOT_EVALUATED": "NOT_EVALUATED"}
 
-METHOD_LABELS = {"salmon": "Salmon (+ tximport)", "hisat2_featurecounts": "HISAT2 + featureCounts"}
+# GUI display labels for the quantification backends; project.yaml keeps the identifiers.
+METHOD_LABELS = {"salmon": "Salmon (pseudoalignment)", "hisat2_featurecounts": "HISAT2 + featureCounts (genome alignment)"}
+DEFAULT_METHOD = "salmon"
 
 
 # --------------------------------------------------------------------- execution status
