@@ -8,9 +8,14 @@ from pathlib import Path
 
 import yaml
 
-# Written to gui.yaml on first use; ``~`` is the user's home directory.
-DEFAULT_ALLOWED_ROOTS = ("/media/duobook02/brian/nf-rna", "~/nf-rna-work/testdata")
-DEFAULT_CONDARC = "~/nf-rna-work/conda/condarc.yml"
+# Written to gui.yaml on first use; ``~`` is the current user's home directory.
+# The default workspace holds projects/ and fastq/ and is the only default
+# allowed root; a server with its data elsewhere sets allowed_roots and
+# project_parent in gui.yaml, which always take precedence.
+DEFAULT_WORKSPACE = "~/nf-rna-work"
+DEFAULT_ALLOWED_ROOTS = (DEFAULT_WORKSPACE,)
+DEFAULT_PROJECT_PARENT = f"{DEFAULT_WORKSPACE}/projects"
+DEFAULT_CONDARC = f"{DEFAULT_WORKSPACE}/conda/condarc.yml"
 # Roots below these prefixes live on removable or network storage, so an
 # unmounted disk must not be mistaken for an empty local directory.
 MOUNT_PREFIXES = ("/media/", "/mnt/", "/run/media/")
@@ -104,7 +109,7 @@ def load_config(path: Path | None = None) -> GuiConfig:
         raw = loaded if isinstance(loaded, dict) else {}
     else:
         condarc = str(Path(DEFAULT_CONDARC).expanduser()) if Path(DEFAULT_CONDARC).expanduser().is_file() else None
-        raw = {"allowed_roots": [str(Path(root).expanduser()) for root in DEFAULT_ALLOWED_ROOTS], "project_parent": f"{DEFAULT_ALLOWED_ROOTS[0]}/projects", "condarc": condarc, "log_tail_lines": 200, "launcher": "auto", "download_limit_mb": 500}
+        raw = {"allowed_roots": [str(Path(root).expanduser()) for root in DEFAULT_ALLOWED_ROOTS], "project_parent": str(Path(DEFAULT_PROJECT_PARENT).expanduser()), "condarc": condarc, "log_tail_lines": 200, "launcher": "auto", "download_limit_mb": 500}
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
@@ -121,13 +126,30 @@ def load_config(path: Path | None = None) -> GuiConfig:
 
 
 def ensure_data_layout(config: GuiConfig) -> list[str]:
-    """Create ``projects/`` and ``fastq/`` beside each other in the data root, only when it is mounted."""
+    """Create ``projects/`` and ``fastq/`` beside each other in the data root.
+
+    Only when the data root is mounted and lies inside an available allowed root.
+    The default workspace (``~/nf-rna-work``) is created on first use when it is
+    the configured data root and an allowed root; any other missing root is
+    reported, never created.
+    """
 
     data_root = config.project_parent.parent
+    created = []
+    default_root = Path(DEFAULT_WORKSPACE).expanduser()
+    if data_root == default_root and default_root in config.allowed_roots and not default_root.exists() and not os.path.islink(default_root):
+        try:
+            default_root.mkdir()
+            created.append(f"Created the default workspace {default_root}.")
+        except OSError as exc:
+            return [f"{default_root}: could not create the default workspace ({exc}). Project and FASTQ folders were not created."]
     status = next((item for item in config.root_statuses() if item.path == data_root), root_status(data_root))
     if not status.available:
         return [f"{data_root}: {status.message} Project and FASTQ folders were not created."]
-    created = []
+    try:
+        config.resolve_allowed(data_root)
+    except PathNotAllowed:
+        return [f"{config.project_parent}: project_parent is outside the allowed roots ({', '.join(map(str, config.allowed_roots))}). Project and FASTQ folders were not created."]
     for directory in (config.project_parent, data_root / "fastq"):
         if not directory.is_dir():
             directory.mkdir(parents=True, exist_ok=True)

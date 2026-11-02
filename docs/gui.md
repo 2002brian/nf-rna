@@ -40,18 +40,36 @@ Without poppler only that option is unavailable (its button says why and the
 
 ## Settings: `~/.config/nf-rna/gui.yaml`
 
-Written with defaults the first time the GUI opens:
+Written with defaults the first time the GUI opens. The default workspace is
+`~/nf-rna-work` in the home directory of the user running the GUI (paths are
+written to the file expanded, for example `/home/<user>/nf-rna-work`):
 
 ```yaml
 allowed_roots:                       # the only folders the GUI may browse, read or write
-- /media/duobook02/brian/nf-rna
-- ~/nf-rna-work/testdata              # written expanded to your home directory
-project_parent: /media/duobook02/brian/nf-rna/projects   # default location of new projects
-condarc: ~/nf-rna-work/conda/condarc.yml                 # set as CONDARC for runs (unless already set; only if the file exists)
+- ~/nf-rna-work
+project_parent: ~/nf-rna-work/projects        # default location of new projects
+condarc: ~/nf-rna-work/conda/condarc.yml      # set as CONDARC for runs (unless already set); written only if the file exists, otherwise null
 log_tail_lines: 200
 launcher: auto                       # auto, systemd or process (see "How runs are started")
 download_limit_mb: 500               # larger files: server path and scp command instead of a download
 ```
+
+The values in an existing `gui.yaml` always take precedence; the file is never
+rewritten once it exists. A server whose data lives elsewhere, for example on a
+separate data disk, sets its own folders. This is a custom example, not a
+default:
+
+```yaml
+allowed_roots:
+- /media/<disk>/<user>/nf-rna       # data disk: projects/ and fastq/ live here
+- /home/<user>/nf-rna-work/testdata
+project_parent: /media/<disk>/<user>/nf-rna/projects
+condarc: /home/<user>/nf-rna-work/conda/condarc.yml
+```
+
+`project_parent` must lie inside an allowed root: the GUI creates nothing for a
+`project_parent` outside them, and the *New project* location is checked
+against the roots like every other path.
 
 Every path typed or browsed in the GUI is resolved (symlinks included) and must
 lie inside an available allowed root. The folder browser never opens or lists
@@ -61,8 +79,11 @@ available root; otherwise the page says it was not opened. A root under `/media`
 `/run/media` is available only when it is on a mounted filesystem, so an
 unmounted data disk is reported as "not mounted" instead of being mistaken for
 an empty local folder. When the data root (the parent of `project_parent`) is
-mounted, `projects/` and `fastq/` are created in it if missing; nothing is
-created when it is not mounted.
+available, `projects/` and `fastq/` are created in it if missing; nothing is
+created when it is not mounted. The default workspace `~/nf-rna-work` itself is
+created on first use when it is the configured data root; any other missing
+root is reported and never created. Existing projects, FASTQ folders, runs and
+the reference registry are never moved or changed by these settings.
 
 ## Pages
 
