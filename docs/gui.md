@@ -45,9 +45,9 @@ Written with defaults the first time the GUI opens:
 ```yaml
 allowed_roots:                       # the only folders the GUI may browse, read or write
 - /media/duobook02/brian/nf-rna
-- /home/brian/nf-rna-work/testdata
+- ~/nf-rna-work/testdata              # written expanded to your home directory
 project_parent: /media/duobook02/brian/nf-rna/projects   # default location of new projects
-condarc: /home/brian/nf-rna-work/conda/condarc.yml       # set as CONDARC for runs (unless already set)
+condarc: ~/nf-rna-work/conda/condarc.yml                 # set as CONDARC for runs (unless already set; only if the file exists)
 log_tail_lines: 200
 launcher: auto                       # auto, systemd or process (see "How runs are started")
 download_limit_mb: 500               # larger files: server path and scp command instead of a download

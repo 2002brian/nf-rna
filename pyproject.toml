@@ -40,11 +40,15 @@ path = "src/rnaseq/__init__.py"
 "workflow" = "rnaseq/workflows"
 
 [tool.hatch.build.targets.sdist]
-include = ["src/rnaseq", "workflow", "tests", "tools", "examples", "docs", "README.md", "CHANGELOG.md", "CITATION.cff", "LICENSE", "environment.yml", "environment.reference-builder.yml", "environment.reference-builder-hisat2-2.2.3.yml", "pyproject.toml"]
+# Root files are anchored with "/": an unanchored "README.md" matches a README.md at any depth
+# (gitignore semantics) and pulled validation/corrections_v161/README.md into the sdist.
+include = ["/src/rnaseq", "/workflow", "/tests", "/tools", "/examples", "/docs", "/README.md", "/CHANGELOG.md", "/CITATION.cff", "/LICENSE", "/environment.yml", "/environment.reference-builder.yml", "/environment.reference-builder-hisat2-2.2.3.yml", "/pyproject.toml"]
 exclude = [
   # Local AI-agent assets are never distributed (they are also untracked and git-ignored).
   ".agents/**",
   ".claude/**",
+  # Internal development records (phase reports, acceptance evidence, release checklists) stay in Git only.
+  "docs/dev/**",
   "examples/**/runs/**",
   "examples/**/work/**",
   "examples/**/.nextflow/**",
