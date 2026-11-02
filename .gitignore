@@ -141,3 +141,8 @@ TERM2NAME.tsv
 # HISAT2 generated indexes
 *.ht2
 *.ht2l
+
+# Local AI-agent development assets (skills, settings). Kept on the developer's
+# machine only; never tracked or distributed in the wheel or sdist.
+/.agents/
+/.claude/

@@ -194,6 +194,8 @@ def test_the_project_skill_points_only_at_nf_rna_files_and_does_not_duplicate_co
     import re
 
     skill = ROOT / ".claude" / "skills" / "nf-rna-figures" / "SKILL.md"
+    if not skill.is_file():  # a local, untracked agent asset: absent from clones and the sdist
+        pytest.skip("local nf-rna-figures skill not present")
     text = skill.read_text(encoding="utf-8")
     assert text.startswith("---\nname: nf-rna-figures\n")
     paths = set(re.findall(r"`((?:docs|src|tools|tests)/[^`\s]+)`", text))

@@ -38,6 +38,7 @@ All notable changes to this project are documented here.
 ### Compatibility
 
 - No analysis, result table, figure file, manifest, report or delivery package changes. New runs record `nf_rna_version` `1.7.0`.
+- Local AI-agent development assets (`.claude/skills/`, `.agents/skills/`) are no longer tracked or shipped: the sdist no longer includes `.claude/skills`, and `.claude/` and `.agents/` are git-ignored. The figure engine, `docs/figure-standard.md` and `tools/figure_review/` are unchanged and still shipped.
 - **Upstream reuse across versions.** The frozen upstream identity that `rnaseq run --reuse-upstream` compares includes the nf-rna version (`input_manifest.yaml` `pipeline.version`), so a v1.7.0 run refuses a source run made by v1.6.1 or earlier (`frozen input_manifest.yaml differs in its input, upstream, or reference identity`), as every earlier release did across versions. Rerun the upstream stage with v1.7.0 once; reuse between v1.7.0 runs works as before. The GUI's reuse hint now lists such runs as not reusable with this reason instead of offering them.
 - The runtime environment is keyed by lock and nf-rna build, so the first v1.7.0 run provisions a fresh downstream environment from the unchanged lock.
 - GUI page names changed: *Dashboard* → *Projects*, *Run* → *Validate & Run*; new pages *Datasets* and *Project overview*. The CLI is unchanged.

@@ -6,7 +6,7 @@
 Checks that: the bundled Arimo files and OFL.txt in the wheel match the SHA-256 values pinned in FONT_MANIFEST.json and the
 working tree; the OFL text is the SIL Open Font License 1.1; every packaged file under rnaseq/ is byte-identical to the tree;
 no packaged file mentions the design-reference toolkit or a user home path; the R scripts and fonts are shipped; the sdist
-carries the review tools, tests and skill; and the wheel built from the sdist is byte-identical to the direct wheel.
+carries the review tools and tests and no local AI-agent assets (.claude/, .agents/); and the wheel built from the sdist is byte-identical to the direct wheel.
 """
 
 from __future__ import annotations
@@ -57,10 +57,10 @@ def main(argv: list[str] | None = None) -> int:
     results["forbidden_strings"] = {n: [f.decode() for f in FORBIDDEN if f in wheel.read(n)] for n in names if any(f in wheel.read(n) for f in FORBIDDEN)}
     results["r_scripts"] = sorted(Path(n).name for n in names if n.endswith(".R"))
     results["font_files_shipped"] = sorted(n for n in names if "/fonts/" in n)
-    results["tools_in_wheel"] = [n for n in names if n.startswith(("tools/", ".claude/"))]
+    results["tools_in_wheel"] = [n for n in names if n.startswith(("tools/", ".claude/", ".agents/"))]
     sdist = tarfile.open(args.sdist)
     sd_names = sdist.getnames()
-    results["sdist"] = {"has_tools": any("/tools/figure_review/" in n for n in sd_names), "has_skill": any(n.endswith(".claude/skills/nf-rna-figures/SKILL.md") for n in sd_names),
+    results["sdist"] = {"has_tools": any("/tools/figure_review/" in n for n in sd_names), "agent_assets": [n for n in sd_names if "/.claude/" in n or "/.agents/" in n],
                         "has_tests": any("/tests/test_figure_" in n for n in sd_names), "has_figure_standard_doc": any(n.endswith("docs/figure-standard.md") for n in sd_names),
                         "has_font_licence": any(n.endswith("fonts/arimo/OFL.txt") for n in sd_names)}
     sd_forbidden = {}
@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.wheel_from_sdist:
         results["wheel_from_sdist_byte_identical"] = sha(args.wheel.read_bytes()) == sha(args.wheel_from_sdist.read_bytes())
     ok = (not sd_forbidden and all(font_ok.values()) and results["ofl_text"]["sil_open_font_license_1_1"] and not differ and not missing and not results["forbidden_strings"]
-          and results["wheel_from_sdist_byte_identical" if args.wheel_from_sdist else "r_scripts"] and not results["tools_in_wheel"])
+          and results["wheel_from_sdist_byte_identical" if args.wheel_from_sdist else "r_scripts"] and not results["tools_in_wheel"] and not results["sdist"]["agent_assets"])
     print(json.dumps(results, indent=1, sort_keys=True))
     print("PACKAGE AUDIT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
