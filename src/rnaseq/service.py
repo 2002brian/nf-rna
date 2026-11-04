@@ -2156,8 +2156,27 @@ def _upstream_identity(manifest_path: Path) -> dict[str, Any] | None:
     pipeline = manifest.get("pipeline") if isinstance(manifest.get("pipeline"), dict) else {}
     return {
         "pipeline": {"name": pipeline.get("name"), "version": pipeline.get("version")},
-        **{section: manifest.get(section) for section in ("input", "upstream", "reference")},
+        "input": _input_identity(manifest.get("input")),
+        **{section: manifest.get(section) for section in ("upstream", "reference")},
     }
+
+
+# Per-file bookkeeping that records how a run obtained a FASTQ's identity, not
+# what that identity is.  ``sha256_source`` is ``computed`` for the run that
+# first hashed a file and ``cache`` for every later run, so an L1 run and the L2
+# run reusing its upstream always differ here although path, size, mtime and
+# SHA256 are identical.
+_NON_IDENTITY_FASTQ_FIELDS = frozenset({"sha256_source"})
+
+
+def _input_identity(section: object) -> object:
+    if not isinstance(section, dict) or not isinstance(section.get("files"), list):
+        return section
+    files = [
+        {key: value for key, value in item.items() if key not in _NON_IDENTITY_FASTQ_FIELDS} if isinstance(item, dict) else item
+        for item in section["files"]
+    ]
+    return {**section, "files": files}
 
 
 _REUSE_FORMAT = (
