@@ -31,9 +31,9 @@ import yaml
 from rnaseq.design_matrix import residual_degrees_of_freedom_message
 from rnaseq.models import ANNOTATION_DATABASES, DEFAULT_L2_ENRICHMENT, DesignType, Preset, ProjectConfig, default_annotation
 from rnaseq.project import derive_design
-from rnaseq.validators import CONTRAST_HEADER, ContrastDefinition, MetadataSummary, ValidationIssue, ValidationReport, condition_factor
+from rnaseq.validators import CONTRAST_HEADER, SAFE_IDENTIFIER_PATTERN, ContrastDefinition, MetadataSummary, ValidationIssue, ValidationReport, condition_factor
 
-CONTRAST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+CONTRAST_ID_PATTERN = SAFE_IDENTIFIER_PATTERN  # one rule for generated and hand-written contrast IDs
 
 
 class DesignSetupError(ValueError):

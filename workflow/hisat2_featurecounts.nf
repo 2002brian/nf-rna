@@ -282,6 +282,12 @@ workflow {
         error 'Specify --input, --outdir, --fasta, --gtf, --hisat2_index, --assembly_script, supported --layout and explicit --strandedness; runtime splice mode also requires --hisat2_splice_sites.'
     }
     reads = Channel.fromPath(params.input).splitCsv(header: true).map { row ->
+        // Sample IDs are interpolated into task shell scripts and output names.
+        // The control plane only writes IDs of this form; refuse anything else
+        // before a task runs (same rule as rnaseq.validators.SAFE_IDENTIFIER_PATTERN).
+        if (!(row.sample ==~ /[A-Za-z0-9][A-Za-z0-9._-]*/)) {
+            error "Unsafe sample ID in samplesheet: '${row.sample}'. Use only ASCII letters, digits, '.', '_' and '-'."
+        }
         def files = row.fastq_2 ? [file(row.fastq_1), file(row.fastq_2)] : [file(row.fastq_1)]
         tuple(row.sample, row.strandedness, files)
     }

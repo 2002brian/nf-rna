@@ -73,7 +73,7 @@ An L2 project fails `rnaseq validate` and `rnaseq plan` until `rnaseq design` ha
 
 ### FASTQ names and sample IDs
 
-FASTQs must be gzipped (`.fastq.gz` or `.fq.gz`) and named `<sample>[_L<nnn>]_R1|_R2[_<nnn>]`. The sample ID is everything before the optional lane and the read marker, so `Ctrl1_S1_L001_R1_001.fastq.gz` belongs to sample `Ctrl1_S1` (the Illumina `_S1` is kept) and `Ctrl1_R1.fastq.gz` to `Ctrl1`. Lanes of one sample are combined, paired-end data needs a matching `_R2` for each `_R1`, and `_1`/`_2` or `.R1` names are rejected. Each `sample_id` in `metadata.csv` must match exactly; `rnaseq validate` lists the samples found on only one side.
+FASTQs must be gzipped (`.fastq.gz` or `.fq.gz`) and named `<sample>[_L<nnn>]_R1|_R2[_<nnn>]`. The sample ID is everything before the optional lane and the read marker, so `Ctrl1_S1_L001_R1_001.fastq.gz` belongs to sample `Ctrl1_S1` (the Illumina `_S1` is kept) and `Ctrl1_R1.fastq.gz` to `Ctrl1`. Sample IDs may contain only ASCII letters, digits, `.`, `_` and `-` and must start with a letter or digit (no spaces, accents or shell characters; they become file names and workflow arguments). Lanes of one sample are combined, but a lane-less FASTQ next to lane files of the same sample (usually their merged copy) is rejected so no read is counted twice. Paired-end data needs a matching `_R2` for each `_R1`, and `_1`/`_2` or `.R1` names are rejected. Each `sample_id` in `metadata.csv` must match exactly; `rnaseq validate` lists the samples found on only one side.
 
 ### Case ID, run ID, and monitoring
 

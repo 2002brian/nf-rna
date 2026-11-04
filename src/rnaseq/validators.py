@@ -39,6 +39,18 @@ VARIABLE_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
 FASTQ_NAME_PATTERN = re.compile(
     r"^(?P<sample>.+?)(?:_L(?P<lane>\d{3}))?_R(?P<read>[12])(?:_\d{3})?\.(?:fastq|fq)\.gz$"
 )
+# Identifiers that become file names, output directories or words in workflow
+# shell scripts (FASTQ-derived sample IDs, contrast IDs).  ASCII letters,
+# digits, '.', '_' and '-', starting with a letter or digit: no whitespace,
+# path separators, '..'-only names or shell metacharacters.
+SAFE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# R's read.csv() reads the literal field "NA" as a missing value (its default
+# na.strings), whatever the column's declared class.
+R_MISSING_TOKEN = "NA"
+# The plain decimal syntax that both Python and R parse to the same number.
+# Python's Decimal()/float() additionally accept PEP 515 underscores ("1_000")
+# and non-ASCII Unicode digits, which R's read.csv()/as.numeric() turn into NA.
+R_NUMERIC_PATTERN = re.compile(r"^[ \t]*[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?[ \t]*$")
 
 VALIDATION_BLOCKER = "Project validation failed; fix the errors listed above before execution."
 
@@ -355,6 +367,11 @@ def validate_counts(path: Path, report: ValidationReport) -> CountsSummary | Non
             gene_id = row[0]
             if gene_id.strip() == "":
                 report.error("blank_gene_id", f"Count matrix has a blank gene_id at line {line_number}.")
+            elif gene_id == R_MISSING_TOKEN:
+                report.error(
+                    "r_missing_gene_id",
+                    f"Count matrix has gene_id {R_MISSING_TOKEN!r} at line {line_number}; R reads it as a missing value.",
+                )
             elif gene_id in seen_genes:
                 report.error("duplicate_gene_id", f"Duplicate gene_id at line {line_number}: {gene_id}")
             seen_genes.add(gene_id)
@@ -375,6 +392,13 @@ def validate_counts(path: Path, report: ValidationReport) -> CountsSummary | Non
                     report.error(
                         "non_finite_count",
                         f"Non-finite count at row {line_number}, column {column_number}: {raw_value!r}",
+                    )
+                    row_valid = False
+                elif not R_NUMERIC_PATTERN.fullmatch(raw_value):
+                    report.error(
+                        "non_numeric_count",
+                        f"Count at row {line_number}, column {column_number} is not a plain ASCII decimal number "
+                        f"that R reads identically: {raw_value!r}",
                     )
                     row_valid = False
                 elif value < 0:
@@ -433,6 +457,13 @@ def validate_fastq(
             )
             continue
         sample_id = match.group("sample")
+        if not SAFE_IDENTIFIER_PATTERN.fullmatch(sample_id):
+            report.error(
+                "unsafe_fastq_sample_id",
+                f"FASTQ file {file_path.name!r} gives sample ID {sample_id!r}. Sample IDs become file names "
+                "and workflow shell arguments, so they may contain only ASCII letters, digits, '.', '_' and '-', "
+                "and must start with a letter or digit. Rename the FASTQ files (and the metadata sample_id).",
+            )
         lane = match.group("lane") or "L000"
         read = match.group("read")
         key = (sample_id, lane)
@@ -444,6 +475,22 @@ def validate_fastq(
             )
             continue
         reads[read] = file_path
+
+    # A file without a lane token is a whole-sample FASTQ.  Next to lane files
+    # of the same sample it is almost always their concatenation, and keeping
+    # both would align and merge every read twice.
+    lanes_by_sample: dict[str, set[str]] = {}
+    for sample_id, lane in parsed:
+        lanes_by_sample.setdefault(sample_id, set()).add(lane)
+    for sample_id, lanes in sorted(lanes_by_sample.items()):
+        if "L000" in lanes and len(lanes) > 1:
+            lane_names = ", ".join(f"L{lane}" for lane in sorted(lanes - {"L000"}))
+            report.error(
+                "mixed_merged_and_lane_fastq",
+                f"Sample {sample_id!r} has both a FASTQ without a lane token and per-lane FASTQs ({lane_names}). "
+                "The lane-less file is usually the merged copy of the lanes, so its reads would be counted twice. "
+                "Keep either the merged FASTQ or the per-lane FASTQs in the input directory, not both.",
+            )
 
     records: list[FastqRecord] = []
     for (sample_id, lane), reads in sorted(parsed.items()):
@@ -523,6 +570,12 @@ def validate_metadata(
             sample_ids.append(sample_id)
             if sample_id.strip() == "":
                 report.error("blank_sample_id", f"Metadata has a blank sample_id at line {line_number}.")
+            elif sample_id == R_MISSING_TOKEN:
+                report.error(
+                    "r_missing_sample_id",
+                    f"Metadata sample_id {R_MISSING_TOKEN!r} at line {line_number} is read by R as a missing value; "
+                    "rename the sample.",
+                )
             elif sample_id in seen_samples:
                 report.error(
                     "duplicate_sample_id", f"Duplicate metadata sample_id at line {line_number}: {sample_id}"
@@ -540,12 +593,18 @@ def validate_metadata(
                         number = float(record[variable])
                     except ValueError:
                         number = float("nan")
-                    if not math.isfinite(number):
+                    if not math.isfinite(number) or not R_NUMERIC_PATTERN.fullmatch(record[variable]):
                         report.error(
                             "invalid_continuous_value",
                             f"Continuous design variable {variable!r} must contain finite numeric values; "
                             f"sample {sample_id!r} at line {line_number} has {record[variable]!r}.",
                         )
+                elif record[variable] == R_MISSING_TOKEN:
+                    report.error(
+                        "r_missing_design_value",
+                        f"Metadata value {R_MISSING_TOKEN!r} for design variable {variable!r} at line {line_number} "
+                        "is read by R as a missing value; use a descriptive level name instead.",
+                    )
             rows.append(record)
 
     if not rows:
@@ -598,6 +657,12 @@ def validate_contrasts(
                     "blank_contrast_value", f"Contrasts row {line_number} contains a blank required value."
                 )
                 continue
+            if not SAFE_IDENTIFIER_PATTERN.fullmatch(contrast_id):
+                report.error(
+                    "unsafe_contrast_id",
+                    f"Contrast ID {contrast_id!r} at line {line_number} becomes an output directory name; it may "
+                    "contain only ASCII letters, digits, '.', '_' and '-', and must start with a letter or digit.",
+                )
             if contrast_id in seen_ids:
                 report.error(
                     "duplicate_contrast_id", f"Duplicate contrast_id at line {line_number}: {contrast_id}"
@@ -778,6 +843,14 @@ def _build_groups_and_validate_design(report: ValidationReport) -> None:
             "blank_pair_id",
             f"Sample {sample_id!r} has a blank value in pairing column {pairing_variable!r}.",
         )
+    if pairing_variable not in report.formula_variables:  # formula variables are checked with the metadata
+        for record in metadata.rows:
+            if record[pairing_variable] == R_MISSING_TOKEN:
+                report.error(
+                    "r_missing_pair_id",
+                    f"Sample {record['sample_id']!r} has {R_MISSING_TOKEN!r} in pairing column {pairing_variable!r}; "
+                    "R reads it as a missing value.",
+                )
 
     summaries: list[PairingContrastSummary] = []
     pair_candidates = list(report.contrasts.contrasts)
