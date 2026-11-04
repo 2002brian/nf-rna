@@ -1610,8 +1610,14 @@ def verify_delivery_manifest(delivery: Path) -> tuple[str, ...]:
     return tuple(failures)
 
 
-def assemble_delivery(run: CaseRun) -> Path:
-    """Build a client-safe package from an explicit allowlist of final artifacts."""
+def assemble_delivery(run: CaseRun, *, final_state: dict[str, Any] | None = None) -> Path:
+    """Build a client-safe package from an explicit allowlist of final artifacts.
+
+    ``final_state`` holds the values of the SUCCESS state that will be recorded
+    once the package verifies (see :func:`_deliver_and_finish`).  The delivered
+    ``run_state`` is then that final state, not the in-progress
+    ``RUNNING``/``delivery`` snapshot of the moment of packaging.
+    """
 
     delivery = _resolved_delivery_root(run.run_dir / "delivery", run_dir=run.run_dir)
     declared_files: list[Path] = []
@@ -1707,12 +1713,17 @@ def assemble_delivery(run: CaseRun) -> Path:
                 source,
                 delivery / "methods_and_versions" / delivery_filename(name, run.run_id),
             )
-    for source in (run.state_path, run.run_dir / "provenance" / "run_provenance.yaml"):
-        if source.is_file():
-            copy_declared(
-                source,
-                delivery / "methods_and_versions" / delivery_filename(source.name, run.run_id),
-            )
+    state_target = delivery / "methods_and_versions" / delivery_filename(run.state_path.name, run.run_id)
+    if final_state is not None:
+        write_declared(state_target, _render_state(_state_payload(run, "SUCCESS", **final_state, delivery=str(delivery))))
+    elif run.state_path.is_file():
+        copy_declared(run.state_path, state_target)
+    provenance_source = run.run_dir / "provenance" / "run_provenance.yaml"
+    if provenance_source.is_file():
+        copy_declared(
+            provenance_source,
+            delivery / "methods_and_versions" / delivery_filename(provenance_source.name, run.run_id),
+        )
     write_declared(
         delivery / delivery_filename("README.md", run.run_id),
         f"# RNA-seq delivery package\n\nCase: `{run.case_id}`  \nRun: `{run.run_id}`  \nTimezone: `Asia/Taipei`\n\nThis directory contains only curated client deliverables. Internal logs, work directories, caches and temporary artifacts remain outside this package.\n"
@@ -1724,6 +1735,16 @@ def assemble_delivery(run: CaseRun) -> Path:
     _assert_delivery_appledouble_free(delivery)
     write_delivery_manifest(delivery, declared_files=declared_files)
     _assert_delivery_appledouble_free(delivery)
+    return delivery
+
+
+def _deliver_and_finish(run: CaseRun, **final_values: Any) -> Path:
+    """Package the delivery, then record SUCCESS with exactly the delivered state."""
+
+    _write_state(run, "RUNNING", phase="delivery")
+    final = {"phase": "delivery", "completed_at": _state_now(), **final_values}
+    delivery = assemble_delivery(run, final_state=final)
+    _write_state(run, "SUCCESS", **final, delivery=str(delivery))
     return delivery
 
 
@@ -2417,9 +2438,7 @@ def _execute_service_run(
         # MultiQC and frozen provenance are still assembled into the normal
         # client delivery package, but no metadata-dependent downstream
         # statistical workflow is launched.
-        _write_state(run, "RUNNING", phase="delivery")
-        delivery = assemble_delivery(run)
-        _write_state(run, "SUCCESS", phase="delivery", delivery=str(delivery), downstream_skipped="technical_qc_only")
+        _deliver_and_finish(run, downstream_skipped="technical_qc_only")
         return run
     execution_inputs = resolve_downstream_inputs(run)
     observer_config = write_downstream_observer_config(run)
@@ -2438,9 +2457,7 @@ def _execute_service_run(
                 resource=RESOURCE_CONTRACTS["LARGE"],
             )
         )
-    _write_state(run, "RUNNING", phase="delivery")
-    delivery = assemble_delivery(run)
-    _write_state(run, "SUCCESS", phase="delivery", delivery=str(delivery))
+    _deliver_and_finish(run)
     return run
 
 
@@ -2547,9 +2564,7 @@ def _execute_retry_service_run(
                 )
             finalize_fastq_handoff(report, run, frozen / "downstream_contract.json")
     if report.config.project.preset is Preset.QC:
-        _write_state(run, "RUNNING", phase="delivery")
-        delivery = assemble_delivery(run)
-        _write_state(run, "SUCCESS", phase="delivery", delivery=str(delivery), downstream_skipped="technical_qc_only")
+        _deliver_and_finish(run, downstream_skipped="technical_qc_only")
         return run
     execution_inputs = resolve_downstream_inputs(run)
     observer_config = write_downstream_observer_config(run)
@@ -2569,7 +2584,5 @@ def _execute_retry_service_run(
                 resource=RESOURCE_CONTRACTS["LARGE"],
             )
         )
-    _write_state(run, "RUNNING", phase="delivery")
-    delivery = assemble_delivery(run)
-    _write_state(run, "SUCCESS", phase="delivery", delivery=str(delivery))
+    _deliver_and_finish(run)
     return run
