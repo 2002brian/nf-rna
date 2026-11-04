@@ -596,3 +596,77 @@ def run_preflight(project: Path, case_id: str, reuse_upstream: str | None) -> Va
 def scope_label(report: ValidationReport) -> str:
     assert report.config is not None
     return {Preset.QC: "QC (technical FASTQ QC only)", Preset.L1: "L1 (QC and exploratory analysis)", Preset.L2: "L2 (L1 + differential expression and enrichment)"}[report.config.project.preset]
+
+
+# --------------------------------------------------------------------- paired-design preview
+
+@dataclass(frozen=True)
+class PairRow:
+    pair: str
+    samples: dict[str, tuple[str, ...]]  # condition level -> sample IDs
+    status: str  # "complete" or a short description of the problem
+
+
+@dataclass(frozen=True)
+class PairingPreview:
+    pair_column: str
+    condition_column: str
+    levels: tuple[str, ...]
+    pairs: tuple[PairRow, ...]
+    blank_pair: tuple[str, ...]  # samples without a pair ID
+    blank_condition: tuple[str, ...]  # samples without a condition
+
+    @property
+    def complete(self) -> int:
+        return sum(row.status == "complete" for row in self.pairs)
+
+    @property
+    def problems(self) -> int:
+        return len(self.pairs) - self.complete + len(self.blank_pair)
+
+
+def pairing_preview(columns: list[str], rows: list[dict[str, Any]], pair_column: str, condition_column: str) -> PairingPreview | None:
+    """How the samples of a (possibly unsaved) metadata table form pairs.
+
+    Display only, for the table being edited: it applies the validator's rule
+    for paired_two_group designs (each pair ID has exactly one sample of each
+    of the two condition levels; no blank pair ID) so mistakes show before
+    saving. ``rnaseq validate`` remains the authority. None when either column
+    is missing from the table.
+    """
+
+    if pair_column not in columns or condition_column not in columns:
+        return None
+    levels: list[str] = []
+    by_pair: dict[str, dict[str, list[str]]] = {}
+    blank_pair: list[str] = []
+    blank_condition: list[str] = []
+    for row in rows:
+        sample = clean_cell(row.get("sample_id"))
+        if not sample:
+            continue
+        pair, level = clean_cell(row.get(pair_column)), clean_cell(row.get(condition_column))
+        if not level:
+            blank_condition.append(sample)
+        elif level not in levels:
+            levels.append(level)
+        if not pair:
+            blank_pair.append(sample)
+            continue
+        by_pair.setdefault(pair, {}).setdefault(level, []).append(sample)
+    out = []
+    for pair in sorted(by_pair):
+        members = by_pair[pair]
+        problems = []
+        for level in levels:
+            count = len(members.get(level, ()))
+            if count == 0:
+                problems.append(f"no {level} sample")
+            elif count > 1:
+                problems.append(f"{count} {level} samples (exactly one needed)")
+        if members.get(""):
+            problems.append(f"{len(members[''])} sample(s) without a condition")
+        if len(levels) != 2:
+            problems.append(f"a paired design needs exactly 2 condition levels (found {len(levels)})")
+        out.append(PairRow(pair, {level: tuple(members.get(level, ())) for level in levels}, "complete" if not problems else "; ".join(problems)))
+    return PairingPreview(pair_column, condition_column, tuple(levels), tuple(out), tuple(blank_pair), tuple(blank_condition))

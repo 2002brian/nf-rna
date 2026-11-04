@@ -148,3 +148,16 @@ fixes, evidence, FASTQ acceptance checklist). Decisions: `DECISIONS.md`,
 
 Version 1.7.0 and the release date 2026-10-31 were not changed. If the tag
 is made on a later day, update the dates as described in §3.
+
+## GUI plotting, performance and UX (after the first real FASTQ E2E)
+
+Report: `gui_ux_v170.md`. **This changes the scope statement of §2**: besides the GUI,
+`src/rnaseq/references.py` (an opt-in SHA-256 memo used only by the GUI process; off for
+the CLI and every run) and the figure code in `src/rnaseq/r/figures.R` and
+`src/rnaseq/r/l1_analysis.R` changed. `git diff v1.6.1 -- src/rnaseq/r` is therefore no
+longer empty. The L1 numerical outputs are byte-identical before and after
+(8-sample NGS1130901 data), legacy figures are byte-identical (PDF pixel-identical),
+and in the standard preset only the sample-correlation heatmap's typography changed.
+Each L1 figure also gains `<name>_300dpi.png`. Because `src/` changed, the first
+`rnaseq run` after this change builds a new downstream runtime prefix (several
+minutes). Re-check §2 and the release notes before tagging.

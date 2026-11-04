@@ -60,6 +60,8 @@ write.table(data.frame(component = paste0("PC", seq_along(variance)), proportion
 color_name <- tail(all.vars(formula), 1)
 scores$group <- as.factor(metadata[scores$sample_id, color_name])
 fig <- nf_rna_figure_context(cfg)
+# As in L2: each L1 figure also gets <name>_<raster dpi>dpi.png beside the 150 dpi report preview (additive; names unchanged).
+l1_figure_formats <- c("png", "png_raster", "tiff", "pdf")
 pfig <- nf_rna_figure_scope(fig, "pca")  # the context PCA figures are drawn with (standard preset when requested)
 pc_labels <- labs(x = sprintf("PC1 (%.1f%%)", 100 * variance[[1]]), y = sprintf("PC2 (%.1f%%)", 100 * ifelse(length(variance) >= 2, variance[[2]], 0)))
 # PC scores share one unit, so both axes use the same scale (coord_fixed).
@@ -108,13 +110,13 @@ pca_meta <- function(encoding) list(
 )
 main_pca <- pca_plot("group", color_name, "group", color_name)
 nf_rna_save_figure(pfig, main_pca$plot, file.path(cfg$output_dir, "pca"), pca_width_mm, pca_height_mm(), cfg$output_dir,
-  pca_meta(list(colour = color_name, shape = if (is.null(main_pca$shapes)) "none (too many levels)" else color_name, colours = as.list(main_pca$colours), palette = nf_rna_categorical_palette_name(length(main_pca$colours), pfig))))
+  pca_meta(list(colour = color_name, shape = if (is.null(main_pca$shapes)) "none (too many levels)" else color_name, colours = as.list(main_pca$colours), palette = nf_rna_categorical_palette_name(length(main_pca$colours), pfig))), formats = l1_figure_formats)
 if (!is.null(cfg$design_variable_types) && identical(cfg$design_variable_types[["batch"]], "categorical")) {
   scores$batch <- as.factor(metadata[scores$sample_id, "batch"])
   # Batch is the colour; the biological group keeps its meaning as the shape.
   batch_pca <- pca_plot("batch", "batch", "group", color_name)
   nf_rna_save_figure(pfig, batch_pca$plot, file.path(cfg$output_dir, "pca_by_batch"), pca_width_mm, pca_height_mm(), cfg$output_dir,
-    pca_meta(list(colour = "batch", shape = if (is.null(batch_pca$shapes)) "none (too many levels)" else color_name, colours = as.list(batch_pca$colours), palette = nf_rna_categorical_palette_name(length(batch_pca$colours), pfig, batch = TRUE))))
+    pca_meta(list(colour = "batch", shape = if (is.null(batch_pca$shapes)) "none (too many levels)" else color_name, colours = as.list(batch_pca$colours), palette = nf_rna_categorical_palette_name(length(batch_pca$colours), pfig, batch = TRUE))), formats = l1_figure_formats)
 }
 corr <- cor(vst_matrix, method = "pearson")
 write.table(data.frame(sample_id = rownames(corr), corr, check.names = FALSE), file.path(cfg$output_dir, "sample_correlation.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
@@ -144,7 +146,7 @@ corr_meta <- function() list(kind = "sample correlation heatmap", data = "Pearso
 if (!identical(cfig$preset, "standard")) {
   corr_plot <- pheatmap(corr, color = corr_colours, breaks = corr_breaks, border_color = NA, main = "Pearson correlation (blind VST)",
     fontsize = fig$profile$base_pt, fontsize_row = fig$profile$small_pt, fontsize_col = fig$profile$small_pt, silent = TRUE)
-  nf_rna_save_figure(fig, corr_plot, file.path(cfg$output_dir, "sample_correlation"), fig$profile$double_col_mm, 150, cfg$output_dir, corr_meta())
+  nf_rna_save_figure(fig, corr_plot, file.path(cfg$output_dir, "sample_correlation"), fig$profile$double_col_mm, 150, cfg$output_dir, corr_meta(), formats = l1_figure_formats)
 } else {
   # Same matrix, same pheatmap clustering; the standard style adds the group (and batch) annotation in the
   # PCA colours and sizes the figure from its content.
@@ -163,7 +165,7 @@ if (!identical(cfig$preset, "standard")) {
     c(corr_meta(), list(
       annotation = list(group = color_name, colours = as.list(corr_annotation_colours[[color_name]]), batch = if (is.null(corr_annotation_colours$batch)) "none" else as.list(corr_annotation_colours$batch)),
       layout = list(cell_mm = fit$cw, sample_labels = if (fit$show_rows) sprintf("%.1f pt sample IDs", pt$small_pt) else "hidden: too many samples to label legibly within the profile maximum"),
-      display_order = list(rows = rownames(corr)[fit$heat$tree_row$order], columns = colnames(corr)[fit$heat$tree_col$order]))))
+      display_order = list(rows = rownames(corr)[fit$heat$tree_row$order], columns = colnames(corr)[fit$heat$tree_col$order]))), formats = l1_figure_formats)
 }
 # Sample-level expression distributions (QC only: they say nothing about batch
 # effects).  The same retained genes and the same sample order (cfg$samples) are
@@ -185,7 +187,7 @@ for (spec in list(
   list(stem = "boxplot_log2_raw_counts", values = "raw", y = "log2(raw count + 1)", data = "log2(raw count + 1) of the L1-retained genes, before size-factor normalization", matrix = "log2_raw_count_plus_1"),
   list(stem = "boxplot_vst", values = "vst", y = "VST expression (blind, log2 scale)", data = "blind VST of the L1-retained genes (the matrix used for PCA and correlation)", matrix = "blind_vst"))) {
   box <- nf_rna_sample_boxplot(bfig, distribution_stats[distribution_stats$matrix == spec$matrix, , drop = FALSE], box_group, color_name, spec$y, box_batch, "batch")
-  nf_rna_save_figure(bfig, box$plot, file.path(cfg$output_dir, spec$stem), box$width_mm %||% bfig$profile$double_col_mm, box$height_mm, cfg$output_dir, box_meta(spec$data, spec$y, spec$matrix, box))
+  nf_rna_save_figure(bfig, box$plot, file.path(cfg$output_dir, spec$stem), box$width_mm %||% bfig$profile$double_col_mm, box$height_mm, cfg$output_dir, box_meta(spec$data, spec$y, spec$matrix, box), formats = l1_figure_formats)
 }
 nf_rna_write_figure_manifest(fig, cfg$output_dir)
 flags <- character()

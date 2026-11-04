@@ -17,6 +17,7 @@ import streamlit as st
 from rnaseq.errors import ExecutionPreflightError, ProjectConfigError, ProjectCreationError
 from rnaseq.gui import datasets, figure_export, jobs, results, services, workspace
 from rnaseq.gui.config import GuiConfig, PathNotAllowed, ensure_data_layout, gui_state_dir, load_config
+from rnaseq.references import enable_checksum_memo
 from rnaseq.models import DEFAULT_L2_ENRICHMENT, PIPELINE_VERSION, DesignType, FastqPreprocessing, InputType, Preset, SequencingLayout, describe_enrichment
 from rnaseq.run_status import _Cache, build_status, discover_runs, render_status
 from rnaseq import wizard
@@ -36,9 +37,29 @@ or run the project once with Salmon (strandedness `auto` infers it), or RSeQC `i
 """
 
 
+BACKEND_HELP = {
+    "salmon": "Salmon: transcript-level quantification by pseudoalignment (nf-core/rnaseq), summarised to genes with tximport. "
+              "Strandedness `auto` lets Salmon infer it from the reads.",
+    "hisat2_featurecounts": "HISAT2 + featureCounts: splice-aware genome alignment, then gene-level read counting on the annotation. "
+                            "featureCounts needs the strandedness stated explicitly.",
+}
+
+DESIGN_HELP = {
+    "two_group": "Unpaired: independent samples in two conditions (for example different animals per group). The model is `~ condition`.",
+    "paired_two_group": "Paired: each pairing unit (patient, donor, cell line …) has one sample of each of the two conditions, "
+                        "for example tumour and adjacent normal of the same patient. The model compares the conditions within each pair: `~ <pairing column> + condition`.",
+    "multi_group": "Three or more condition levels with independent samples; contrasts between levels are chosen on the Contrasts page.",
+}
+
+
 # --------------------------------------------------------------------- shared context
 
 def gui_config() -> GuiConfig:
+    # Every rerun re-validates the project, which re-checks the reference assets'
+    # SHA-256 (several GB).  Within this long-lived process, reuse the digest of
+    # an unchanged large file (identity = device, inode, size, mtime, ctime);
+    # `rnaseq run` and the CLI still hash in full.  See references.sha256_file.
+    enable_checksum_memo()
     config = load_config()
     if not st.session_state.get("_layout_checked"):
         st.session_state["_layout_messages"] = [*config.notes, *ensure_data_layout(config)]
@@ -99,6 +120,48 @@ def require_project() -> Path | None:
             st.error(refused)
         st.info("Select a project in the sidebar, or create one on the New Project page.")
     return project
+
+
+VALIDATING = ("Validating the project … The first check of a reference in this GUI session verifies its SHA-256 "
+              "checksums (several GB) and can take 5–10 s; later checks reuse them while the files are unchanged.")
+
+
+def validated(project: Path):
+    """``validate_project`` (read-only); a note appears if it takes longer than half a second."""
+
+    from rnaseq.validators import validate_project
+
+    with st.spinner(VALIDATING):
+        return validate_project(project)
+
+
+def workflow_bar(project: Path, report, here: str) -> None:
+    """Where this page sits in the workflow, what is done, and what to do next (read from the project files)."""
+
+    if report.config is None or report.loaded is None:
+        return
+    steps = workspace.workflow_steps(report, workspace.project_runs(project, _Cache()))
+    parts = []
+    for step in steps:
+        name = f"**{step.name}**" if STEP_PAGES.get(step.name) == here else step.name
+        parts.append(f"{STEP_ICONS.get(step.status, '')} {name}")
+    box = st.container(border=True)
+    box.markdown(" → ".join(parts), help="✅ done · ⬜ to do · ⚠️ needs attention · ➖ not needed for this analysis scope. "
+                 "Bold steps are done on this page. The state is read from the project files on every visit.")
+    upcoming = workspace.next_step(steps)
+    if upcoming is None:
+        box.caption("Every step is complete.")
+        return
+    target = STEP_PAGES.get(upcoming.name)
+    text = f"Next: **{upcoming.name}** — {upcoming.detail}"
+    if target == here:
+        box.caption(text + " (on this page).")
+    elif target in PAGES:
+        cols = box.columns([3, 1])
+        cols[0].caption(text + ".")
+        cols[1].page_link(PAGES[target], label=f"Go to {PAGES[target].title} →")
+    else:
+        box.caption(text + ".")
 
 
 def sidebar(config: GuiConfig) -> None:
@@ -422,8 +485,6 @@ def open_run(project: Path, run: workspace.RunRow, page: str) -> None:
 
 
 def project_page() -> None:
-    from rnaseq.validators import validate_project
-
     gui_config()
     project = require_project()
     if project is None:
@@ -445,7 +506,7 @@ def project_page() -> None:
         "analysis": summary.analysis_settings(), "contrasts": ", ".join(summary.contrasts) or None,
     })
 
-    report = validate_project(project)
+    report = validated(project)
     st.subheader("Workflow")
     if report.config is None:
         show_issues(report.errors)
@@ -705,8 +766,6 @@ def _dataset_counts(scan: datasets.DatasetScan, project: Path | None, importer) 
 
 
 def _dataset_metadata(scan: datasets.DatasetScan, project: Path | None) -> None:
-    from rnaseq.validators import validate_project
-
     files = scan.of_kind("metadata")
     chosen = files[0] if len(files) == 1 else files[[item.relative for item in files].index(st.selectbox("Metadata file", [item.relative for item in files], key="ds_meta_file"))]
     header, rows = datasets.table_preview(chosen.path, 50)
@@ -717,7 +776,7 @@ def _dataset_metadata(scan: datasets.DatasetScan, project: Path | None) -> None:
     if loaded.config.project.preset is Preset.QC:
         st.info("QC-only projects do not use metadata.")
         return
-    report = validate_project(project)
+    report = validated(project)
     if report.config is None:
         show_issues(report.errors)
         return
@@ -857,9 +916,16 @@ def new_project_page() -> None:
         strand_options = [value for value, _ in wizard.strandedness_choices(method)]
         if method == "hisat2_featurecounts":
             strandedness = cols[2].selectbox("Strandedness", strand_options, index=None, placeholder="Choose explicitly", key="np_strand_hisat2")
-            st.info(STRANDEDNESS_HELP)
         else:
             strandedness = cols[2].selectbox("Strandedness", strand_options, index=strand_options.index(wizard.default_strandedness(method)), format_func=lambda value: f"{value} ({dict(wizard.strandedness_choices(method))[value]})", key="np_strand_salmon")
+        st.caption(BACKEND_HELP.get(method, ""))
+        if method == "hisat2_featurecounts":
+            with st.expander("Which strandedness? (never guessed for HISAT2 + featureCounts)", expanded=strandedness is None):
+                st.markdown(STRANDEDNESS_HELP)
+        preprocessing = st.radio("FASTQ preprocessing", [value for value, _ in wizard.PREPROCESSING_CHOICES], format_func=lambda value: f"{value} — {dict(wizard.PREPROCESSING_CHOICES)[value]}",
+                                 key="np_pre", horizontal=True,
+                                 help="raw: nf-core/rnaseq trims adapters and low-quality bases before quantification. "
+                                      "pretrimmed: the reads were already trimmed (for example by the sequencing provider) and are used as supplied.")
         species_name = wizard.species_value(species).value
         try:
             available = services.reference_availability(species_name, method)
@@ -876,9 +942,8 @@ def new_project_page() -> None:
         # example "Other", the only option while Human has no registered
         # reference) is never carried over to another, where it would hide the
         # registered reference that applies there.
-        choice = st.selectbox("Reference", [*labels, *other, OTHER_REFERENCE], key=f"np_reference::{species}::{method}")
-        with st.expander("Advanced settings"):
-            preprocessing = st.selectbox("FASTQ preprocessing", [value for value, _ in wizard.PREPROCESSING_CHOICES], format_func=lambda value: f"{value} — {dict(wizard.PREPROCESSING_CHOICES)[value]}", key="np_pre")
+        choice = st.selectbox("Reference", [*labels, *other, OTHER_REFERENCE], key=f"np_reference::{species}::{method}",
+                              help="Only references registered with `rnaseq reference register` that have a usable index for this species and quantification are listed.")
         try:
             if choice in labels:
                 root, manifest = wizard.managed_reference_settings(labels[choice])
@@ -894,9 +959,15 @@ def new_project_page() -> None:
     design_type, pair_id, batch, enrichment, gene_id_type = "two_group", None, False, None, None
     if preset != "qc":
         design_type = st.selectbox("Experimental design", [value for value, _ in wizard.DESIGN_CHOICES], format_func=lambda value: f"{value} — {dict(wizard.DESIGN_CHOICES)[value]}", key="np_design")
+        st.caption(DESIGN_HELP.get(design_type, ""))
         if design_type == "paired_two_group":
             pair_id = st.text_input("Pairing metadata column", value=wizard.DEFAULT_PAIR_ID, key="np_pair", help="The metadata column naming the biological pairing unit (patient, donor, cell line ...).")
         batch = st.checkbox("There is a known technical batch (adds a 'batch' column; the model adjusts for it)", key="np_batch")
+        if design_type != "paired_two_group" or (pair_id or "").strip():
+            from rnaseq.project import derive_design
+
+            formula, _types, design_columns = derive_design(DesignType(design_type), (pair_id or "").strip() or None, batch)
+            st.markdown(f"DESeq2 design formula: `{formula}` · metadata columns: `sample_id`, " + ", ".join(f"`{column}`" for column in design_columns))
         if preset == "L2":
             enrichment = st.checkbox(f"Run functional enrichment: {describe_enrichment(DEFAULT_L2_ENRICHMENT)}", value=True, key="np_enrichment")
         if preset == "L1" or enrichment:
@@ -908,6 +979,17 @@ def new_project_page() -> None:
         cpus = st.number_input("CPU limit (0 = auto)", min_value=0, value=0, step=1, key="np_cpus")
         memory = st.number_input("Memory limit in GiB (0 = auto)", min_value=0, value=0, step=1, key="np_memory")
 
+    missing = [item for item, absent in (
+        ("a project name", not name.strip()),
+        ("the strandedness (HISAT2 + featureCounts)", input_type == "fastq" and method == "hisat2_featurecounts" and not strandedness),
+        ("a reference", input_type == "fastq" and reference is None),
+        ("the pairing column", preset != "qc" and design_type == "paired_two_group" and not (pair_id or "").strip()),
+    ) if absent]
+    if missing:
+        st.caption("Still needed before *Create project*: " + "; ".join(missing) + ".")
+    else:
+        st.caption(f"*Create project* writes a new folder `{parent_text.rstrip('/')}/{name.strip()}` (project.yaml and empty metadata/contrast templates). "
+                   "Nothing else is changed; data and metadata are added on the next page.")
     if st.button("Create project", type="primary", key="np_create"):
         try:
             parent = config.resolve_allowed(parent_text)
@@ -980,7 +1062,11 @@ def _input_section(config: GuiConfig, project: Path, report) -> None:
             st.caption("Copied from: " + ", ".join(f"`{item}`" for item in origin))
     else:
         st.warning(f"No FASTQ files in `{report.loaded.input_path}` yet.")
-    mode = st.radio("Add FASTQ files", ["Detect in a folder", "Import an existing samplesheet"], horizontal=True, key="fq_mode")
+    mode = st.radio("Add FASTQ files", ["Detect in a folder", "Import an existing samplesheet"], horizontal=True, key="fq_mode",
+                    help="Detect: choose a folder; sample IDs and R1/R2 are recognised from the file names. "
+                         "Samplesheet: a CSV with sample,fastq_1,fastq_2,strandedness. Both show a preview first.")
+    st.caption("Choosing a folder or samplesheet only **previews** the assignments; nothing is written until you press the *Copy* / *Import* button, "
+               "which copies the FASTQ files into the project (the originals are not changed).")
     if mode == "Detect in a folder":
         folder = path_picker(config, "FASTQ folder", "fastq_dir", want="dir", start=config.project_parent.parent / "fastq")
         if folder is None:
@@ -989,6 +1075,7 @@ def _input_section(config: GuiConfig, project: Path, report) -> None:
         show_issues(errors)
         if summary is None or not summary.records:
             return
+        st.markdown(f"**Preview** — {len(summary.sample_ids)} sample(s), {len(summary.records)} FASTQ assignment(s) detected in `{folder}` (not yet copied):")
         st.dataframe(pd.DataFrame([{"sample_id": record.sample_id, "lane": record.lane, "R1": record.fastq_1.name, "R2": record.fastq_2.name if record.fastq_2 else ""} for record in summary.records]), hide_index=True, width="stretch")
         sheet = fastq_samplesheet_text(summary.records, report.config.upstream.strandedness or "auto")
         st.code(sheet, language=None)
@@ -1212,7 +1299,10 @@ def _metadata_section(project: Path, report) -> None:
                 _set_editor_table(project, pd.DataFrame(fresh, columns=services.metadata_columns(report)))
                 st.rerun()
 
-    if st.button("Save metadata", type="primary", key=f"{key}::save"):
+    if report.config.design.type is DesignType.PAIRED_TWO_GROUP and report.config.design.pair_id:
+        pairing_check(columns, rows, report)
+
+    if st.button("Save metadata", type="primary", key=f"{key}::save", help="Writes the table to metadata.csv; it is validated first and not written if it has errors."):
         result = services.save_metadata(project, columns, [{column: services.clean_cell(row.get(column)) for column in columns} for row in rows])
         if result.saved:
             _set_editor_table(project, edited)
@@ -1235,23 +1325,49 @@ def _metadata_section(project: Path, report) -> None:
             st.caption("All design values are filled. Next: Contrasts (L2) or Run.")
 
 
+def pairing_check(columns: list[str], rows: list[dict], report) -> None:
+    """Live check of the pairs in the table being edited (saved or not), by the validator's rule for paired designs."""
+
+    from rnaseq.validators import condition_factor
+
+    pair_column = report.config.design.pair_id
+    factor = condition_factor(report.formula_variables, report.design_variable_types) or "condition"
+    preview = services.pairing_preview(columns, rows, pair_column, factor)
+    if preview is None:
+        st.warning(f"Pairing check: the table needs the columns `{pair_column}` and `{factor}`.")
+        return
+    filled = preview.pairs or preview.blank_pair
+    if not filled:
+        st.caption(f"Pairing check: fill `{pair_column}` and `{factor}` to see the pairs.")
+        return
+    headline = (f"Pairing check (`{pair_column}` × `{factor}`, table as shown, saved or not): {preview.complete} complete pair(s) of "
+                f"{len(preview.pairs)}" + (f"; {len(preview.blank_pair)} sample(s) without a `{pair_column}` value" if preview.blank_pair else ""))
+    (st.success if preview.problems == 0 and len(preview.levels) == 2 else st.warning)(headline + ".")
+    with st.expander("Pairs", expanded=preview.problems > 0):
+        st.dataframe(pd.DataFrame([{pair_column: row.pair, **{level: ", ".join(row.samples.get(level, ())) for level in preview.levels}, "status": row.status}
+                                   for row in preview.pairs]), hide_index=True, width="stretch")
+        if preview.blank_pair:
+            st.caption(f"Without a `{pair_column}` value: " + ", ".join(preview.blank_pair))
+        st.caption("Each pair needs exactly one sample of each of the two condition levels (the rule `rnaseq validate` applies; "
+                   "L2 needs at least two complete pairs). The validator remains the authority when you save and run.")
+
+
 def _filled(value) -> bool:
     return bool(services.clean_cell(value))
 
 
 def inputs_page() -> None:
-    from rnaseq.validators import validate_project
-
     config = gui_config()
     st.title("Input & metadata")
     project = require_project()
     if project is None:
         return
-    report = validate_project(project)
+    report = validated(project)
     if report.config is None:
         show_issues(report.errors)
         return
     st.caption(f"`{project}` · {services.scope_label(report)} · input {report.config.input.type.value}")
+    workflow_bar(project, report, "inputs")
     _input_section(config, project, report)
     _metadata_section(project, report)
 
@@ -1263,18 +1379,18 @@ def contrasts_page() -> None:
         DesignRejected, DesignSetupError, apply_design, build_proposal, design_blockers, design_enrichment_selection,
         design_needs_gene_id_type, pin_kegg_snapshot, residual_df_blocker, resolve_design_enrichment,
     )
-    from rnaseq.validators import validate_project
 
     gui_config()
     st.title("Contrasts")
     project = require_project()
     if project is None:
         return
-    report = validate_project(project)
+    report = validated(project)
     config = report.config
     if config is None:
         show_issues(report.errors)
         return
+    workflow_bar(project, report, "contrasts")
     if config.project.preset is Preset.QC:
         st.info("This project's scope is QC-only; there is no statistical design to configure.")
         return
@@ -1378,7 +1494,7 @@ def contrasts_page() -> None:
             st.session_state.pop(f"{key}::replace", None)
             st.rerun()  # redraw the saved contrasts and the validation state from the files just written
 
-    pin = services.kegg_pin_status(validate_project(project))
+    pin = services.kegg_pin_status(validated(project))
     if pin.applies:
         st.subheader("KEGG snapshot")
         if pin.pinned:
@@ -1441,10 +1557,12 @@ def _summary(report, command: list[str]) -> None:
         "input": config.input.type.value + (f" — {len(report.counts.sample_ids)} samples, {report.counts.gene_count} genes" if report.counts else "") + (f" — {len(report.fastq.sample_ids)} samples, {config.input.layout.value}" if report.fastq else ""),
         "quantification": workspace.quantification_label(config),
         "strandedness": config.upstream.strandedness if config.input.type is InputType.FASTQ else None,
+        "FASTQ preprocessing": (f"{config.input.preprocessing.value} — " + dict(wizard.PREPROCESSING_CHOICES).get(config.input.preprocessing.value, ""))
+                               if config.input.type is InputType.FASTQ and config.input.preprocessing is not None else None,
         "reference": workspace.reference_label(config),
     }
     if config.project.preset is not Preset.QC:
-        rows["design"] = f"{config.design.type.value}, `{config.design.formula}`"
+        rows["design"] = f"{config.design.type.value}, {config.design.formula}"
     if config.project.preset is Preset.L2:
         rows["DEG thresholds"] = f"padj < {config.thresholds.padj}, |log2FC| ≥ {config.thresholds.abs_log2fc} (raw LFC)"
         for item in contrasts:
@@ -1455,6 +1573,9 @@ def _summary(report, command: list[str]) -> None:
     rows["resources"] = f"CPUs {config.execution.max_cpus}, memory GiB {config.execution.max_memory_gb}"
     facts_table(rows)
     st.caption(SCOPE_OUTPUTS[config.project.preset])
+    if config.project.preset is Preset.L1:
+        st.caption("To add differential expression (L2), define contrasts on the Contrasts page; saving contrasts moves the project to L2. "
+                   "An L1 run can later be followed by an L2 run that reuses its upstream results.")
     with st.expander("Command"):
         st.code(shlex.join(command), language="bash", wrap_lines=True)
 
@@ -1659,23 +1780,25 @@ def stop_instructions(run_dir: Path, state: dict) -> None:
 def runner_page() -> None:
     from rnaseq.cli import render_validation_report
     from rnaseq.planner import generate_plan
-    from rnaseq.validators import validate_project
 
     config = gui_config()
     st.title("Validate & Run")
     project = require_project()
     if project is None:
         return
-    report = validate_project(project)
+    report = validated(project)
     if report.config is None:
         show_issues(report.errors)
         return
     active = jobs.active_launch()
     st.caption(f"`{project}`")
+    workflow_bar(project, report, "run")
 
     st.subheader("1. Validate")
     _validation_overview(report)
     fingerprint = project_fingerprint(report)
+    st.caption("The findings above are re-read from the project files on every visit (read-only). The button below also writes the "
+               "planning files under `planning/` (as `rnaseq plan`); it is optional: *Run* validates again before it starts.")
     if st.button("Validate and refresh the plan", key="run_validate"):
         text = render_validation_report(report)
         if report.is_valid:
@@ -1694,7 +1817,13 @@ def runner_page() -> None:
 
     st.subheader("2. Settings")
     preset = report.config.project.preset
-    case_id = remembered_text("Case ID", f"case::{project}", placeholder=f"e.g. {preset.value}-{datetime.now():%Y%m%d}", help="A new immutable run is created under runs/<case ID>/<run ID>.")
+    case_id = remembered_text("Case ID", f"case::{project}", placeholder=f"e.g. {preset.value}-{datetime.now():%Y%m%d}",
+                              help="A name for this analysis: letters, digits, '.', '_' or '-'. Each press of Run creates a new immutable run "
+                                   "under runs/<case ID>/<run ID> (the run ID is the start time), so a case ID can be reused for re-runs; "
+                                   "nothing earlier is overwritten.")
+    existing_cases = sorted({run_dir.parent.name for run_dir, _state in discover_runs(project)})
+    if existing_cases:
+        st.caption("Case IDs used before in this project: " + ", ".join(f"`{item}`" for item in existing_cases[:12]))
     reuse = None
     options = workspace.reuse_options(report)
     candidates = [item.reference for item in options if item.accepted]
@@ -1801,23 +1930,86 @@ def tiff_download(option: figure_export.TiffOption, label: str, key: str, config
                        key=key, on_click="ignore", help=f"{option.dpi} dpi TIFF: {option.method}")
 
 
-def show_figure(item: results.Figure, key: str, config: GuiConfig) -> None:
+def png_download(option: figure_export.PngOption, label: str, key: str, config: GuiConfig) -> None:
+    """A PNG at the submission dpi (the pipeline's file, or rendered from the PDF on click), or a disabled button saying why not."""
+
+    if not option.available:
+        st.button(label, key=key, disabled=True, help=f"Unavailable: {option.reason}")
+        return
+    if option.source.suffix == ".png":
+        download(option.source, label, key, config)
+        return
+    st.download_button(label, data=lambda: figure_export.png_bytes(option), file_name=option.file_name, mime="image/png",
+                       key=key, on_click="ignore", help=f"{option.dpi} dpi PNG: {option.method}")
+
+
+def figure_downloads_menu(item: results.Figure, key: str, config: GuiConfig) -> None:
+    """Every download of one figure in a single menu: vector PDF, PNG and TIFF at 300 dpi, TIFF at 600 dpi, and the PNG preview."""
+
+    with st.popover("Download", icon=":material/download:"):
+        st.caption(f"{item.label}. Nothing is redrawn from data: the pipeline's own files, or its vector PDF rendered at the stated dpi. "
+                   "TIFF is RGB with LZW compression; a raster is never enlarged.")
+        if item.pdf is not None:
+            download(item.pdf, "PDF (vector)", f"{key}::pdf", config)
+        else:
+            st.button("PDF (vector)", key=f"{key}::pdf", disabled=True, help="Unavailable: the pipeline wrote no PDF for this figure")
+        png_download(figure_export.png_option(item.stem, pdf=item.pdf), f"PNG {figure_export.PNG_DPI} dpi", f"{key}::png300", config)
+        options = figure_export.tiff_options(item.stem, item.pdf)
+        for dpi in figure_export.TIFF_DPIS:
+            tiff_download(options[dpi], f"TIFF {dpi} dpi", f"{key}::tiff{dpi}", config)
+        download(item.png, "PNG 150 dpi (report preview)", f"{key}::png", config)
+
+
+def figure_caption(item: results.Figure) -> str:
+    size = f" · {item.size_mm[0]:.0f} × {item.size_mm[1]:.0f} mm as drawn" if item.size_mm else ""
+    return item.label + size
+
+
+def show_figure(item: results.Figure, key: str, config: GuiConfig, *, width: str = "content") -> None:
     if item.png is None:
         st.warning(f"**{item.label}: unavailable** — {item.reason}")
         return
-    st.image(str(item.png), caption=item.label)
-    cols = st.columns(2)
-    with cols[0]:
-        download(item.png, "PNG", f"{key}::png", config)
-    with cols[1]:
-        if item.pdf is not None:
-            download(item.pdf, "PDF", f"{key}::pdf", config)
+    st.image(str(item.png), caption=figure_caption(item), width=width)
+    figure_downloads_menu(item, key, config)
+
+
+# Figures without a recorded size are laid out as this wide (mm).
+DEFAULT_FIGURE_MM = 90.0
+# A row of figures is at most this wide (mm) before the next figure starts a new row.
+FIGURE_ROW_MM = 220.0
+
+
+def figure_rows(items: list[results.Figure]) -> list[list[results.Figure]]:
+    """Figures packed into rows of at most FIGURE_ROW_MM physical width, in order."""
+
+    rows: list[list[results.Figure]] = []
+    width = 0.0
+    for item in items:
+        mm = item.size_mm[0] if item.size_mm else DEFAULT_FIGURE_MM
+        if rows and width + mm <= FIGURE_ROW_MM:
+            rows[-1].append(item)
+            width += mm
         else:
-            st.button("PDF", key=f"{key}::pdf", disabled=True, help="Unavailable: the pipeline wrote no PDF for this figure")
-    options = figure_export.tiff_options(item.stem, item.pdf)
-    for column, dpi in zip(st.columns(2), figure_export.TIFF_DPIS):
-        with column:
-            tiff_download(options[dpi], f"TIFF {dpi} dpi", f"{key}::tiff{dpi}", config)
+            rows.append([item])
+            width = mm
+    return rows
+
+
+def show_figure_grid(items: list[results.Figure], key: str, config: GuiConfig, scale_mm: float) -> None:
+    """Figures side by side at one common on-screen scale.
+
+    Column widths are proportional to each figure's physical width (and a
+    spacer fills the row up to ``scale_mm``), so every figure on the page is
+    shown at the same scale and its text at the same size, whatever the screen.
+    """
+
+    for row_index, row in enumerate(figure_rows(items)):
+        widths = [item.size_mm[0] if item.size_mm else DEFAULT_FIGURE_MM for item in row]
+        spacer = scale_mm - sum(widths)
+        columns = st.columns([*widths, spacer] if spacer > 1 else widths, gap="medium")
+        for index, (column, item) in enumerate(zip(columns, row)):
+            with column:
+                show_figure(item, f"{key}::{row_index}::{index}", config, width="stretch")
 
 
 def facts_table(facts: dict[str, object]) -> None:
@@ -1844,6 +2036,12 @@ def choose_run(project: Path, page: str) -> results.ResultRun | None:
     return run
 
 
+L1_GROUP_HELP = {
+    results.L1_STRUCTURE: "PCA and Pearson correlation of the blind VST matrix (all retained genes): how samples group, and whether any sample stands apart.",
+    results.L1_DISTRIBUTION: "Per-sample expression distributions before normalization (log2 raw count + 1) and after blind VST; distribution-level QC only.",
+}
+
+
 def _qc_section(run: results.ResultRun, config: GuiConfig) -> None:
     view = results.qc_view(run)
     summary = view.summary
@@ -1861,10 +2059,17 @@ def _qc_section(run: results.ResultRun, config: GuiConfig) -> None:
     if view.multiqc is not None:
         st.markdown("**Upstream QC (MultiQC)**")
         download(view.multiqc, f"MultiQC report ({view.multiqc.name})", "qc::multiqc", config)
-    cols = st.columns(2)
-    for index, item in enumerate(view.figures):
-        with cols[index % 2]:
-            show_figure(item, f"qc::{index}", config)
+    groups: dict[str, list[results.Figure]] = {}
+    for item in view.figures:
+        groups.setdefault(item.group or "Figures", []).append(item)
+    # One scale for every L1 figure: the widest row of any group sets it.
+    scale = max([sum(item.size_mm[0] if item.size_mm else DEFAULT_FIGURE_MM for item in row) for items in groups.values() for row in figure_rows(items)] + [180.0])
+    for name, items in groups.items():
+        st.markdown(f"**{name}**")
+        st.caption(L1_GROUP_HELP.get(name, ""))
+        show_figure_grid(items, f"qc::{name}", config, scale)
+    st.caption("All figures are shown at one common scale (their physical sizes are in the captions); open *Download* under a figure for "
+               "the vector PDF, PNG 300 dpi or TIFF 300/600 dpi.")
     for name, path in view.tables.items():
         with st.expander(name):
             show_frame(frame(table(path)), hide_index=True, width="stretch")
@@ -2029,10 +2234,11 @@ def results_page() -> None:
     project = require_project()
     if project is None:
         return
+    workflow_bar(project, validated(project), "results")
     run = choose_run(project, "results")
     if run is None:
         return
-    st.caption(f"`{run.run_dir}` · analysis level {run.level or 'not recorded'}. Figures are the pipeline's own PNG files, with PDF and TIFF (300 or 600 dpi) downloads; nothing is recomputed.")
+    st.caption(f"`{run.run_dir}` · analysis level {run.level or 'not recorded'}. Figures are the pipeline's own PNG files; each has a *Download* menu (PDF, PNG 300 dpi, TIFF 300/600 dpi). Nothing is recomputed.")
     sections = ["QC & exploratory", *(["Differential expression", "Enrichment"] if run.is_l2 else []), "Provenance"]
     section = st.radio("Section", sections, horizontal=True, key=f"results_section::{project}::{run.level}")
     contrast = None

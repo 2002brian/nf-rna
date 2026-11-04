@@ -773,16 +773,55 @@ nf_rna_deg_heatmap <- function(context, display, annotation, annotation_colours,
   fit
 }
 
+# Typography of a pheatmap made to match nf_rna_theme(), which the ggplot figures (PCA, boxplots) use:
+# title at the theme's plot.title size (base_pt, bold) instead of pheatmap's 1.3 x fontsize; annotation
+# names and legend titles in the plain weight of ggplot legend titles (base_pt); legend labels at the
+# legend.text size (small_pt).  Only text styling changes: no value, colour, order, clustering or cell size.
+nf_rna_pheatmap_theme_text <- function(heat, context) {
+  profile <- context$profile; g <- heat$gtable
+  is_bold <- function(gp) { f <- gp[["font"]]; !is.null(f) && as.integer(f) == 2L }
+  set_text <- function(gp, size, font) {
+    values <- unclass(gp); values[["fontface"]] <- NULL
+    values[["fontsize"]] <- size; values[["font"]] <- font
+    do.call(grid::gpar, values)
+  }
+  restyle <- function(grob, title_pt, label_pt) {
+    if (inherits(grob, "text")) {
+      grob$gp <- set_text(grob$gp, if (is_bold(grob$gp)) title_pt else label_pt, 1L)
+    } else if (inherits(grob, "gTree")) {
+      for (child in names(grob$children)) grob$children[[child]] <- restyle(grob$children[[child]], title_pt, label_pt)
+    }
+    grob
+  }
+  for (i in seq_len(nrow(g$layout))) {
+    name <- g$layout$name[[i]]
+    if (name == "main") {
+      main <- g$grobs[[i]]
+      main$gp <- set_text(main$gp, profile$base_pt, 2L)
+      g$grobs[[i]] <- main
+      # pheatmap reserves 1.5 x the title height for the title row; keep that rule for the new size.
+      g$heights[g$layout$t[[i]]] <- grid::unit(1.5, "grobheight", main)
+    } else if (name == "col_annotation_names") {
+      g$grobs[[i]] <- restyle(g$grobs[[i]], profile$base_pt, profile$base_pt)
+    } else if (name %in% c("annotation_legend", "legend")) {
+      g$grobs[[i]] <- restyle(g$grobs[[i]], profile$base_pt, profile$small_pt)
+    }
+  }
+  heat$gtable <- g
+  heat
+}
+
 # Standard-preset sample correlation heatmap (square cells, group/batch annotation in the PCA colours).
 nf_rna_correlation_heatmap <- function(context, corr, colours, breaks, annotation, annotation_colours, title) {
   profile <- context$profile; layout <- nf_rna_style(context)$layout$correlation
   fit <- nf_rna_fit_heatmap(context, "correlation", function(cw, ch, show_rows, show_cols, row_pt) {
-    pheatmap::pheatmap(corr, color = colours, breaks = breaks, border_color = NA, main = title,
+    heat <- pheatmap::pheatmap(corr, color = colours, breaks = breaks, border_color = NA, main = title,
       annotation_col = annotation, annotation_colors = annotation_colours,
       cellwidth = nf_rna_mm_to_bigpts(cw), cellheight = nf_rna_mm_to_bigpts(ch),
       treeheight_row = nf_rna_mm_to_bigpts(layout$tree_mm), treeheight_col = nf_rna_mm_to_bigpts(layout$tree_mm),
       show_rownames = show_rows, show_colnames = show_cols,
       fontsize = profile$base_pt, fontsize_row = profile$small_pt, fontsize_col = profile$small_pt, silent = TRUE)
+    nf_rna_pheatmap_theme_text(heat, context)
   }, ncol(corr), nrow(corr), profile$small_pt, profile$small_pt, square = TRUE)
   fit$heat <- nf_rna_span_pheatmap_title(fit$heat)
   fit

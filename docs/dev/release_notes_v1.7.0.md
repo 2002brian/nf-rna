@@ -1,10 +1,12 @@
 # nf-rna v1.7.0 — Local Research Workspace & Publication Figure Export
 
-> **No analysis changes.** v1.7.0 changes only the optional browser GUI.
-> DESeq2, tximport, LFC shrinkage, GO/KEGG ORA, GSEA, Salmon, HISAT2 +
-> featureCounts, scientific thresholds, references and annotation, the R
-> analysis and plotting scripts, the Nextflow workflows and the Conda locks are
-> identical to v1.6.1. v1.6.1 results do not need to be recomputed.
+> **No analysis changes.** v1.7.0 changes the optional browser GUI and how the
+> L1 figures are drawn. DESeq2, tximport, LFC shrinkage, GO/KEGG ORA, GSEA,
+> Salmon, HISAT2 + featureCounts, scientific thresholds, references and
+> annotation, the R analysis code, the Nextflow workflows and the Conda locks are
+> identical to v1.6.1; every numerical output is unchanged. L1 figures gain a
+> 300 dpi PNG, and the standard sample-correlation heatmap's text now matches
+> the other figures. v1.6.1 results do not need to be recomputed.
 
 Full list of changes: [CHANGELOG](https://github.com/2002brian/nf-rna/blob/v1.7.0/CHANGELOG.md#170--2026-10-31).
 Release readiness: [`docs/dev/release_readiness_v170.md`](https://github.com/2002brian/nf-rna/blob/v1.7.0/docs/dev/release_readiness_v170.md).

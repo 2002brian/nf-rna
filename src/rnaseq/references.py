@@ -9,6 +9,7 @@ import platform
 import re
 import shutil
 import subprocess
+import threading
 import uuid
 from collections import defaultdict
 from copy import deepcopy
@@ -264,12 +265,62 @@ class LocalReference:
         }
 
 
+# Opt-in, per-process memo of SHA-256 digests of large files, for long-lived
+# processes (the GUI) that re-validate the same multi-GB reference assets on
+# every page rerun.  It is off unless enable_checksum_memo() is called, so the
+# CLI and every pipeline run hash each file in full exactly as before.  A digest
+# is reused only while the file's identity (device, inode, size, mtime_ns,
+# ctime_ns) is unchanged; any rewrite, replacement or touch re-hashes.  Small
+# files (project metadata, contrasts, configs) are never memoised.
+CHECKSUM_MEMO_MIN_BYTES = 16 * 1024 * 1024
+_CHECKSUM_MEMO: dict[tuple, str] | None = None
+_CHECKSUM_MEMO_LOCK = threading.Lock()
+
+
+def enable_checksum_memo() -> None:
+    """Reuse SHA-256 digests of unchanged large files within this process (idempotent)."""
+
+    global _CHECKSUM_MEMO
+    with _CHECKSUM_MEMO_LOCK:
+        if _CHECKSUM_MEMO is None:
+            _CHECKSUM_MEMO = {}
+
+
+def disable_checksum_memo() -> None:
+    """Turn the memo off and forget every remembered digest."""
+
+    global _CHECKSUM_MEMO
+    with _CHECKSUM_MEMO_LOCK:
+        _CHECKSUM_MEMO = None
+
+
+def _file_identity(path: Path) -> tuple:
+    stat = os.stat(path)
+    return (os.path.realpath(path), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
 def sha256_file(path: Path) -> str:
+    memo = _CHECKSUM_MEMO
+    key = None
+    if memo is not None:
+        key = _file_identity(path)
+        if key[3] >= CHECKSUM_MEMO_MIN_BYTES:
+            cached = memo.get(key)
+            if cached is not None:
+                return cached
+        else:
+            key = None
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
-    return digest.hexdigest()
+    value = digest.hexdigest()
+    # Remember the digest only if the file did not change while it was read.
+    if key is not None and _file_identity(path) == key:
+        with _CHECKSUM_MEMO_LOCK:
+            if _CHECKSUM_MEMO is not None:
+                _CHECKSUM_MEMO[key] = value
+    return value
 
 
 def _digest_file(path: Path, algorithm: str) -> str:

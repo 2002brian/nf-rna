@@ -16,7 +16,7 @@ import re
 import shlex
 import socket
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace, field
 from pathlib import Path
 from typing import Any
 
@@ -188,6 +188,8 @@ class Figure:
     png: Path | None
     pdf: Path | None
     reason: str | None = None
+    size_mm: tuple[float, float] | None = None  # as drawn, from figure_manifest.json
+    group: str | None = None  # display group on the Results page
 
     @property
     def stem(self) -> Path | None:
@@ -244,15 +246,38 @@ class QcView:
         return value if isinstance(value, dict) else {}
 
 
+def figure_sizes(directory: Path) -> dict[str, tuple[float, float]]:
+    """Physical size (mm) of every figure recorded in ``directory/figure_manifest.json``, by figure id (its stem)."""
+
+    manifest = read_json(directory / "figure_manifest.json") or {}
+    sizes: dict[str, tuple[float, float]] = {}
+    for record in manifest.get("figures") or []:
+        try:
+            sizes[str(record["id"])] = (float(record["width_mm"]), float(record["height_mm"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return sizes
+
+
+L1_STRUCTURE = "Sample structure"
+L1_DISTRIBUTION = "Expression distributions"
+
+
 def qc_view(run: ResultRun) -> QcView:
     l1 = run.l1
     variables = (run.project.get("design") or {}).get("variables") or {}
+    sizes = figure_sizes(l1)
+
+    def l1_figure(stem: str, label: str, group: str) -> Figure:
+        item = figure(l1, stem, label, f"{stem}.png was not produced")
+        return replace(item, size_mm=sizes.get(stem), group=group)
+
     figures = [
-        figure(l1, "pca", "PCA (blind VST)", "pca.png was not produced"),
-        *([figure(l1, "pca_by_batch", "PCA coloured by batch", "pca_by_batch.png was not produced")] if "batch" in variables or (l1 / "pca_by_batch.png").is_file() else []),
-        figure(l1, "sample_correlation", "Sample correlation (blind VST)", "sample_correlation.png was not produced"),
-        figure(l1, "boxplot_log2_raw_counts", "Per-sample log2(raw count + 1), before normalization", "boxplot_log2_raw_counts.png was not produced"),
-        figure(l1, "boxplot_vst", "Per-sample blind VST expression", "boxplot_vst.png was not produced"),
+        l1_figure("pca", "PCA (blind VST)", L1_STRUCTURE),
+        *([l1_figure("pca_by_batch", "PCA coloured by batch", L1_STRUCTURE)] if "batch" in variables or (l1 / "pca_by_batch.png").is_file() else []),
+        l1_figure("sample_correlation", "Sample correlation (blind VST)", L1_STRUCTURE),
+        l1_figure("boxplot_log2_raw_counts", "Per-sample log2(raw count + 1), before normalization", L1_DISTRIBUTION),
+        l1_figure("boxplot_vst", "Per-sample blind VST expression", L1_DISTRIBUTION),
     ]
     tables = {name: l1 / name for name in ("library_size_qc.tsv", "sample_distribution_qc.tsv", "pca_variance.tsv", "sample_correlation.tsv") if (l1 / name).is_file()}
     multiqc = next(iter(sorted(run.delivery.glob("multiqc/*.html"))), None)

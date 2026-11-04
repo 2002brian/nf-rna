@@ -39,6 +39,12 @@ def test_raw_counts_l1_real_backend_is_structured_and_text_deterministic(project
     assert {path.name for path in first.output_dir.glob("*.pdf")} == {"pca.pdf", "sample_correlation.pdf", "boxplot_log2_raw_counts.pdf", "boxplot_vst.pdf"}
     figures = json.loads((first.output_dir / "figure_manifest.json").read_text())
     assert {item["id"] for item in figures["figures"]} == {"pca", "sample_correlation", "boxplot_log2_raw_counts", "boxplot_vst"}
+    # Since v1.7.0 every L1 figure also has the raster-dpi PNG beside its 150 dpi preview (as the L2 figures since v1.5.0).
+    assert {path.name for path in first.output_dir.glob("*_300dpi.png")} == {"pca_300dpi.png", "sample_correlation_300dpi.png", "boxplot_log2_raw_counts_300dpi.png", "boxplot_vst_300dpi.png"}
+    for item in figures["figures"]:
+        raster = next(entry for entry in item["files"] if entry["format"] == "png_raster")
+        tiff = next(entry for entry in item["files"] if entry["format"] == "tiff")
+        assert raster["dpi"] == tiff["dpi"] == 300 and (raster["width_px"], raster["height_px"]) == (tiff["width_px"], tiff["height_px"])
     box_stats = [line.split("\t") for line in (first.output_dir / "sample_distribution_qc.tsv").read_text().splitlines()]
     assert box_stats[0][:3] == ["sample_id", "matrix", "genes"]
     assert [row[0] for row in box_stats[1:7]] == ["C1", "C2", "C3", "T1", "T2", "T3"] and [row[0] for row in box_stats[7:]] == ["C1", "C2", "C3", "T1", "T2", "T3"]
@@ -128,7 +134,7 @@ def test_l1_runs_for_two_samples_where_pc2_does_not_exist(project_factory, figur
     pca = next(item for item in figures["figures"] if item["id"] == "pca")
     assert "PC2 is constant (no variance)" in pca["axes"] and pca["axes"].endswith("single break at 0")
     assert pca["labels"]["text"] == "every sample_id, unabbreviated"
-    assert {item["format"] for item in pca["files"]} == {"png", "tiff", "pdf"}
+    assert {item["format"] for item in pca["files"]} == {"png", "png_raster", "tiff", "pdf"}  # png_raster: L1 300 dpi PNG since v1.7.0
     assert all((result.output_dir / f"pca.{extension}").is_file() for extension in ("png", "tiff", "pdf"))
     # The panel is sized for a readable PC2 extent, not the former 2% sliver at the height floor
     # (50 mm = 142 pt legacy, 40 mm = 113 pt standard).

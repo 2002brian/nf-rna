@@ -99,6 +99,21 @@ Validate & Run, Results and Reports; the case ID; the metadata being edited;
 the contrasts being composed) are kept per project, so switching to another
 project and back returns to the same run and the same unsaved edits.
 
+Input & Metadata, Contrasts, Validate & Run and Results start with a
+**workflow bar**: Dataset → Project → Metadata → Contrasts → Validate → Run →
+Results, each done (✅), to do (⬜), needing attention (⚠️) or not needed for
+the analysis scope (➖), with the steps of the current page in bold and the
+next step with a link. It is read from the project files on every visit.
+
+Every page re-reads the project and re-validates it (read-only) on each
+interaction, so what is shown is always the state on disk. Validation checks
+the reference files against the SHA-256 recorded in their manifest. The GUI
+process remembers the digest of an unchanged large file (≥ 16 MiB) and hashes
+it again only when its device, inode, size, modification or change time
+differ; the first validation after the GUI starts therefore takes a few
+seconds (a note appears), later ones well under a second. `rnaseq` commands
+and pipeline runs always hash every file in full.
+
 ### Execution status and scientific QC
 
 Every run is shown with two separate statuses:
@@ -198,11 +213,20 @@ and defaults: name, location, species, FASTQ or raw counts; for FASTQ the
 quantification backend (*Salmon (pseudoalignment)*, the default, or
 *HISAT2 + featureCounts (genome alignment)*; `project.yaml` stores `salmon` or
 `hisat2_featurecounts`), layout,
-strandedness and reference (registered references first; iGenomes for Salmon;
-local or custom roots under *Advanced settings*); the analysis scope (qc for
+strandedness, FASTQ preprocessing (`raw`: nf-core/rnaseq trims; `pretrimmed`:
+the reads are used as supplied; shown with the other FASTQ settings, default
+`raw`) and reference (registered references first; iGenomes for Salmon;
+local or custom roots under *Other (advanced)*); the analysis scope (qc for
 FASTQ only, L1, L2), the experimental design and pairing column, a known
 technical batch, L2 enrichment, the gene identifier type, and CPU/memory
 limits (`auto` by default).
+
+Each backend and design choice has a one-line explanation (unpaired: independent
+samples; paired: one sample of each condition per patient/donor/cell line,
+compared within pairs). The page shows the DESeq2 formula and the metadata
+columns the project will get (for example `~ patient + condition`), computed by
+the same function that creates the project, and above *Create project* either
+what is still missing or the folder that will be written.
 
 Managed references come only from this workstation's registry
 (`~/.config/nf-rna/references.yaml`, filled with `rnaseq reference register
@@ -242,7 +266,9 @@ download. *Copy into the project* copies the files into `input/fastq/` (as
 instead. FASTQ files cannot be uploaded through the browser. The copy blocks
 the page until every file is copied (the importer reports no per-file
 progress, so none is shown); the page says so while copying and, at the end,
-how many files and bytes were copied in how long.
+how many files and bytes were copied in how long. Choosing a folder or a
+samplesheet is only a preview; nothing is written until *Copy* / *Import* is
+pressed.
 
 **Metadata.** An editable table with `sample_id`, the design variables (for
 example `cell` and `condition` for `~ cell + condition`) and any other columns
@@ -281,6 +307,13 @@ beside the column and nothing is written. Empty design values are allowed:
 the table is saved, and the missing values are listed so the work can be
 finished later. Disagreement with the count matrix or FASTQ samples is listed
 too.
+
+**Pairing check** (paired designs). Under the table, the pairs of the table as
+it is on screen (saved or not): for each value of the pairing column, its
+samples per condition level and whether the pair is complete. It applies the
+validator's rule (exactly one sample of each of the two condition levels per
+pair; no empty pairing value) so mistakes show before saving; `rnaseq validate`
+remains the authority, and L2 needs at least two complete pairs.
 
 ### Contrasts
 
@@ -409,8 +442,12 @@ significant digits, so very small p-values are not rounded to 0.
 Identifiers (gene_id, ID, Entrez IDs), ratios such as `GeneRatio` and text
 stay as written. Filters and *Sort by* use the file's values, and every
 download is the original file, unchanged.
-Figures are the pipeline's PNG files, each with PNG, PDF, *TIFF 300 dpi* and
-*TIFF 600 dpi* downloads (see [Figure downloads](#figure-downloads-pdf--tiff)). An
+Figures are the pipeline's PNG files. Each has one *Download* menu with PDF
+(vector), PNG 300 dpi, TIFF 300 dpi, TIFF 600 dpi and the PNG report preview
+(see [Figure downloads](#figure-downloads-pdf--tiff)). The L1 figures are
+grouped into *Sample structure* (PCA, correlation) and *Expression
+distributions* (the two boxplots) and shown at one common on-screen scale, so
+their text has the same size; each caption gives the figure's physical size. An
 output that does not exist is shown as *unavailable* with the backend's
 recorded reason (for example "no significant pathway"); nothing is filled in.
 
@@ -436,11 +473,12 @@ download; the page shows their server path and an `scp` command instead.
 ### Figure downloads (PDF / TIFF)
 
 Nothing is redrawn from data and nothing is written into the run; generated
-TIFF files are made in memory when the button is clicked.
+TIFF and PNG files are made in memory when the button is clicked.
 
 | Download | Source |
 |---|---|
 | PDF | the pipeline's Cairo PDF, byte for byte |
+| PNG 300 dpi | the pipeline's `<name>_300dpi.png`, byte for byte (L1 figures since v1.7.0, L2 figures since v1.5.0); otherwise the PDF rendered at 300 dpi with poppler |
 | TIFF 300 dpi | the pipeline's TIFF, byte for byte, when it was drawn at 300 dpi (every figure except GSEA running-score plots, under the default profiles) |
 | TIFF 300 dpi, running-score plots | the pipeline's `<name>_300dpi.png`, drawn by R at 300 dpi, converted losslessly (every pixel unchanged) |
 | TIFF 600 dpi | the pipeline's PDF rasterized at 600 dpi with poppler (`pdftocairo`) |

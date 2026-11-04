@@ -140,6 +140,10 @@ def _encode(image: Image.Image, dpi: int) -> bytes:
 
 
 def _render_pdf(pdf: Path, dpi: int) -> bytes:
+    return _encode(_render_pdf_image(pdf, dpi), dpi)
+
+
+def _render_pdf_image(pdf: Path, dpi: int) -> Image.Image:
     points = pdf_page_points(pdf)
     if points is None:
         raise RuntimeError(f"cannot read the page size of {pdf}")
@@ -154,7 +158,7 @@ def _render_pdf(pdf: Path, dpi: int) -> bytes:
             image.load()
             if image.size != (width, height):
                 raise RuntimeError(f"rendered {image.size[0]}x{image.size[1]} px, expected {width}x{height}")
-            return _encode(image, dpi)
+            return image.copy()
 
 
 def tiff_bytes(option: TiffOption) -> bytes:
@@ -169,3 +173,61 @@ def tiff_bytes(option: TiffOption) -> bytes:
             image.load()
             return _encode(image, option.dpi)
     return _render_pdf(option.source, option.dpi)
+
+
+# --------------------------------------------------------------------- PNG at the submission dpi
+
+PNG_DPI = 300
+PIPELINE_PNG = "the pipeline's {dpi} dpi PNG, unchanged"
+PNG_PDF_RENDER = "rendered from the pipeline's vector PDF at {dpi} dpi (text layout as in the PDF)"
+
+
+@dataclass(frozen=True)
+class PngOption:
+    """How a ``dpi`` PNG of a figure is obtained, or why it cannot be (the 150 dpi PNG is the report preview)."""
+
+    dpi: int
+    file_name: str
+    source: Path | None
+    method: str | None
+    reason: str | None = None
+
+    @property
+    def available(self) -> bool:
+        return self.source is not None
+
+
+def png_option(stem: Path, dpi: int = PNG_DPI, pdf: Path | None = None) -> PngOption:
+    """The pipeline's ``<stem>_<dpi>dpi.png`` (since v1.7.0 also for L1 figures); else the vector PDF rendered at ``dpi``.
+
+    Same source rules as :func:`tiff_option`: a lower-resolution raster is never enlarged.
+    """
+
+    pdf = pdf if pdf is not None else stem.with_suffix(".pdf")
+    name = f"{stem.name}_{dpi}dpi.png"
+    raster = stem.with_name(name)
+    if raster.is_file() and file_dpi(raster) == dpi:
+        return PngOption(dpi, name, raster, PIPELINE_PNG.format(dpi=dpi))
+    if not pdf.is_file():
+        return PngOption(dpi, name, None, None, f"no {dpi} dpi PNG and no PDF for this figure")
+    if not poppler_available():
+        return PngOption(dpi, name, None, None, f"no {dpi} dpi PNG from the pipeline, and poppler (pdftocairo, pdfinfo) is not installed to render the PDF ({POPPLER_INSTALL})")
+    return PngOption(dpi, name, pdf, PNG_PDF_RENDER.format(dpi=dpi))
+
+
+def png_bytes(option: PngOption) -> bytes:
+    """The PNG file for an available option: the pipeline's file byte for byte, or the PDF rendered in memory."""
+
+    if option.source is None:
+        raise ValueError(option.reason or "PNG unavailable")
+    if option.source.suffix == ".png":
+        return option.source.read_bytes()
+    image = _render_pdf_image(option.source, option.dpi)
+    if image.mode != "RGB":
+        background = Image.new("RGB", image.size, "white")
+        rgba = image.convert("RGBA")
+        background.paste(rgba, mask=rgba.getchannel("A"))
+        image = background
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG", dpi=(option.dpi, option.dpi))
+    return buffer.getvalue()

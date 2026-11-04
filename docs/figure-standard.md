@@ -131,7 +131,7 @@ describes them and must be updated together with the code.
 | Shapes | 12 fixed shapes, then colour only | unchanged (PCA keeps its shape distinctions) |
 | Volcano size | profile double column × 120 mm | profile single column, square (aspect 1.0), legend stacked below |
 | Sample boxplot size | double column × (65 mm + label height) | content-aware: width from the number of samples (minimum 60 mm, at most the profile double column), height from the measured labels and a 42 mm panel; the legend wraps into more rows until it fits |
-| Sample correlation heatmap | double column × 150 mm, no annotation | content-aware square cells (6 mm, shrinking only when the profile maximum would be exceeded; sample labels are hidden only when a cell is smaller than the label height); group (and batch) annotation in the PCA colours |
+| Sample correlation heatmap | double column × 150 mm, no annotation | content-aware square cells (6 mm, shrinking only when the profile maximum would be exceeded; sample labels are hidden only when a cell is smaller than the label height); group (and batch) annotation in the PCA colours; since v1.7.0 its text follows `nf_rna_theme` like the ggplot figures (`nf_rna_pheatmap_theme_text`): title at the base size in bold (pheatmap draws 1.3 × base), annotation names and legend titles plain at the base size, legend labels at the small size; values, colours, cell sizes and the clustering order are unchanged |
 | Enrichment dotplots (GO, GSEA, KEGG) | double column, height from the number of label lines, legend on the right | content-aware: width = measured label/axis width + a 55 mm panel (minimum 85 mm), height = measured fixed parts + one row per term and label line; legend below, stacked when it is wider than the figure; subtitle and x-axis title wrapped to the figure width with the real font metrics; term text, order, point size and colour mappings, axes and numeric labels unchanged |
 | Enrichment colours | ORA marks use the primary colour; GSEA adjusted P uses reversed Blues | ORA marks use the first stop of the enrichment scale; GSEA adjusted P uses the enrichment scale (low P dark), limits 0 to the cutoff as before |
 | DEG heatmap | double column, height from rows | content-aware: 5 mm sample columns, row height from the label font (7 pt down to the profile minimum, then labels are hidden and rows are 1.5 mm); width and height are measured from labels, trees, legend and title, never above the profile maximum |
@@ -187,6 +187,10 @@ Only the displayed y range and breaks change. `pca_scores.tsv` and `pca_variance
   `<name>_<raster dpi>dpi.png`, drawn at the profile's raster dpi. Since v1.5.0 the L2 volcano,
   MA plot (`ma_plot`, drawn with the volcano scope) and DEG heatmap use it; the 150 dpi
   preview keeps its name and remains the report image.
+* Since v1.7.0 every L1 figure (`pca`, `pca_by_batch`, `sample_correlation`, `boxplot_log2_raw_counts`,
+  `boxplot_vst`) also writes `png_raster` (`<name>_<raster dpi>dpi.png`, 300 dpi under the default profiles), so
+  L1 and L2 offer the same formats. The PNG preview, TIFF and PDF keep their names and formats (only the standard
+  correlation heatmap's typography changed, see the presets table); the raster PNG has exactly the TIFF's pixel size.
 * Since v1.5.0 the volcano and MA plot draw `log2FoldChange_shrunk` (raw LFC only as a labelled
   fallback when shrinkage failed), label the top 10 DEGs by symbol, and DEG heatmap rows are labelled
   by symbol; see `docs/scientific_contract.md`. Colours and significance are unchanged.
