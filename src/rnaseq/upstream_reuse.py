@@ -7,7 +7,8 @@ count matrix, the sample map, featureCounts summaries, strandedness evidence,
 MultiQC and QC reports.
 
 The HISAT2 + featureCounts route also publishes coordinate-sorted BAMs (and
-runs before nf-rna 1.7.0's fix also published uncompressed lane SAMs).  No
+runs before nf-rna 1.7.0's fix also published uncompressed lane SAMs and the
+prepared FASTQs, for pretrimmed input byte copies of the source FASTQ).  No
 downstream, delivery or status code reads them; they are alignment provenance
 of the run that produced them.  Copying them multiplied storage and I/O (about
 240 GB per reuse for a real 8-sample project) without any analytical use, so
@@ -42,12 +43,17 @@ import yaml
 REFERENCED_ROUTE = "hisat2_featurecounts"
 #: Alignment artifact suffixes that downstream never reads.
 ALIGNMENT_SUFFIXES = (".sam", ".bam", ".bai", ".cram", ".crai", ".csi")
+#: Prepared reads that runs before the FASTP_PREPARE publish fix published
+#: (for pretrimmed input, byte copies of the source FASTQ); never read downstream.
+PREPARED_READS_DIRECTORY = ("qc", "fastp", "prepared")
+PREPARED_READS_SUFFIXES = (".fastq.gz", ".fq.gz", ".fastq", ".fq")
 #: Record written at ``upstream/hisat2_featurecounts/<REFERENCE_RECORD>``.
 REFERENCE_RECORD = "referenced_alignment_artifacts.json"
 REFERENCE_RECORD_SCHEMA = "nf-rna.referenced-alignment-artifacts.v1"
 _REFERENCE_POLICY = (
-    "Alignment artifacts (SAM/BAM/CRAM and their indexes) of a reused HISAT2 + featureCounts upstream are not "
-    "copied: downstream analysis and delivery never read them. Each entry names the run that holds the file."
+    "Alignment artifacts (SAM/BAM/CRAM and their indexes) and published prepared reads (qc/fastp/prepared) of a "
+    "reused HISAT2 + featureCounts upstream are not copied: downstream analysis and delivery never read them. "
+    "Each entry names the run that holds the file."
 )
 
 
@@ -56,9 +62,21 @@ class UpstreamReuseCopyError(OSError):
 
 
 def is_referenced_artifact(relative: PurePosixPath) -> bool:
-    """Whether ``relative`` (a path under ``upstream/``) is an alignment artifact left in its source run."""
+    """Whether ``relative`` (a path under ``upstream/``) is a large artifact left in its source run."""
 
-    return len(relative.parts) >= 2 and relative.parts[0] == REFERENCED_ROUTE and relative.name.endswith(ALIGNMENT_SUFFIXES)
+    return artifact_kind(relative) is not None
+
+
+def artifact_kind(relative: PurePosixPath) -> str | None:
+    """``alignment`` or ``prepared_reads`` for a referenced HISAT2-route artifact, otherwise ``None``."""
+
+    if len(relative.parts) < 2 or relative.parts[0] != REFERENCED_ROUTE:
+        return None
+    if relative.name.endswith(ALIGNMENT_SUFFIXES):
+        return "alignment"
+    if relative.parts[1:-1] == PREPARED_READS_DIRECTORY and relative.name.endswith(PREPARED_READS_SUFFIXES):
+        return "prepared_reads"
+    return None
 
 
 def _ignored(name: str) -> bool:
@@ -122,6 +140,7 @@ def copy_reusable_upstream(source_run_dir: Path, destination: Path, *, source_la
                 if is_referenced_artifact(relative):
                     referenced.append({
                         "path": relative.as_posix(),
+                        "kind": artifact_kind(relative),
                         "size_bytes": size,
                         "source_run": source_label,
                         "source_path": str(origin.resolve()),

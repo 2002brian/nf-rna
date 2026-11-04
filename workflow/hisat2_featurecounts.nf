@@ -60,7 +60,10 @@ process FASTP_PREPARE {
     conda params.hisat2_linux_conda
     cpus 4
     memory '6 GB'
-    publishDir "${params.outdir}/qc/fastp", mode: 'copy', overwrite: false
+    // Publish only the fastp reports.  The prepared reads (for pretrimmed input a
+    // byte copy of the source FASTQ) are the channel input of HISAT2_ALIGN and
+    // FASTQC_PROCESSED and stay in the task work directory.
+    publishDir "${params.outdir}/qc/fastp", mode: 'copy', overwrite: false, pattern: 'fastp_*'
     input:
     tuple val(sample), val(strandedness), path(reads)
     output:

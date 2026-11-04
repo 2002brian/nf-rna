@@ -66,6 +66,14 @@ def test_hisat2_align_publishes_only_the_lane_summary_not_the_lane_sam():
     assert "publishDir" not in _process("SORT_LANE_BAM")
 
 
+def test_fastp_prepare_publishes_only_its_reports_not_the_prepared_reads():
+    block = _process("FASTP_PREPARE")
+    (publish,) = [line.strip() for line in block.splitlines() if line.strip().startswith("publishDir")]
+    assert publish == "publishDir \"${params.outdir}/qc/fastp\", mode: 'copy', overwrite: false, pattern: 'fastp_*'"
+    # The prepared reads are still the channel input of HISAT2_ALIGN and FASTQC_PROCESSED.
+    assert "tuple val(sample), val(strandedness), path('prepared/*.fastq.gz'), emit: prepared" in block
+
+
 def test_no_process_publishes_an_unfiltered_sam():
     text = WORKFLOW.read_text(encoding="utf-8")
     for name in re.findall(r"^process (\w+) \{", text, flags=re.M):
@@ -92,7 +100,7 @@ def test_alignment_and_counting_commands_are_scientifically_unchanged():
     assert "samtools view -@ ${task.cpus} -bh -F 0x900 -o ${sample}.countable.bam ${bam}" in _process("PREPARE_COUNT_BAM")
     assert "featureCounts -T ${task.cpus} -a ${gtf} -o ${sample}.counts.txt -t exon -g gene_id -s ${strand} -Q 0 --primary ${pairArgs} ${bam}" in _process("FEATURECOUNTS")
     assert "def pairArgs = paired ? '-p --countReadPairs -B -C' : ''" in _process("FEATURECOUNTS")
-    # The diff of this fix against the workflow is confined to the HISAT2_ALIGN publishDir and its comment.
+    # The diff of this fix against the workflow is confined to the HISAT2_ALIGN and FASTP_PREPARE publishDirs and their comments.
     original = subprocess.run(["git", "-C", str(ROOT), "show", "5cba156:workflow/hisat2_featurecounts.nf"], capture_output=True, text=True)
     if original.returncode != 0:
         pytest.skip("base revision 5cba156 is not available in this checkout")
@@ -129,6 +137,10 @@ n=$([ "$strand" = 2 ] && echo 5000 || echo 100)
 printf '# Program:featureCounts v2.0.6\nGeneid\tChr\tStart\tEnd\tStrand\tLength\t%s\nGeneA\t1\t1\t4\t+\t4\t%s\nGeneB\t1\t5\t8\t+\t4\t7\n' "$bam" "$n" > "$out"
 printf 'Status\t%s\nAssigned\t%s\nUnassigned_NoFeatures\t3\n' "$bam" "$n" > "$out.summary"
 """,
+    "fastp": r"""#!/bin/bash
+while [ $# -gt 0 ]; do case "$1" in -i) i1=$2; shift;; -I) i2=$2; shift;; -o) o1=$2; shift;; -O) o2=$2; shift;; -h) h=$2; shift;; -j) j=$2; shift;; esac; shift; done
+cp "$i1" "$o1"; [ -n "$o2" ] && cp "$i2" "$o2"; echo '<html></html>' > "$h"; echo '{}' > "$j"
+""",
     "multiqc": r"""#!/bin/bash
 while [ $# -gt 0 ]; do case "$1" in --filename) name=$2; shift;; esac; shift; done
 echo '<html></html>' > "$name"
@@ -136,7 +148,8 @@ echo '<html></html>' > "$name"
 }
 
 
-def test_real_nextflow_run_publishes_no_lane_sam_and_keeps_every_essential_output(tmp_path):
+@pytest.mark.parametrize("pretrimmed", (True, False), ids=("pretrimmed", "fastp"))
+def test_real_nextflow_run_publishes_no_lane_sam_and_keeps_every_essential_output(tmp_path, pretrimmed):
     if shutil.which("nextflow") is None:
         pytest.skip("Nextflow is not installed")
     tools = tmp_path / "bin"
@@ -163,12 +176,15 @@ def test_real_nextflow_run_publishes_no_lane_sam_and_keeps_every_essential_outpu
          "--input", str(data / "samplesheet.csv"), "--outdir", str(outdir), "--fasta", str(data / "genome.fa"),
          "--gtf", str(data / "genes.gtf"), "--hisat2_index", str(data / "index"),
          "--assembly_script", str(ROOT / "src" / "rnaseq" / "hisat2_featurecounts.py"),
-         "--layout", "paired_end", "--strandedness", "reverse", "--pretrimmed", "true"],
+         "--layout", "paired_end", "--strandedness", "reverse", "--pretrimmed", "true" if pretrimmed else "false"],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=600,
     )
     assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-4000:]
     published = sorted(path.relative_to(outdir).as_posix() for path in outdir.rglob("*") if path.is_file())
     assert not [path for path in published if path.endswith(".sam")], published
+    assert not [path for path in published if path.endswith((".fastq.gz", ".fq.gz"))], published
+    fastp_reports = {path for path in published if path.startswith("qc/fastp/")}
+    assert fastp_reports == (set() if pretrimmed else {"qc/fastp/fastp_S1_R1.fastq.html", "qc/fastp/fastp_S1_R1.fastq.json", "qc/fastp/fastp_S2_R1.fastq.html", "qc/fastp/fastp_S2_R1.fastq.json"})
     for sample in ("S1", "S2"):
         for expected in (
             f"alignment/lane_summaries/{sample}_R1.fastq.fastq.hisat2.summary",
@@ -214,6 +230,8 @@ def _hisat2_upstream(run_dir: Path, samples=SAMPLES, *, historical_sam: bool = T
         _write(out / "alignment" / "lane_summaries" / f"{sample}_R1.fastq.hisat2.summary", "90.00% overall alignment rate\n")
         if historical_sam:
             _write(out / "alignment" / "lane_summaries" / f"{sample}_R1.fastq.lane.sam", os.urandom(alignment_bytes))
+            for read in ("R1", "R2"):
+                _write(out / "qc" / "fastp" / "prepared" / f"{sample}_{read}.fastq.fastq.gz", os.urandom(alignment_bytes))
         _write(out / "bam" / f"{sample}.bam", os.urandom(alignment_bytes))
         _write(out / "bam" / f"{sample}.bam.bai", os.urandom(64))
         _write(out / "bam" / f"{sample}.flagstat.txt", "1 + 0 in total\n")
@@ -239,13 +257,13 @@ def test_selective_copy_keeps_every_small_file_and_references_alignment_artifact
 
     source_tree, copied_tree = _tree(source_run / "upstream"), _tree(destination)
     referenced = {path for path in source_tree if is_referenced_artifact(PurePosixPath(path))}
-    expected_referenced = 4 * (5 if historical_sam else 4)
+    expected_referenced = 4 * (7 if historical_sam else 4)
     assert len(referenced) == expected_referenced
     # Every non-alignment file is byte-identical; no alignment artifact was copied.
     small = {path: digest for path, digest in source_tree.items() if path not in referenced and not path.endswith("._appledouble")}
     record_path = f"hisat2_featurecounts/{REFERENCE_RECORD}"
     assert {path: digest for path, digest in copied_tree.items() if path != record_path} == small
-    assert not [path for path in copied_tree if path.endswith((".sam", ".bam", ".bai"))]
+    assert not [path for path in copied_tree if path.endswith((".sam", ".bam", ".bai", ".fastq.gz"))]
     # Copies are independent files: no hard links, no symbolic links.
     for path in destination.rglob("*"):
         assert not path.is_symlink()
@@ -260,6 +278,7 @@ def test_selective_copy_keeps_every_small_file_and_references_alignment_artifact
         origin = Path(item["source_path"])
         assert origin == (source_run / "upstream" / item["path"]).resolve()
         assert item["size_bytes"] == origin.stat().st_size and item["source_run"] == "L1/R1"
+        assert item["kind"] == ("prepared_reads" if item["path"].endswith(".fastq.gz") else "alignment")
     assert summary["referenced_files"] == expected_referenced
     assert summary["copied_files"] == len(small)
     assert summary["copied_bytes"] == sum((source_run / "upstream" / path).stat().st_size for path in small)
@@ -305,7 +324,7 @@ def test_a_pre_fix_full_copy_used_as_retry_source_is_referenced_to_that_run(tmp_
     summary = copy_reusable_upstream(old_l2, tmp_path / "retry" / "upstream", source_label="L2/OLD")
     record = json.loads((tmp_path / "retry" / "upstream" / "hisat2_featurecounts" / REFERENCE_RECORD).read_text(encoding="utf-8"))
     assert {item["source_run"] for item in record["artifacts"]} == {"L2/OLD"}
-    assert summary["newly_referenced_files"] == summary["referenced_files"] == 20
+    assert summary["newly_referenced_files"] == summary["referenced_files"] == 28
 
 
 @pytest.mark.parametrize("failure", ("cross-device", "disk-full", "short-copy"))
@@ -434,7 +453,7 @@ def test_l2_reuse_succeeds_without_copying_alignment_artifacts(monkeypatch, hisa
     assert len(observed) == 1 and not any(token.endswith("hisat2_featurecounts.nf") for token in observed[0])
 
     l1_out, l2_out = l1.run_dir / "upstream" / "hisat2_featurecounts", l2.run_dir / "upstream" / "hisat2_featurecounts"
-    assert not [path for path in l2_out.rglob("*") if path.name.endswith((".sam", ".bam", ".bai"))]
+    assert not [path for path in l2_out.rglob("*") if path.name.endswith((".sam", ".bam", ".bai", ".fastq.gz"))]
     # Small required files are available to L2, byte-identical.
     for relative in ("counts/canonical_counts.csv", "counts/sample_map.csv", "multiqc/multiqc_report.html",
                      "counts/per_sample/C1.counts.txt.summary", "qc/strandedness/T2.strand_s2.txt.summary",
@@ -447,7 +466,7 @@ def test_l2_reuse_succeeds_without_copying_alignment_artifacts(monkeypatch, hisa
     handoff = yaml.safe_load((l2.run_dir / "frozen" / "upstream_handoff_manifest.yaml").read_text(encoding="utf-8"))
     assert handoff["alignment"]["storage"] == "referenced_in_source_run"
     assert handoff["alignment"]["reused_from"] == f"L1-001/{l1.run_id}"
-    assert handoff["alignment"]["referenced_files"] == 4 * (5 if any(l1_out.rglob("*.lane.sam")) else 4)
+    assert handoff["alignment"]["referenced_files"] == 4 * (7 if any(l1_out.rglob("*.lane.sam")) else 4)
     l1_handoff = yaml.safe_load((l1.run_dir / "handoff" / "upstream_manifest.yaml").read_text(encoding="utf-8"))
     assert handoff["reuse"]["source_pipeline"] == l1_handoff["pipeline"]
     assert handoff["strandedness_qc"]["status"] == l1_handoff["strandedness_qc"]["status"]
