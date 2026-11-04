@@ -60,7 +60,8 @@ def build(out: Path, per_group: int, genes: int, seed: int, prefix: str = "", do
             row.append(str(poisson(rng, lam)))
         lines.append(",".join(row))
     (out / "counts.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    # An optional multi-level grouping variable (listed last in the formula, so it is the PCA/boxplot colour variable).
+    # An optional multi-level variable, listed last in the formula.  L1 figures still group by
+    # `condition` (the primary factor whenever the formula models it), not by this last term.
     doses = [f"D{(index * 7 // 3) % dose_levels + 1}" for index in range(len(samples))] if dose_levels else []
     header_extra, rows_extra = (",dose", doses) if dose_levels else ("", [""] * len(samples))
     (out / "metadata.csv").write_text(f"sample_id,condition,batch{header_extra}\n" + "".join(f"{s},{g},{b}{(',' + d) if d else ''}\n" for (s, g, b), d in zip(samples, rows_extra)), encoding="utf-8")
@@ -81,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--genes", type=int, default=4000)
     parser.add_argument("--seed", type=int, default=20261015)
     parser.add_argument("--sample-prefix", default="", help="prefix for every sample ID (long-label review)")
-    parser.add_argument("--dose-levels", type=int, default=0, help="add a multi-level grouping variable with this many levels (colour variable)")
+    parser.add_argument("--dose-levels", type=int, default=0, help="add a last-term multi-level design variable with this many levels (L1 figures still group by condition)")
     args = parser.parse_args(argv)
     build(args.out, args.samples_per_group, args.genes, args.seed, args.sample_prefix, args.dose_levels)
     print(f"wrote {args.out}")

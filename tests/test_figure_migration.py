@@ -7,6 +7,7 @@ that only the figure files changed.
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import importlib.util
 import json
@@ -309,22 +310,36 @@ cat(toJSON(list(corr_rows = rownames(m)[legacy_corr$tree_row$order], corr_cols =
 
 
 def test_group_colours_agree_across_pca_boxplots_and_heatmap_annotations(runs):
-    colours = {}
-    for manifest in runs["standard"].rglob("figure_manifest.json"):
-        for figure in json.loads(manifest.read_text(encoding="utf-8"))["figures"]:
-            if figure["kind"] == "PCA" and figure["id"] == "pca":
-                colours["pca"] = figure["encoding"]["colours"]
-            elif figure["kind"] == "sample expression distribution boxplot":
-                colours.setdefault("box", figure["encoding"]["colours"])
-            elif figure["kind"] == "sample correlation heatmap":
-                colours["corr"] = figure["annotation"]["colours"]
-    assert set(colours) == {"pca", "box", "corr"}
-    # the colour variable is the last design variable (dose, 3 levels): same level -> same colour everywhere
-    for level, colour in colours["pca"].items():
-        assert colours["box"][level] == colour
-        if level in colours["corr"]:
-            assert colours["corr"][level] == colour
-    assert list(colours["pca"].values()) == ["#4E78A7", "#CC5A6A", "#59A14F"]
+    # The demo design is `~ batch + condition + dose`.  L1 figures group samples by
+    # the control plane's primary factor (rnaseq.validators.condition_factor):
+    # `condition` whenever the formula models it, not the last term `dose` (audit D-08).
+    from rnaseq.validators import condition_factor
+
+    assert condition_factor(("batch", "condition", "dose"), {"batch": "categorical", "condition": "categorical", "dose": "categorical"}) == "condition"
+    (l1_manifest,) = [path for path in runs["standard"].rglob("figure_manifest.json") if path.parent.name == "l1"]
+    variables, colours, boxplots = {}, {}, []
+    for figure in json.loads(l1_manifest.read_text(encoding="utf-8"))["figures"]:
+        if figure["kind"] == "PCA" and figure["id"] == "pca":
+            variables["pca"] = (figure["encoding"]["colour"], figure["encoding"]["shape"])
+            colours["pca"] = figure["encoding"]["colours"]
+        elif figure["kind"] == "sample expression distribution boxplot":
+            boxplots.append(figure["id"])
+            variables[figure["id"]] = figure["encoding"]["fill"]
+            colours[figure["id"]] = figure["encoding"]["colours"]
+        elif figure["kind"] == "sample correlation heatmap":
+            variables["corr"] = figure["annotation"]["group"]
+            colours["corr"] = figure["annotation"]["colours"]
+    assert sorted(boxplots) == ["boxplot_log2_raw_counts", "boxplot_vst"]
+    assert set(colours) == {"pca", "corr", *boxplots}
+    # every L1 figure groups by condition ...
+    assert variables == {"pca": ("condition", "condition"), "corr": "condition", **{name: "condition" for name in boxplots}}
+    # ... over exactly the metadata's condition levels, never the dose levels ...
+    with (l1_manifest.parent / "pca_scores.tsv").open(encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle, delimiter="\t"))
+    assert {row["condition"] for row in rows} == {"Control", "Treatment"} and len({row["dose"] for row in rows}) == 3
+    # ... with one colour per level, identical in every figure.
+    assert all(palette == colours["pca"] for palette in colours.values())
+    assert colours["pca"] == {"Control": "#4E78A7", "Treatment": "#CC5A6A"}
 
 
 def test_existing_standard_volcano_and_pca_files_match_the_previous_phase_output_rules(runs):

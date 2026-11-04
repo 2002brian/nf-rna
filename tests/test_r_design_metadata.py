@@ -8,6 +8,8 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from conftest import base_config, require_r_packages, require_rscript
 from rnaseq.planner import generate_plan
 from rnaseq.service import create_case_run, freeze_case_inputs, resolve_downstream_inputs
@@ -115,17 +117,52 @@ def test_real_r_continuous_covariate_from_numeric_text(project_factory, tmp_path
     assert design["model_matrix"]["column_names"] == ["(Intercept)", "age", "conditionTreatment"]
 
 
+AGE_DESIGN = {"formula": "~ age + condition", "variables": {"age": "continuous", "condition": "categorical"}}
+
+
+def _age_project(project_factory, values: list[str]):
+    config = base_config()
+    config["schema_version"] = "1.3"
+    config["analysis"] = {"enrichment": []}
+    config["design"] = {"type": "two_group", **AGE_DESIGN}
+    return project_factory(config=config, counts=COUNTS, metadata=_metadata("age", values), contrasts=CONTRASTS)
+
+
+@pytest.mark.parametrize("value", ["1_000", "١٢", "４０", "0x28"])
+def test_python_rejects_continuous_value_that_r_cannot_parse(project_factory, value):
+    # Python's float() accepts "1_000" and non-ASCII digits, which R's read.csv()/as.numeric()
+    # turn into NA (or, for "0x28", a different number).  Validation refuses them before any run.
+    report = validate_project(_age_project(project_factory, ["8", "9", value, "9", "8", "10"]))
+    assert not report.is_valid
+    assert [(issue.code, issue.message) for issue in report.errors] == [(
+        "invalid_continuous_value",
+        f"Continuous design variable 'age' must contain finite numeric values; sample 'C3' at line 4 has {value!r}.",
+    )]
+
+
+@pytest.mark.parametrize("values", [["8", "9.0", "8e0", " 9 ", "8.5", "10"], ["+8", "-1.5", ".5", "1E1", "7.", "10"]])
+def test_python_accepts_plain_ascii_decimal_continuous_values(project_factory, values):
+    report = validate_project(_age_project(project_factory, values))
+    assert report.is_valid, report.errors
+
+
 def test_real_r_rejects_continuous_value_that_r_cannot_parse(project_factory, tmp_path):
+    """Defence in depth: R refuses an unparseable value even if it bypasses Python validation."""
+
     require_r_packages(*R_PACKAGES)
-    # Python's float() accepts "1_000"; R must refuse it rather than use NA.
     work, l1, _l2 = _frozen_configs(
-        project_factory, tmp_path, formula="~ age + condition",
-        variables={"age": "continuous", "condition": "categorical"},
-        metadata=_metadata("age", ["8", "9", "1_000", "9", "8", "10"]),
+        project_factory, tmp_path, formula=AGE_DESIGN["formula"], variables=AGE_DESIGN["variables"],
+        metadata=_metadata("age", ["8", "9", "9", "9", "8", "10"]),
     )
+    # Corrupt the staged metadata that R reads, after validation and freezing.
+    staged = Path(l1["metadata"])
+    original = staged.read_text(encoding="utf-8")
+    assert "C3,9,Control\n" in original
+    staged.write_text(original.replace("C3,9,Control\n", "C3,1_000,Control\n"), encoding="utf-8")
     result = _run_r("l1_analysis", l1, work)
     assert result.returncode != 0
     assert "continuous design variable is not finite: age (sample C3: '1_000')" in result.stderr
+    assert not (work / "l1" / "normalized_counts.tsv").exists()
 
 
 def _design_metadata_levels(tmp_path: Path, *, metadata: str, types: str, formula: str, variable: str) -> str:
