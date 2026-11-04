@@ -483,6 +483,23 @@ rnaseq clean PROJECT --case-id CASE-001 --run 20260929-123856+0800             #
 
 `rnaseq retry --nextflow-resume` cannot reuse a cleaned run's task cache; a retry always runs in its own new work directory.
 
+### Published HISAT2 outputs and upstream reuse
+
+The HISAT2 + featureCounts route publishes these outputs into `upstream/hisat2_featurecounts/`:
+
+- `alignment/lane_summaries/*.hisat2.summary`
+- `bam/<sample>.bam` with its `.bai` and `.flagstat.txt`
+- `bam/count_only/<sample>.countable.bam` with its `.bai`
+- `counts/per_sample/*.counts.txt` and `*.summary`
+- `counts/canonical_counts.csv` and `counts/sample_map.csv`
+- `qc/strandedness/`, `qc/fastqc/`, `qc/fastp/` and `multiqc/`
+
+The uncompressed lane SAM written by HISAT2 is only the input of the lane sort. It stays in the task work directory and is never published. Runs made before nf-rna 1.7.0's fix still hold these SAMs in `alignment/lane_summaries/*.lane.sam`, and they may be deleted by hand once the run is no longer needed for diagnosis. nf-rna never deletes them.
+
+`--reuse-upstream`, and a retry of a run that reused its upstream, give the new run its own copy of the source `upstream/` tree with one exception: on the HISAT2 route, SAM, BAM and CRAM files and their indexes are not copied, because no downstream, delivery or status step reads them. Each such file is listed, with its size and the run that holds it, in `upstream/hisat2_featurecounts/referenced_alignment_artifacts.json`, and the handoff manifest records `alignment.storage: referenced_in_source_run`.
+
+The copy is staged next to the run's `upstream/` and moved into place only when complete. A failure leaves `upstream/` empty and the run `FAILED`. The L2 results never depend on the referenced files. If you archive or delete the source run, keep its BAMs wherever alignment-level evidence must be retained.
+
 Do not commit project run directories, workflow work directories, logs, delivery packages, references, indices, or production inputs. The repository's `.gitignore` enforces this default for new Git users.
 
 ## Determinism and external dependencies

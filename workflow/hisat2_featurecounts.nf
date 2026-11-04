@@ -95,7 +95,10 @@ process HISAT2_ALIGN {
     conda params.hisat2_linux_conda
     cpus 4
     memory '6 GB'
-    publishDir "${params.outdir}/alignment/lane_summaries", mode: 'copy', overwrite: false
+    // Publish only the lane alignment summary.  The uncompressed lane SAM is a
+    // transient hand-off to SORT_LANE_BAM (it stays in the task work directory);
+    // the published alignment artifact is the merged, sorted, indexed BAM.
+    publishDir "${params.outdir}/alignment/lane_summaries", mode: 'copy', overwrite: false, pattern: '*.hisat2.summary'
     input:
     tuple val(sample), val(strandedness), path(reads)
     path index

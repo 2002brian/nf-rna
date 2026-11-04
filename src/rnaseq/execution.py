@@ -32,6 +32,7 @@ from rnaseq.hisat2_featurecounts import (
 from rnaseq.planner import render_manifest, render_samplesheet
 from rnaseq.references import LocalReferenceError, load_local_reference, sha256_file
 from rnaseq.resource_policy import AUTO, GIB, DetectedResources, ResourcePolicy, describe_policy, detect_process_limits, resolve_policy
+from rnaseq.upstream_reuse import REFERENCE_RECORD, referenced_alignment_record
 from rnaseq.validators import ValidationReport
 from rnaseq.workflow_assets import workflow_asset_path
 
@@ -1550,6 +1551,22 @@ def generate_hisat2_featurecounts_handoff(report: ValidationReport, run_dir: Pat
         # Upstream outputs from before nf-rna 1.6.1 (for example a reused run) have no strand evidence.
         strandedness_qc = {"status": "NOT_EVALUATED", "declared": declared, "policy": STRAND_QC_POLICY, "samples": {},
                            "reason": "this upstream output has no -s 1/-s 2 strand evidence (produced before nf-rna 1.6.1)"}
+    alignment: dict[str, Any] = {
+        "bam_directory": _relative_to_run(run_dir, output / "bam"),
+        "count_only_bam_directory": _relative_to_run(run_dir, output / "bam" / "count_only"),
+        "count_only_transformation": "samtools view -bh -F 0x900; retain the original coordinate-sorted BAM and its tags",
+    }
+    referenced = referenced_alignment_record(output)
+    if referenced is not None:
+        # A reused upstream: BAM/SAM files stay in the run that produced them
+        # (see rnaseq.upstream_reuse); the directories above hold only small QC files.
+        alignment.update({
+            "storage": "referenced_in_source_run",
+            "reference_record": _relative_to_run(run_dir, output / REFERENCE_RECORD),
+            "reused_from": referenced.get("reused_from"),
+            "referenced_files": len(referenced["artifacts"]),
+            "referenced_bytes": referenced.get("referenced_bytes"),
+        })
     manifest = {
         "pipeline": {**hisat2_workflow_identity(), "versions": {"hisat2": HISAT2_VERSION, "samtools": SAMTOOLS_VERSION, "subread": SUBREAD_VERSION}},
         "quantification": {"method": "hisat2_featurecounts", "route": "first_party_alignment_counting"},
@@ -1562,15 +1579,15 @@ def generate_hisat2_featurecounts_handoff(report: ValidationReport, run_dir: Pat
             "per_sample_directory": _relative_to_run(run_dir, output / "counts" / "per_sample"),
             "assignment_summary_directory": _relative_to_run(run_dir, output / "counts" / "per_sample"),
         },
-        "alignment": {
-            "bam_directory": _relative_to_run(run_dir, output / "bam"),
-            "count_only_bam_directory": _relative_to_run(run_dir, output / "bam" / "count_only"),
-            "count_only_transformation": "samtools view -bh -F 0x900; retain the original coordinate-sorted BAM and its tags",
-        },
+        "alignment": alignment,
         "multiqc": {"html": _relative_to_run(run_dir, multiqc)},
         "strandedness_qc": strandedness_qc,
         "reference": report.local_reference.provenance() if report.local_reference is not None else report.config.reference.model_dump(),
     }
+    if referenced is not None:
+        # ``pipeline`` is the workflow of this nf-rna installation; the outputs
+        # were produced by the source run's workflow, recorded here unchanged.
+        manifest["reuse"] = {"reused_from": referenced.get("reused_from"), "source_pipeline": referenced.get("source_pipeline")}
     path = run_dir / "handoff" / "upstream_manifest.yaml"
     _write_text(path, yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True))
     return path

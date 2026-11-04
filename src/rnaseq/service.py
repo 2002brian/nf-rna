@@ -80,6 +80,7 @@ from rnaseq.project import LoadedProject
 from rnaseq.hisat2_featurecounts import FASTP_VERSION, FASTQC_VERSION, HISAT2_VERSION, MULTIQC_VERSION, SAMTOOLS_VERSION, SUBREAD_VERSION
 from rnaseq.planner import pairing_contract, render_manifest
 from rnaseq.validators import FastqRecord, FastqSummary, ValidationReport
+from rnaseq.upstream_reuse import copy_reusable_upstream
 from rnaseq.resource_policy import describe_policy, render_process_tuning_config, salmon_quant_tuning
 from rnaseq.workflow_assets import workflow_asset_path
 
@@ -2318,8 +2319,21 @@ def reuse_upstream_if_compatible(run: CaseRun, frozen: FrozenInputs, reference: 
         )
     if not (source / "handoff" / "upstream_manifest.yaml").is_file():
         raise ExecutionPreflightError("--reuse-upstream has no validated upstream handoff manifest.")
-    shutil.copytree(source / "upstream", run.run_dir / "upstream", dirs_exist_ok=True, ignore=shutil.ignore_patterns("._*"))
-    return f"{source_case}/{source_run}"
+    label = f"{source_case}/{source_run}"
+    _copy_reused_upstream(run, source, label)
+    return label
+
+
+def _copy_reused_upstream(run: CaseRun, source_run_dir: Path, label: str) -> None:
+    """Give ``run`` its own copy of a reused upstream, leaving HISAT2 alignment artifacts referenced in place."""
+
+    _log_event(run, f"copying reused upstream from {label}")
+    summary = copy_reusable_upstream(source_run_dir, run.run_dir / "upstream", source_label=label)
+    _log_event(
+        run,
+        f"reused upstream from {label}: copied {summary['copied_files']} files ({summary['copied_bytes']} bytes); "
+        f"{summary['referenced_files']} alignment artifacts ({summary['referenced_bytes']} bytes) referenced in their source run, not copied",
+    )
 
 
 def _optional_frozen(run: CaseRun, name: str) -> Path | None:
@@ -2530,7 +2544,7 @@ def _execute_retry_service_run(
     if report.config.input.type is InputType.FASTQ:
         assert (frozen / "samplesheet.csv").is_file() and (frozen / "nfcore.local.config").is_file()
         if source.reuse_upstream:
-            shutil.copytree(source.run.run_dir / "upstream", run.run_dir / "upstream", dirs_exist_ok=True, ignore=shutil.ignore_patterns("._*"))
+            _copy_reused_upstream(run, source.run.run_dir, f"{source.run.case_id}/{source.run.run_id}")
             _update_contract(
                 frozen / "downstream_contract.json",
                 {"source": {
