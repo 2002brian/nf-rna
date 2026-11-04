@@ -21,6 +21,8 @@ from typing import Any
 
 import yaml
 
+from rnaseq.atomic_io import atomic_write_text
+
 from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
 from rnaseq.downstream_runtime import native_platform
 from rnaseq.models import FastqPreprocessing, InputType, NFCORE_RNASEQ_VERSION, PIPELINE_VERSION, ReferenceConfig
@@ -1124,7 +1126,7 @@ def create_run_directory(report: ValidationReport) -> tuple[str, Path]:
 
 
 def _write_text(path: Path, content: str) -> None:
-    path.write_text(content, encoding="utf-8", newline="\n")
+    atomic_write_text(path, content)
 
 
 def _write_state(path: Path, **state: Any) -> None:

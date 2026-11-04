@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
+from rnaseq.atomic_io import atomic_write_text
 from rnaseq.errors import ExecutionPreflightError, UpstreamExecutionError
 from rnaseq.execution import (
     BACKEND_CONDA,
@@ -183,8 +184,7 @@ def delivery_filename(name: str, run_id: str) -> str:
 
 
 def _write_text(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(value, encoding="utf-8", newline="\n")
+    atomic_write_text(path, value)
 
 
 def _write_yaml(path: Path, value: dict[str, Any]) -> None:
@@ -677,13 +677,37 @@ def _log_resources(run: CaseRun, resources: EffectiveResourceBudget | None) -> N
         _log_event(run, f"resource warning: {warning}")
 
 
-def _write_state(run: CaseRun, status: str, **values: Any) -> None:
-    current: dict[str, Any] = {}
-    if run.state_path.is_file():
-        try:
-            current = json.loads(run.state_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            current = {}
+def _state_now() -> str:
+    return datetime.now(TAIPEI).replace(microsecond=0).isoformat()
+
+
+def _read_current_state(run: CaseRun) -> dict[str, Any]:
+    """Read the recorded state; set aside (never silently drop) an unreadable one."""
+
+    if not run.state_path.is_file():
+        return {}
+    try:
+        current = json.loads(run.state_path.read_text(encoding="utf-8"))
+    except ValueError:
+        current = None
+    if isinstance(current, dict):
+        return current
+    # State files are replaced atomically, so this is external damage.  Keep the
+    # damaged bytes for diagnosis instead of overwriting them.
+    preserved = run.state_path.with_name(f"{run.state_path.name}.corrupt-{datetime.now(TAIPEI).strftime('%Y%m%d-%H%M%S-%f')}")
+    try:
+        shutil.copy2(run.state_path, preserved)
+        detail = f"; preserved as {preserved.name}"
+    except OSError:
+        detail = ""
+    _log_event(run, f"run_state.json was unreadable and is rebuilt from the run identity{detail}")
+    return {}
+
+
+def _state_payload(run: CaseRun, status: str, **values: Any) -> dict[str, Any]:
+    """The run state after recording ``status``; ``completed_at`` may be given for a final state."""
+
+    current = _read_current_state(run)
     current.update(
         {
             "case_id": run.case_id,
@@ -695,10 +719,19 @@ def _write_state(run: CaseRun, status: str, **values: Any) -> None:
         }
     )
     if status in FINAL_STATES:
-        current["completed_at"] = datetime.now(TAIPEI).replace(microsecond=0).isoformat()
+        current["completed_at"] = values.get("completed_at") or _state_now()
     else:
         current.setdefault("completed_at", None)
-    _write_text(run.state_path, json.dumps(current, indent=2, sort_keys=True) + "\n")
+    return current
+
+
+def _render_state(state: dict[str, Any]) -> str:
+    return json.dumps(state, indent=2, sort_keys=True) + "\n"
+
+
+def _write_state(run: CaseRun, status: str, **values: Any) -> None:
+    current = _state_payload(run, status, **values)
+    _write_text(run.state_path, _render_state(current))
     phase = current.get("phase")
     error = values.get("error")
     _log_event(run, f"state {status}" + (f" phase={phase}" if phase else "") + (f"; error: {error}" if error else ""))
