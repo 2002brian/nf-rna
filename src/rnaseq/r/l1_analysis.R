@@ -57,7 +57,12 @@ scores <- data.frame(sample_id = samples, PC1 = pca$x[, 1], PC2 = if (ncol(pca$x
 if (!is.null(cfg$design_variable_types)) for (variable in names(cfg$design_variable_types)) scores[[variable]] <- metadata[scores$sample_id, variable]
 write.table(scores, file.path(cfg$output_dir, "pca_scores.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
 write.table(data.frame(component = paste0("PC", seq_along(variance)), proportion_variance = variance), file.path(cfg$output_dir, "pca_variance.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
-color_name <- tail(all.vars(formula), 1)
+# Figure grouping only (no statistic depends on it): the same primary factor as
+# rnaseq.validators.condition_factor(), i.e. `condition` when the formula models
+# it, otherwise the last formula term.  A custom `~ condition + batch` therefore
+# colours samples by condition, not batch.
+formula_terms <- all.vars(formula)
+color_name <- if ("condition" %in% formula_terms) "condition" else tail(formula_terms, 1)
 scores$group <- as.factor(metadata[scores$sample_id, color_name])
 fig <- nf_rna_figure_context(cfg)
 # As in L2: each L1 figure also gets <name>_<raster dpi>dpi.png beside the 150 dpi report preview (additive; names unchanged).
