@@ -111,13 +111,14 @@ NF_RNA_STYLE_PRESETS <- list(
     # Raster dpi is not a preset property: the selected profile's raster_dpi always applies (300, Elsevier 500).
     # Figure widths are columns of the selected profile ("single" uses compact_width_mm where the profile has no
     # single column); heights follow from the aspect ratio or the data.
-    # Continuous enrichment scale for adjusted P in every standard dotplot (GO/KEGG ORA and GO/KEGG GSEA).  Ordered from the
-    # most significant (red, adjusted P = 0) to the least significant (blue, adjusted P at the cutoff): a two-hue sequential
-    # ramp interpolated in CIE Lab between #B2182B and #2166AC, with no light midpoint, because adjusted P has no signed
-    # centre.  A signed statistic (NES) is never drawn with it; it would use `diverging_signed` below.
-    # "nf-rna Standard Enrichment Scale v2" (v1 was the Viridis-hue ramp #4B0055 ... #00BE7D).
-    enrichment=c("#B2182B", "#A1384A", "#8B4A6A", "#6B598A", "#2166AC"),
-    enrichment_name="nf-rna Standard Enrichment Scale v2",
+    # Continuous enrichment scale for adjusted P in every standard dotplot (GO/KEGG ORA and GO/KEGG GSEA): a single-hue
+    # blue sequential ramp (ColorBrewer "Blues", monotonic in lightness), listed from the most significant (darkest) to
+    # the least significant (lightest).  The lightest stop is #9ECAE1, not the near-white end of the Brewer ramp, so no
+    # dot fades into the white background.  The colour is mapped on a -log10 scale with per-figure limits (see
+    # nf_rna_padj_colour_scale).  No red is used: red/blue are reserved for direction (up/down) and signed statistics.
+    # "nf-rna Standard Enrichment Scale v3" (v1 was the Viridis-hue ramp #4B0055 ... #00BE7D; v2 the red-blue ramp).
+    enrichment=c("#08306B", "#08519C", "#2171B5", "#4292C6", "#6BAED6", "#9ECAE1"),
+    enrichment_name="nf-rna Standard Enrichment Scale v3 (Blues)",
     # Diverging blue-white-red scale centred at 0 for signed enrichment statistics (NES) should a figure colour by one.
     # No current dotplot does (NES is the x axis); it is defined so that p.adjust and NES can never share a palette.
     diverging_signed=c(low="#2166AC", mid="#F7F7F7", high="#B2182B"),
@@ -538,13 +539,24 @@ nf_rna_deg_plot_text <- function(context, numerator, denominator, shrunk, method
       caption=sprintf("DEG: padj < %s and |raw log2FC| \u2265 %s; LFC shrinkage: %s", padj_cutoff, abs_lfc, if (shrunk) method else "failed, raw LFC shown"),
       capped="padj = 0, drawn at display floor")))
   }
-  lfc <- sprintf("%s fold change (%s vs %s)", if (shrunk) "Shrunken log\u2082" else "log\u2082", numerator, denominator)
+  # Standard preset: concise axis titles only.  What exactly is drawn (shrunken vs unshrunken LFC, padj, the DEG rule)
+  # goes to `figure_caption`, which is recorded in the figure manifest and shown under the figure in the HTML report.
+  lfc_source <- if (shrunk) sprintf("%s-shrunken log\u2082 fold change (log2FoldChange_shrunk)", method) else "unshrunken DESeq2 log\u2082 fold change (log2FoldChange; shrinkage failed)"
+  rule <- sprintf("DEGs (coloured) have adjusted P < %s and |unshrunken log\u2082 fold change| \u2265 %s", padj_cutoff, abs_lfc)
+  shrink_note <- if (shrunk) " Shrinkage is for display only; DEG classification uses the unshrunken estimate, so a coloured point can lie within \u00b1%s on the shrunken axis." else ""
+  shrink_note <- sprintf(shrink_note, abs_lfc)
+  direction <- sprintf("positive = higher in %s than in %s", numerator, denominator)
+  padj_text <- "DESeq2 adjusted P value (padj; Benjamini\u2013Hochberg, with independent filtering)"
   c(statistics, list(
-    volcano_x=lfc, volcano_y="\u2212log\u2081\u2080(adjusted P value)",
-    ma_x="log\u2081\u2080(mean normalized count)", ma_y=lfc,
-    caption=paste0(sprintf("DEG: adjusted P (BH) < %s and |log\u2082FC| \u2265 %s (unshrunken)", padj_cutoff, abs_lfc), "\n",
-                   if (shrunk) sprintf("log\u2082FC shrinkage: %s (display only)", method) else "log\u2082FC shrinkage failed: unshrunken values shown"),
-    capped="Adjusted P = 0 (drawn at display floor)"))
+    volcano_x="log\u2082 fold change", volcano_y="\u2212log\u2081\u2080(adjusted P value)",
+    ma_x="log\u2081\u2080(mean normalized count)", ma_y="log\u2082 fold change",
+    caption=NULL,
+    capped="Adjusted P = 0",
+    volcano_caption=paste0(sprintf("Volcano plot, %s vs %s. x: %s; %s. y: \u2212log\u2081\u2080 of the %s. ", numerator, denominator, lfc_source, direction, padj_text),
+                           rule, sprintf(". Dashed line: adjusted P = %s.", padj_cutoff), if (!shrunk) sprintf(" Dashed vertical lines: |log\u2082 fold change| = %s.", abs_lfc) else "",
+                           shrink_note, " Triangles (if any): adjusted P reported as 0, drawn at the smallest positive double."),
+    ma_caption=paste0(sprintf("MA plot, %s vs %s. x: log\u2081\u2080 of DESeq2 baseMean (mean of size-factor-normalized counts over all samples). y: %s; %s. ", numerator, denominator, lfc_source, direction),
+                      rule, ".", shrink_note)))
 }
 
 # x-axis title of an ORA dotplot (x = -log10(p.adjust)).  The legacy text names the database; the standard
@@ -1039,7 +1051,7 @@ nf_rna_write_figure_manifest <- function(context, output_dir) {
     colour_policy <- append(colour_policy, list(
       categorical_colours=as.list(style$categorical),
       batch=list(colours=as.list(style$batch), name=style$batch_name, use="batch variable colours; independent of the group palette"),
-      enrichment=list(colours=as.list(style$enrichment), name=style$enrichment_name, use="continuous adjusted-P scale of the ORA and GSEA dotplots: red = most significant (adjusted P = 0), blue = adjusted P at the cutoff"),
+      enrichment=list(colours=as.list(style$enrichment), name=style$enrichment_name, use="continuous adjusted-P scale of the ORA and GSEA dotplots: darker blue = smaller adjusted P; -log10 mapping with per-figure limits (smallest drawn adjusted P rounded down to a decade, to the cutoff)"),
       applied_preset="standard"), after=1)
   }
   document <- list(
@@ -1200,6 +1212,66 @@ nf_rna_dotplot_standard_layout <- function(legend_box) {
 # Colourbar labels for adjusted P: plain decimals without trailing zeros ("0", "0.01", ...).
 nf_rna_padj_labels <- function(x) ifelse(is.na(x), NA_character_, format(x, drop0trailing=TRUE, scientific=FALSE, trim=TRUE))
 
+# Standard-preset colour scale for adjusted P in the ORA and GSEA dotplots.  Only the colour mapping is decided here;
+# p.adjust itself is never changed.  Mapping: -log10(adjusted P), so equal colour steps are equal ratios of P and the
+# typical range of significant terms (1e-2 ... 1e-30) is spread across the ramp instead of collapsing at one end of a
+# linear [0, cutoff] scale.  Limits, per figure: from the smallest drawn adjusted P rounded down to a whole decade
+# (at least one decade below the cutoff's decade) to the cutoff.  Values above the cutoff are squished to the lightest
+# colour; adjusted P = 0 is drawn at the smallest positive double, like the volcano.  Darker blue = smaller adjusted P,
+# and the colourbar reads light (cutoff, left) to dark (most significant, right), the same direction as an ORA x axis.
+NF_RNA_SUPERSCRIPT <- c("0"="\u2070", "1"="\u00b9", "2"="\u00b2", "3"="\u00b3", "4"="\u2074", "5"="\u2075", "6"="\u2076", "7"="\u2077", "8"="\u2078", "9"="\u2079", "-"="\u207b")
+nf_rna_power10_label <- function(exponent) paste0("10", paste(NF_RNA_SUPERSCRIPT[strsplit(as.character(as.integer(exponent)), "")[[1]]], collapse=""))
+nf_rna_padj_colour_limits <- function(values, cutoff) {
+  cutoff <- as.numeric(cutoff)
+  v <- values[is.finite(values) & values > 0]
+  lower <- min(c(if (length(v)) 10^floor(log10(min(v))), 10^(floor(log10(cutoff)) - 1)))
+  c(max(lower, 10^floor(log10(.Machine$double.xmin))), cutoff)
+}
+nf_rna_padj_colour_breaks <- function(limits) {
+  lo <- log10(limits[[1]]); hi <- log10(limits[[2]])
+  decades <- seq(ceiling(lo - 1e-9), floor(hi + 1e-9))
+  # at most ~5 labelled decades, at round multiples (every 1, 2, 5, 10, 20, 50, 100 ... decades)
+  nice <- c(1, 2, 5, 10, 20, 50, 100, 200, 500)
+  step <- nice[nice >= (length(decades) - 1) / 4][[1]]
+  decades <- decades[decades %% step == 0]
+  # the cutoff is always labelled; a decade too close to it on the bar is dropped
+  decades <- decades[(hi - decades) >= 0.15 * (hi - lo) | abs(10^decades - limits[[2]]) < 1e-12 * limits[[2]]]
+  breaks <- sort(unique(c(10^decades, limits[[2]])))
+  # decades as powers of ten once any is below 0.001 (one notation per bar), otherwise plain decimals; the cutoff stays decimal
+  powers <- any(breaks < 0.001 * (1 - 1e-9))
+  labels <- vapply(breaks, function(b) if (powers && abs(log10(b) - round(log10(b))) < 1e-9 && b < limits[[2]]) nf_rna_power10_label(round(log10(b))) else nf_rna_padj_labels(signif(b, 6)), character(1))
+  list(breaks=breaks, labels=labels)
+}
+nf_rna_padj_colour_scale <- function(context, values, cutoff, title) {
+  limits <- nf_rna_padj_colour_limits(values, cutoff)
+  ticks <- nf_rna_padj_colour_breaks(limits)
+  neglog10 <- scales::trans_new("neglog10", function(x) -log10(x), function(x) 10^(-x), domain=c(.Machine$double.xmin, Inf))
+  list(scale=ggplot2::scale_colour_gradientn(colours=rev(nf_rna_enrichment_colours(context)), limits=limits, transform=neglog10, oob=scales::squish,
+                                             breaks=ticks$breaks, labels=ticks$labels, name=title),
+       record=list(value="adjusted P (p.adjust as reported by clusterProfiler)", column="p.adjust", title=title, kind="sequential, single hue",
+                   transform="-log10(adjusted P)", limits=limits, breaks=ticks$breaks, break_labels=ticks$labels,
+                   limits_rule="per figure: smallest drawn adjusted P rounded down to a whole decade (at least one decade below the cutoff's decade) up to the cutoff",
+                   clipping="adjusted P above the cutoff is drawn in the lightest colour; adjusted P = 0 is drawn at the smallest positive double",
+                   direction="darker blue = smaller adjusted P (more significant); lightest blue = the cutoff",
+                   comparability="limits differ between figures; compare colours within a figure, exact values are in the source-data table",
+                   scale=nf_rna_style(context)$enrichment_name, colours_most_significant_first=as.list(nf_rna_enrichment_colours(context))))
+}
+
+# External caption of a standard-preset enrichment dotplot (manifest `figure_caption`, shown under the figure in the
+# HTML report): the plotted statistics and the colour mapping, so none of it has to be written into the image.
+nf_rna_dotplot_caption <- function(kind, method, cutoff, colour, contrast=NULL) {
+  method_name <- if (identical(toupper(method), "BH")) "Benjamini\u2013Hochberg" else method
+  colour_text <- sprintf("Colour: adjusted P value (%s) on a \u2212log\u2081\u2080 scale from %s (lightest) to %s (darkest; smallest adjusted P drawn, rounded down to a decade); darker = more significant; limits are per figure, so compare colours within a figure only.",
+                         method_name, nf_rna_padj_labels(signif(colour$limits[[2]], 6)), format(colour$limits[[1]], scientific=TRUE))
+  if (identical(kind, "ORA")) {
+    paste0(sprintf("Over-representation analysis. x: \u2212log\u2081\u2080(adjusted P value, %s), as reported by clusterProfiler. Shown: the top significant terms (adjusted P \u2264 %s) by adjusted P. Dot size: number of foreground genes in the term. ", method_name, cutoff),
+           colour_text, " Triangles (if any): adjusted P reported as 0, drawn at the smallest positive double.")
+  } else {
+    direction <- if (!is.null(contrast$numerator) && !is.null(contrast$denominator)) sprintf("NES > 0: enriched among genes higher in %s; NES < 0: higher in %s", contrast$numerator, contrast$denominator) else "the sign of NES gives the direction"
+    paste0(sprintf("Preranked GSEA (ranking: DESeq2 Wald statistic). x: normalized enrichment score (NES); %s. Shown: the top significant gene sets (adjusted P \u2264 %s) by |NES|, ordered by NES. Dot size: gene-set size. ", direction, cutoff), colour_text)
+  }
+}
+
 # Over-representation dotplot of an already selected, ordered term subset.
 nf_rna_ora_dotplot <- function(context, top, x_label, path_stem, output_root, meta=list(), subtitle=NULL, formats=c("png", "tiff", "pdf"), padj_cutoff=0.05, p_adjust_method="BH") {
   context <- nf_rna_figure_scope(context, "dotplot")  # standard preset when requested, else the context unchanged
@@ -1217,12 +1289,13 @@ nf_rna_ora_dotplot <- function(context, top, x_label, path_stem, output_root, me
   top$plot_padj <- pmax(top$p.adjust, .Machine$double.xmin)
   # Standard preset: colour additionally encodes the adjusted P of the x axis with the enrichment scale (red = most
   # significant), with the same fixed limits [0, cutoff] as the GSEA dotplots.  Legacy keeps one mark colour.
-  colour_title <- sprintf("Adjusted P value (%s)", p_adjust_method)
+  colour_title <- "Adjusted P value"
+  colour <- if (standard) nf_rna_padj_colour_scale(context, top$plot_padj, padj_cutoff, colour_title)
   make <- function(subtitle_text=subtitle, legend_box="horizontal", x_text=x_label) {
-    p <- ggplot2::ggplot(top, if (standard) ggplot2::aes(x=-log10(plot_padj), y=axis, size=Count, shape=capped, colour=p.adjust) else ggplot2::aes(x=-log10(plot_padj), y=axis, size=Count, shape=capped)) +
+    p <- ggplot2::ggplot(top, if (standard) ggplot2::aes(x=-log10(plot_padj), y=axis, size=Count, shape=capped, colour=plot_padj) else ggplot2::aes(x=-log10(plot_padj), y=axis, size=Count, shape=capped)) +
       (if (standard) ggplot2::geom_point() else ggplot2::geom_point(colour=nf_rna_enrichment_mark(context))) +
-      (if (standard) ggplot2::scale_colour_gradientn(colours=nf_rna_enrichment_colours(context), limits=c(0, as.numeric(padj_cutoff)), oob=scales::squish, labels=nf_rna_padj_labels, name=colour_title)) +
-      ggplot2::scale_shape_manual(values=c("FALSE"=16, "TRUE"=17), breaks="TRUE", labels="adjusted P = 0, drawn at display floor", name=NULL, guide=if (any(top$capped)) "legend" else "none") +
+      (if (standard) colour$scale) +
+      ggplot2::scale_shape_manual(values=c("FALSE"=16, "TRUE"=17), breaks="TRUE", labels=if (standard) "Adjusted P = 0" else "adjusted P = 0, drawn at display floor", name=NULL, guide=if (any(top$capped)) "legend" else "none") +
       ggplot2::scale_y_discrete(labels=stats::setNames(labels, top$ID)) +
       ggplot2::scale_size_area(max_size=5, name="Genes") + ggplot2::expand_limits(x=0) +
       ggplot2::labs(x=x_text, y=NULL, subtitle=subtitle_text) + nf_rna_theme(context)
@@ -1244,9 +1317,9 @@ nf_rna_ora_dotplot <- function(context, top, x_label, path_stem, output_root, me
     labels=sprintf("term descriptions wrapped to 45 characters, at most 2 lines; %d truncated; full ID/Description in the source-data table", sum(attr(labels, "truncated"))),
     source_data=list(nf_rna_source_data(source_path, output_root, "plotted terms with full IDs and descriptions"))),
     if (standard) list(layout=fit$layout, term_order=as.list(top$ID),
-                       colour=list(value=sprintf("adjusted P (%s)", p_adjust_method), column="p.adjust", title=colour_title, limits=c(0, as.numeric(padj_cutoff)), kind="sequential",
-                                   direction="red = most significant (adjusted P = 0), blue = adjusted P at the cutoff", scale=nf_rna_style(context)$enrichment_name),
-                       enrichment_colours=as.list(nf_rna_enrichment_colours(context))), meta), formats=formats)
+                       colour=c(colour$record, list(adjustment=p_adjust_method, redundant_with="x axis (the same adjusted P)")),
+                       enrichment_colours=as.list(nf_rna_enrichment_colours(context)),
+                       figure_caption=nf_rna_dotplot_caption("ORA", p_adjust_method, padj_cutoff, colour$record)), meta), formats=formats)
 }
 
 # Preranked GSEA dotplot.  The colour scale for adjusted P has fixed limits
@@ -1265,14 +1338,16 @@ nf_rna_gsea_dotplot <- function(context, top, contrast, padj_cutoff, p_adjust_me
   x_label <- if (standard) {
     if (!is.null(numerator) && !is.null(denominator)) sprintf("Normalized enrichment score (%s vs %s)", numerator, denominator) else "Normalized enrichment score (NES)"
   } else if (!is.null(numerator) && !is.null(denominator)) sprintf("NES (> 0: higher in %s; < 0: higher in %s)", numerator, denominator) else "NES (> 0: enriched among positively ranked genes)"
-  colour_title <- if (standard) sprintf("Adjusted P value (%s)", p_adjust_method) else sprintf("Adjusted P (%s)", p_adjust_method)
+  colour_title <- if (standard) "Adjusted P value" else sprintf("Adjusted P (%s)", p_adjust_method)
   top$axis <- factor(top$ID, levels=rev(top$ID))
+  top$plot_padj <- pmax(top$p.adjust, .Machine$double.xmin)  # display only, as for the ORA dotplots
+  colour <- if (standard) nf_rna_padj_colour_scale(context, top$plot_padj, padj_cutoff, colour_title)
   make <- function(subtitle_text=NULL, legend_box="horizontal", x_text=x_label) {
-    p <- ggplot2::ggplot(top, ggplot2::aes(x=NES, y=axis, size=setSize, colour=p.adjust)) +
+    p <- ggplot2::ggplot(top, if (standard) ggplot2::aes(x=NES, y=axis, size=setSize, colour=plot_padj) else ggplot2::aes(x=NES, y=axis, size=setSize, colour=p.adjust)) +
       ggplot2::geom_vline(xintercept=0, linewidth=nf_rna_linewidth(0.5), colour="grey40") +
       ggplot2::geom_point() +
       ggplot2::scale_y_discrete(labels=stats::setNames(labels, top$ID)) +
-      ggplot2::scale_colour_gradientn(colours=nf_rna_enrichment_colours(context), limits=c(0, as.numeric(padj_cutoff)), oob=scales::squish, labels=if (standard) nf_rna_padj_labels else ggplot2::waiver(), name=colour_title) +
+      (if (standard) colour$scale else ggplot2::scale_colour_gradientn(colours=nf_rna_enrichment_colours(context), limits=c(0, as.numeric(padj_cutoff)), oob=scales::squish, name=colour_title)) +
       ggplot2::scale_size_area(max_size=5, name="Gene set size") +
       ggplot2::labs(x=x_text, y=NULL) + nf_rna_theme(context)
     if (standard) p <- p + nf_rna_dotplot_standard_layout(legend_box)
@@ -1287,13 +1362,14 @@ nf_rna_gsea_dotplot <- function(context, top, contrast, padj_cutoff, p_adjust_me
   nf_rna_save_figure(context, p, path_stem, width_mm, height_mm, output_root, c(list(
     kind="GSEA dotplot", contrast=contrast[intersect(c("contrast_id", "numerator", "denominator"), names(contrast))],
     x="normalized enrichment score; sign gives the direction", rank_metric="DESeq2 Wald statistic (stat) for numerator vs denominator; ties ordered by Entrez ID",
-    colour=list(value=sprintf("adjusted P (%s)", p_adjust_method), limits=c(0, as.numeric(padj_cutoff)), kind="sequential", harmonized="fixed limits shared by every GSEA dotplot with this cutoff"),
+    colour=if (standard) c(colour$record, list(adjustment=p_adjust_method)) else list(value=sprintf("adjusted P (%s)", p_adjust_method), limits=c(0, as.numeric(padj_cutoff)), kind="sequential", harmonized="fixed limits shared by every GSEA dotplot with this cutoff"),
     size="gene set size (setSize)", display_order="NES descending",
     labels=sprintf("term descriptions wrapped to 45 characters, at most 2 lines; %d truncated; full ID/Description in the source-data table", sum(attr(labels, "truncated"))),
     source_data=list(nf_rna_source_data(source_path, output_root, "plotted terms with full IDs, NES, adjusted P and leading edge"))),
     if (standard) list(layout=fit$layout, term_order=as.list(top$ID), enrichment_colours=as.list(nf_rna_enrichment_colours(context)),
-                       colour_meaning=list(column="p.adjust", title=colour_title, direction="red = most significant (adjusted P = 0), blue = adjusted P at the cutoff", scale=nf_rna_style(context)$enrichment_name,
-                                           signed_statistic="NES is drawn on the x axis (zero line at 0), never with this colour scale")), meta), formats=formats)
+                       colour_meaning=list(column="p.adjust", title=colour_title, direction=colour$record$direction, scale=nf_rna_style(context)$enrichment_name,
+                                           signed_statistic="NES is drawn on the x axis (zero line at 0), never with this colour scale"),
+                       figure_caption=nf_rna_dotplot_caption("GSEA", p_adjust_method, padj_cutoff, colour$record, contrast)), meta), formats=formats)
 }
 
 # GSEA running-score plot (enrichplot::gseaplot2) for one gene set, drawn from

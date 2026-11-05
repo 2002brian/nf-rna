@@ -48,7 +48,7 @@ def preamble(preset: str, profile: str = "general") -> str:
 # ------------------------------------------------------------------ continuous enrichment scale
 
 
-def test_the_enrichment_scale_is_its_own_red_to_blue_scale_separate_from_group_and_expression_colours(tmp_path):
+def test_the_enrichment_scale_is_its_own_blue_scale_separate_from_group_and_expression_colours(tmp_path):
     result = run_r('''
 std <- NF_RNA_STYLE_PRESETS$standard; leg <- NF_RNA_STYLE_PRESETS$legacy
 ctx_std <- nf_rna_figure_scope(nf_rna_figure_context(list(figure_style = list(preset = "standard"))), "dotplot"); ctx_leg <- nf_rna_figure_context(list())
@@ -61,7 +61,8 @@ cat(toJSON(list(standard = nf_rna_enrichment_colours(ctx_std), legacy = nf_rna_e
     scale = result["standard"]
     assert len(scale) >= 4 and not set(scale) & set(result["categorical"] + result["diverging"] + result["batch"])  # nothing shared with the discrete or diverging palettes
     first, last = scale[0], scale[-1]
-    assert int(first[1:3], 16) > int(first[5:7], 16) and int(last[5:7], 16) > int(last[1:3], 16)  # v2: most significant (first) red, cutoff blue
+    assert all(int(c[5:7], 16) > int(c[1:3], 16) for c in scale)  # v3: single-hue blue, no red
+    assert result["lightness"] == sorted(result["lightness"])  # most significant (first) darkest
     assert result["mark_std"] == [scale[0]] or result["mark_std"] == scale[0]
 
 
@@ -101,8 +102,12 @@ for (name in c("legacy", "standard")) { c <- if (name == "legacy") legacy else c
 recs <- lapply(list(legacy, ctx), function(x) x$records[[1]])
 cat(toJSON(list(colour = lapply(recs, function(r) r$colour), size = lapply(recs, function(r) r$size), x = lapply(recs, function(r) r$x), order = lapply(recs, function(r) r$display_order),
   standard_scale = recs[[2]]$enrichment_colours, terms = unlist(recs[[2]]$term_order)), auto_unbox = TRUE))''', tmp_path)
-    assert result["colour"][0] == result["colour"][1]  # same quantity, same limits (0 .. cutoff), same kind
-    assert result["colour"][0]["limits"] == [0, 0.05] and result["size"][0] == result["size"][1] and result["x"][0] == result["x"][1]
+    legacy_colour, standard_colour = result["colour"]
+    assert legacy_colour["limits"] == [0, 0.05] and legacy_colour["value"] == "adjusted P (BH)"  # legacy: fixed linear limits, unchanged
+    # standard: the same quantity (p.adjust) on a -log10 mapping with per-figure limits ending at the cutoff
+    assert standard_colour["column"] == "p.adjust" and standard_colour["adjustment"] == "BH" and standard_colour["transform"] == "-log10(adjusted P)"
+    assert standard_colour["limits"][1] == 0.05 and standard_colour["limits"][0] < 0.05
+    assert result["size"][0] == result["size"][1] and result["x"][0] == result["x"][1]
     assert result["order"][0] == result["order"][1] == "NES descending"
     assert result["terms"] == [f"T{i:04d}" for i in range(1, 9)]  # ordered by NES descending, as in legacy
     assert len(result["standard_scale"]) >= 4

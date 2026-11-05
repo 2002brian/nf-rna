@@ -19,7 +19,7 @@ by reference to another file.
 | `bioinfo` | Backward-compatible alias of `standard`; resolved to `standard` everywhere. |
 | Profiles (`general`, `nature`, `plos`, `elsevier`) | Active with either preset. |
 | Arimo font | Bundled (SIL OFL 1.1), verified before the first standard figure is drawn. |
-| Enrichment colour scale | **Approved** as `nf-rna Standard Enrichment Scale v2` (red = most significant to blue; v1.7.0, replaces the Viridis-hue v1; see Continuous scales). |
+| Enrichment colour scale | **Approved** as `nf-rna Standard Enrichment Scale v3 (Blues)` (single-hue blue, darker = more significant, −log₁₀ mapping; v1.7.0, replaces the Viridis-hue v1 and the red-blue v2; see Continuous scales). |
 | Group colours 1–8 | **Approved** (1–3 earlier, 4–8 in Phase 4). Beyond eight levels slots 1–8 are kept and a deterministic maximin extension supplies the rest. |
 | Batch palette | **Approved** as `nf-rna Standard Batch Palette v1`. |
 
@@ -89,18 +89,27 @@ Three kinds of colour are kept separate: the **discrete group/batch palettes** (
 expression scale** of the DEG heatmap and the correlation heatmap (a value with a meaningful zero), and the
 **sequential enrichment scale** (adjusted P). Legacy colours adjusted P of the GSEA dotplots with reversed
 Blues (low P dark) and draws ORA dots in one mark colour. Since v1.7.0 the standard preset uses
-`nf-rna Standard Enrichment Scale v2` for adjusted P in **every** dotplot (GO ORA, KEGG ORA, GO BP/MF/CC GSEA,
-KEGG GSEA): a two-hue ramp interpolated in CIE Lab from red `#B2182B` (adjusted P = 0, most significant) to blue
-`#2166AC` (adjusted P at the cutoff), stops `#B2182B #A1384A #8B4A6A #6B598A #2166AC`, with no light midpoint
-because adjusted P has no signed centre. The limits are fixed at 0 to the cutoff (0.05) with values beyond squished,
-as before, so plots with the same cutoff are comparable; the colourbar title is `Adjusted P value (BH)`. In the ORA
-dotplots the colour is a redundant encoding of the x axis (−log₁₀ adjusted P), which is unchanged. The manifest records
-the scale name in `colour_policy.enrichment` and per figure (`colour` / `colour_meaning`). v1 (`#4B0055 #353E7C
-#007094 #009B95 #00BE7D`, Viridis hues) is retired. A **signed** enrichment statistic (NES) is never coloured with this
-scale: NES stays on the x axis with a zero line, and should a figure ever colour by it, `diverging_signed`
-(`#2166AC` – `#F7F7F7` – `#B2182B`, centred at 0; `nf_rna_signed_colours`) is the palette to use. Red and blue are
-distinguishable under simulated deuteranopia and protanopia mainly by lightness/blue content; the scale has nearly
-constant CIE L (38–43), so it should not be read in greyscale.
+`nf-rna Standard Enrichment Scale v3 (Blues)` for adjusted P in **every** dotplot (GO ORA, KEGG ORA, GO BP/MF/CC GSEA,
+KEGG GSEA): a single-hue ColorBrewer Blues ramp, monotonic in lightness, from `#9ECAE1` (the cutoff, lightest) to
+`#08306B` (most significant, darkest), stops `#08306B #08519C #2171B5 #4292C6 #6BAED6 #9ECAE1`. The near-white end of
+the Brewer ramp is left out so no dot fades into the white background (lightest stop contrast ≈ 1.75:1 against white).
+No red is used: red/blue are the up/down direction colours.
+
+*Mapping (`nf_rna_padj_colour_scale`).* Colour is mapped on −log₁₀(adjusted P), because significant terms span many
+decades (in the reference run's dotplots from 0.04 down to 10⁻⁴⁴); on the former linear 0–0.05 scale almost every dot had the same colour.
+Limits are per figure: from the smallest drawn adjusted P rounded down to a whole decade (at least one decade below the
+cutoff's decade, so ≥ 10⁻³ for 0.05) to the cutoff. Values above the cutoff would be squished to the lightest colour
+(the dotplots draw only significant terms, so none are); adjusted P = 0 is drawn at the smallest positive double, as in
+the volcano. Ticks are round decades (every 1, 2, 5, 10 … decades, at most about five) labelled `10⁻ⁿ`, plus the
+cutoff (`0.05`); the bar reads light (cutoff, left) to dark (right), the direction of the ORA x axis. Because the
+limits are per figure, colours compare within a figure only; exact values are in the source-data tables. The
+colourbar title is `Adjusted P value`; the adjustment method is in the external caption. In the ORA dotplots the colour
+is a redundant encoding of the x axis (−log₁₀ adjusted P), which is unchanged. The manifest records the scale in
+`colour_policy.enrichment` and per figure in `colour` (transform, limits, breaks, clipping) and `figure_caption`.
+v1 (`#4B0055 … #00BE7D`, Viridis hues) and v2 (`#B2182B … #2166AC`, red-blue) are retired. A **signed** enrichment
+statistic (NES) is never coloured with this scale: NES stays on the x axis with a zero line, and should a figure ever
+colour by it, `diverging_signed` (`#2166AC` – `#F7F7F7` – `#B2182B`, centred at 0; `nf_rna_signed_colours`) is the
+palette to use.
 
 Review finding for the expression scale: the standard diverging ends (`standard$diverging`) are the same
 colours as group colours 1 and 2, so an annotation bar and the expression extremes share colours. This follows the
@@ -141,7 +150,7 @@ describes them and must be updated together with the code.
 | Sample boxplot size | double column × (65 mm + label height) | content-aware: width from the number of samples (minimum 60 mm, at most the profile double column), height from the measured labels and a 42 mm panel; the legend wraps into more rows until it fits |
 | Sample correlation heatmap | double column × 150 mm, no annotation | content-aware square cells (6 mm, shrinking only when the profile maximum would be exceeded; sample labels are hidden only when a cell is smaller than the label height); group (and batch) annotation in the PCA colours; since v1.7.0 its text follows `nf_rna_theme` like the ggplot figures (`nf_rna_pheatmap_theme_text`): title at the base size in bold (pheatmap draws 1.3 × base), annotation names and legend titles plain at the base size, legend labels at the small size; values, colours, cell sizes and the clustering order are unchanged |
 | Enrichment dotplots (GO, GSEA, KEGG) | double column, height from the number of label lines, legend on the right | content-aware: width = measured label/axis width + a 55 mm panel (minimum 85 mm), height = measured fixed parts + one row per term and label line; legend below, stacked when it is wider than the figure; subtitle and x-axis title wrapped to the figure width with the real font metrics; term text, order, point size and colour mappings, axes and numeric labels unchanged |
-| Enrichment colours | ORA marks use the primary colour; GSEA adjusted P uses reversed Blues | ORA and GSEA colour adjusted P with the enrichment scale v2 (red = most significant, blue = cutoff), limits 0 to the cutoff, colourbar `Adjusted P value (BH)` |
+| Enrichment colours | ORA marks use the primary colour; GSEA adjusted P uses reversed Blues, linear 0 to the cutoff | ORA and GSEA colour adjusted P with the enrichment scale v3 (Blues, darker = more significant) on −log₁₀ with per-figure limits (decade below the smallest drawn adjusted P to the cutoff), colourbar `Adjusted P value` |
 | DEG heatmap | double column, height from rows, samples clustered | samples **not clustered** since v1.7.0 (deterministic order, see below; genes still clustered); text styled like the correlation heatmap (`nf_rna_pheatmap_theme_text`); content-aware: 5 mm sample columns, row height from the label font (7 pt down to the profile minimum, then labels are hidden and rows are 1.5 mm); width and height are measured from labels, trees, legend and title, never above the profile maximum |
 | PCA size | profile double column, height from the data, legend right | profile single column, height from the data (minimum 40 mm), legend below |
 | PCA with constant PC2 | y range ±20% of the PC1 span, one y break at the constant (see below) | same |
@@ -161,17 +170,20 @@ Only the displayed y range and breaks change. `pca_scores.tsv` and `pca_variance
 
 ## L2 figure text and DEG heatmap sample order (standard preset, v1.7.0)
 
-Axis titles name exactly the plotted statistic (`nf_rna_deg_plot_text`, `nf_rna_ora_x_label`); legacy keeps its historical text.
+Figures carry concise scientific axis titles; what exactly is drawn (shrunken or unshrunken LFC, `padj`, the DEG rule,
+the contrast direction, the colour mapping) is written to an **external caption**: the manifest record's
+`figure_caption`, shown under the figure in the HTML report (`_figure_note` in `workflow_support.py`). No method name,
+column name, threshold rule or BH abbreviation is drawn inside the standard-preset images. Legacy keeps its historical
+in-image text (`nf_rna_deg_plot_text`, `nf_rna_ora_x_label`).
 
-| Figure | Axis / legend | Text | Plotted data |
+| Figure | Axis / legend | Text in the image | Plotted data (stated in `figure_caption`) |
 |---|---|---|---|
-| Volcano | x | `Shrunken log₂ fold change (<numerator> vs <denominator>)`; `log₂ fold change (…)` when shrinkage failed | `log2FoldChange_shrunk` (apeglm/ashr), else `log2FoldChange` |
-| Volcano | y | `−log₁₀(adjusted P value)` | −log₁₀ of DESeq2 `padj` (BH); `padj` = 0 drawn at the display floor (triangle). Never the raw `pvalue`. |
-| MA plot | x | `log₁₀(mean normalized count)` | log₁₀(`baseMean`) |
-| MA plot | y | same as the volcano x | same as the volcano x |
-| Volcano, MA | caption | `DEG: adjusted P (BH) < α and \|log₂FC\| ≥ t (unshrunken)` / `log₂FC shrinkage: <method> (display only)` | the unchanged DEG rule |
-| ORA dotplot | x / colour / subtitle | `−log₁₀(adjusted P value)` / `Adjusted P value (BH)` / `<GO BP\|KEGG>: <num> vs <den> — <foreground>` | `p.adjust`; size = `Count` |
-| GSEA dotplot | x / colour | `Normalized enrichment score (<num> vs <den>)` / `Adjusted P value (BH)` | `NES`; colour `p.adjust`; size = `setSize` |
+| Volcano | x | `log₂ fold change` | `log2FoldChange_shrunk` (apeglm/ashr; display only), else the unshrunken `log2FoldChange` when shrinkage failed; positive = higher in the numerator |
+| Volcano | y | `−log₁₀(adjusted P value)` | −log₁₀ of DESeq2 `padj` (Benjamini–Hochberg, independent filtering); `padj` = 0 drawn at the display floor (triangle, legend `Adjusted P = 0`). Never the raw `pvalue`. |
+| Volcano | lines / colour | dashed `padj` line (plus ±t lines only when the unshrunken LFC is drawn); `Higher in <num> (n)` / `Higher in <den> (n)` / `Not significant (n)` | DEG: `padj` < α and \|unshrunken log2FoldChange\| ≥ t (unchanged) |
+| MA plot | x / y | `log₁₀(mean normalized count)` / `log₂ fold change` | log₁₀(`baseMean`) / as the volcano x |
+| ORA dotplot | x / colour / subtitle | `−log₁₀(adjusted P value)` / `Adjusted P value` / `<GO BP\|KEGG>: <num> vs <den> — <foreground>` | `p.adjust`; size = `Count` |
+| GSEA dotplot | x / colour | `Normalized enrichment score (<num> vs <den>)` / `Adjusted P value` | `NES`; colour `p.adjust`; size = `setSize` |
 
 The volcano and MA manifest records carry `axes` (label text and source column) so the text can be checked against the data.
 
@@ -184,7 +196,7 @@ clustering on the unclipped z-scores. `nf_rna_heatmap_sample_order` orders the d
 
 Only the drawing is reordered: `heatmap_zscores.tsv` keeps its sample-sheet columns and its values, and the VST,
 z-scores, saturation, gene selection and group colours are unchanged. The manifest records the rule in
-`clustering.columns` and the drawn order in `display_order.columns`.
+`clustering.columns`, the drawn order in `display_order.columns`, and both in the external `figure_caption`.
 
 ## Typography and the bundled font
 

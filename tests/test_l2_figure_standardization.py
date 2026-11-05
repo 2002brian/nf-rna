@@ -1,8 +1,10 @@
 """v1.7.0 L2 publication-figure refinement (standard preset).
 
-Volcano/MA axis text names exactly the plotted statistics, the DEG heatmap keeps gene clustering
-but orders samples by a documented deterministic rule, and every enrichment dotplot colours
-adjusted P with the red (most significant) to blue scale.  Scientific tables are unchanged.
+Volcano/MA axes carry concise scientific titles while the exact plotted statistics, shrinkage and
+DEG rule move to an external caption (manifest `figure_caption`, shown in the HTML report); the DEG
+heatmap keeps gene clustering but orders samples by a documented deterministic rule; every enrichment
+dotplot colours adjusted P with a single-hue blue scale on -log10 (darker = more significant).
+Scientific tables are unchanged.
 """
 
 from __future__ import annotations
@@ -33,21 +35,27 @@ cat(toJSON(list(
   raw = nf_rna_deg_plot_text(v, "Tumor", "Normal", FALSE, NULL, 0.05, 1),
   legacy = nf_rna_deg_plot_text(leg, "Tumor", "Normal", TRUE, "apeglm", 0.05, 1)), auto_unbox = TRUE))''', tmp_path)
     shrunk, raw, legacy = result["shrunk"], result["raw"], result["legacy"]
-    assert shrunk["volcano_x"] == "Shrunken log₂ fold change (Tumor vs Normal)" and shrunk["lfc_column"] == "log2FoldChange_shrunk"
-    assert shrunk["ma_y"] == shrunk["volcano_x"]
-    assert raw["volcano_x"] == "log₂ fold change (Tumor vs Normal)" and raw["lfc_column"] == "log2FoldChange"
-    assert "Shrunken" not in raw["volcano_x"] and "shrinkage failed" in raw["caption"]
+    assert shrunk["lfc_column"] == "log2FoldChange_shrunk" and raw["lfc_column"] == "log2FoldChange"
     for text in (shrunk, raw):
-        # y is -log10(DESeq2 padj): labelled as the adjusted P value, never as a raw p-value
+        # concise titles; y is -log10(DESeq2 padj): labelled as the adjusted P value, never as a raw p-value
+        assert text["volcano_x"] == "log₂ fold change" and text["ma_y"] == "log₂ fold change"
         assert text["p_column"] == "padj" and text["volcano_y"] == "−log₁₀(adjusted P value)"
         assert text["ma_x"] == "log₁₀(mean normalized count)" and text["mean_column"] == "baseMean"
-        assert "apeglm" in shrunk["caption"] and "unshrunken" in text["caption"]
+        assert text.get("caption") in (None, {})  # NULL: no rule/method text drawn inside the image
         for label in (text["volcano_x"], text["volcano_y"], text["ma_x"], text["ma_y"]):
-            assert "padj" not in label and "baseMean" not in label and "/" not in label  # no column names or ratio slashes
+            assert not any(word in label for word in ("padj", "baseMean", "/", "apeglm", "BH", "shrunk", "Shrunken", "Tumor"))
+        # the external captions state the plotted statistics, the contrast direction and the DEG rule
+        for caption in (text["volcano_caption"], text["ma_caption"]):
+            assert "Tumor vs Normal" in caption and "higher in Tumor than in Normal" in caption
+            assert "adjusted P < 0.05 and |unshrunken log₂ fold change| ≥ 1" in caption
+        assert "padj" in text["volcano_caption"] and "Benjamini–Hochberg" in text["volcano_caption"] and "baseMean" in text["ma_caption"]
+    assert "apeglm-shrunken log₂ fold change (log2FoldChange_shrunk)" in shrunk["volcano_caption"] and "display only" in shrunk["volcano_caption"]
+    assert "unshrunken DESeq2 log₂ fold change (log2FoldChange; shrinkage failed)" in raw["volcano_caption"] and "display only" not in raw["volcano_caption"]
     # legacy keeps its historical text byte for byte
     assert legacy["volcano_x"] == "shrunken log2 fold change (apeglm) (Tumor / Normal)"
     assert legacy["volcano_y"] == "-log10(adjusted P, BH)" and legacy["ma_x"] == "log10(baseMean)"
     assert legacy["caption"] == "DEG: padj < 0.05 and |raw log2FC| ≥ 1; LFC shrinkage: apeglm"
+    assert "volcano_caption" not in legacy
 
 
 def test_l2_script_plots_padj_and_baseMean_with_the_text_helper():
@@ -166,8 +174,12 @@ def test_volcano_and_ma_manifest_axes_match_the_plotted_columns(paired_l2_runs):
     assert volcano["axes"]["y_column"] == "padj" and volcano["axes"]["y"] == "−log₁₀(adjusted P value)"
     shrunk = "log2FoldChange_shrunk" in volcano["statistics"]["fold_change"]
     assert volcano["axes"]["x_column"] == ("log2FoldChange_shrunk" if shrunk else "log2FoldChange")
-    assert volcano["axes"]["x"].startswith("Shrunken log₂ fold change" if shrunk else "log₂ fold change")
+    assert volcano["axes"]["x"] == "log₂ fold change" and ma["axes"]["y"] == "log₂ fold change"
     assert ma["axes"]["x_column"] == "baseMean" and ma["axes"]["x"] == "log₁₀(mean normalized count)" and ma["axes"]["y_column"] == volcano["axes"]["x_column"]
+    # the statistical detail lives in the external caption recorded beside the figure
+    assert ("log2FoldChange_shrunk" if shrunk else "log2FoldChange; shrinkage failed") in volcano["figure_caption"]
+    assert "padj" in volcano["figure_caption"] and "unshrunken" in volcano["figure_caption"] and "baseMean" in ma["figure_caption"]
+    assert "not clustered" in records["DEG heatmap"]["figure_caption"] and "pairs in order of first appearance" in records["DEG heatmap"]["figure_caption"]
     for record in (volcano, ma, records["DEG heatmap"]):
         assert any(f["format"] == "png_raster" and f["dpi"] == 300 for f in record["files"]) and any(f["format"] == "pdf" for f in record["files"])
 
@@ -175,21 +187,39 @@ def test_volcano_and_ma_manifest_axes_match_the_plotted_columns(paired_l2_runs):
 # ------------------------------------------------------------------ 7-8, 10. dotplot colour scale and meaning
 
 
-def test_enrichment_scale_runs_from_red_most_significant_to_blue_and_signed_scale_is_separate(tmp_path):
+def _luminance(h):
+    r, g, b = (int(h[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in (r, g, b)]
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+
+def test_enrichment_scale_is_a_single_hue_blue_ramp_and_signed_scale_is_separate(tmp_path):
     result = run_r(STD + '''
 d <- nf_rna_figure_scope(std, "dotplot")
 rgb <- function(x) unname(t(grDevices::col2rgb(x))[, 1:3, drop = FALSE])
 cat(toJSON(list(scale = nf_rna_enrichment_colours(d), rgb = rgb(nf_rna_enrichment_colours(d)), signed = unname(nf_rna_signed_colours(d)),
   signed_rgb = rgb(nf_rna_signed_colours(d)), name = NF_RNA_STYLE_PRESETS$standard$enrichment_name, legacy = nf_rna_enrichment_colours(leg)), auto_unbox = TRUE))''', tmp_path)
-    rgb = result["rgb"]
-    assert rgb[0][0] > rgb[0][2] and rgb[-1][2] > rgb[-1][0]  # first (adjusted P = 0) red, last (cutoff) blue
-    redness = [r - b for r, _, b in rgb]
-    assert redness == sorted(redness, reverse=True)  # monotonic red -> blue
-    assert result["name"] == "nf-rna Standard Enrichment Scale v2"
+    scale = result["scale"]
+    assert all(b > r and b >= g for r, g, b in result["rgb"])  # blue everywhere, no red stop
+    lum = [_luminance(c) for c in scale]
+    assert lum == sorted(lum)  # most significant (first) darkest, monotonic to the lightest at the cutoff
+    assert (1.05) / (lum[-1] + 0.05) >= 1.5  # the lightest stop stays visible on white (contrast >= 1.5:1)
+    assert result["name"] == "nf-rna Standard Enrichment Scale v3 (Blues)"
     low, mid, high = result["signed_rgb"]
     assert low[2] > low[0] and high[0] > high[2] and min(mid) > 230  # blue - white - red, white centre
-    assert result["signed"][1] not in result["scale"]  # p.adjust never shares the signed (white-centred) palette
+    assert result["signed"][1] not in scale  # p.adjust never shares the signed (white-centred) palette
     assert result["legacy"] == ["#08306B", "#2171B5", "#6BAED6", "#C6DBEF"]  # legacy unchanged
+
+
+def test_padj_colour_limits_follow_the_data_on_a_log_scale(tmp_path):
+    result = run_r(STD + '''
+cat(toJSON(list(a = nf_rna_padj_colour_limits(c(3e-21, 1e-4, 0.04), 0.05), b = nf_rna_padj_colour_limits(c(0.02, 0.04), 0.05),
+  c = nf_rna_padj_colour_limits(numeric(), 0.05), ticks = nf_rna_padj_colour_breaks(c(1e-22, 0.05)), small = nf_rna_padj_colour_breaks(c(1e-3, 0.05))), auto_unbox = TRUE, digits = NA))''', tmp_path)
+    assert result["a"] == [1e-21, 0.05]  # smallest drawn adjusted P rounded down to a decade, up to the cutoff
+    assert result["b"] == [1e-3, 0.05] and result["c"] == [1e-3, 0.05]  # at least one decade below the cutoff's decade
+    ticks = result["ticks"]
+    assert ticks["labels"] == ["10⁻²⁰", "10⁻¹⁵", "10⁻¹⁰", "10⁻⁵", "0.05"]  # round decades, the cutoff always labelled
+    assert result["small"]["labels"] == ["0.001", "0.01", "0.05"]
 
 
 DOTPLOT_SETUP = STD + '''
@@ -206,7 +236,7 @@ inspect <- function(p) { b <- ggplot2::ggplot_build(p); layer <- which(vapply(p$
 '''
 
 
-def test_ora_and_gsea_dotplots_map_adjusted_p_to_the_red_blue_scale(tmp_path):
+def test_ora_and_gsea_dotplots_map_adjusted_p_to_the_log_blue_scale(tmp_path):
     result = run_r(DOTPLOT_SETUP + '''
 ora_rec <- nf_rna_ora_dotplot(std, ora, nf_rna_ora_x_label(std, "GO BP", "BH"), file.path("out", "ora"), "out", padj_cutoff = 0.05, p_adjust_method = "BH",
   subtitle = nf_rna_ora_subtitle(std, list(numerator = "Tumor", denominator = "Normal"), "significant", database = "GO BP"))
@@ -215,24 +245,34 @@ gsea_rec <- nf_rna_gsea_dotplot(std, gsea, list(contrast_id = "x", numerator = "
 gsea_plot <- inspect(ggplot2::last_plot()); gp <- ggplot2::last_plot()
 cat(toJSON(list(ora = ora_plot, gsea = gsea_plot, ora_rec = ora_rec$colour, gsea_rec = gsea_rec$colour_meaning, ora_x = ora_rec$x, gsea_x = gp$labels$x,
   ora_subtitle = ora_rec$subtitle, ora_xlabel = nf_rna_ora_x_label(std, "GO BP", "BH"), legacy_xlabel = nf_rna_ora_x_label(leg, "GO BP", "BH"),
-  unchanged = identical(ora, ora_before) && identical(gsea, gsea_before), scale = nf_rna_enrichment_colours(nf_rna_figure_scope(std, "dotplot"))), auto_unbox = TRUE))''', tmp_path)
-    for kind in ("ora", "gsea"):
+  unchanged = identical(ora, ora_before) && identical(gsea, gsea_before), scale = nf_rna_enrichment_colours(nf_rna_figure_scope(std, "dotplot")),
+  ora_caption = ora_rec$figure_caption, gsea_caption = gsea_rec$figure_caption), auto_unbox = TRUE, digits = NA))''', tmp_path)
+    for kind, smallest in (("ora", 1e-8), ("gsea", 1e-6)):
         plot = result[kind]
-        assert plot["colour_var"] == "p.adjust" and plot["title"] == "Adjusted P value (BH)" and plot["limits"] == [0, 0.05]
+        assert plot["colour_var"] == "plot_padj" and plot["title"] == "Adjusted P value"
+        # -log10 mapping: the limits are stored transformed, from the cutoff to the smallest adjusted P's decade
+        assert sorted(round(v, 9) for v in plot["limits"]) == sorted(round(v, 9) for v in (-__import__("math").log10(0.05), -__import__("math").log10(smallest)))
     assert result["ora"]["x_var"] == "-log10(plot_padj)" and result["ora"]["size_var"] == "Count"  # axes and size unchanged
     assert result["gsea"]["x_var"] == "NES" and result["gsea"]["size_var"] == "setSize"  # NES stays on x, never on colour
-    # the most significant point is drawn in the first (red) stop, the least significant is the bluest
-    ora_colours = result["ora"]["colours"]
-    assert ora_colours[0].upper().startswith(result["scale"][0].upper())
-    def red_minus_blue(h): return int(h[1:3], 16) - int(h[5:7], 16)
-    assert red_minus_blue(ora_colours[0]) > 0 > red_minus_blue(ora_colours[-1])
-    assert [red_minus_blue(c) for c in ora_colours] == sorted((red_minus_blue(c) for c in ora_colours), reverse=True)
-    assert result["ora_rec"]["column"] == "p.adjust" and result["ora_rec"]["scale"] == "nf-rna Standard Enrichment Scale v2"
+    # smaller adjusted P is drawn darker, every distinct adjusted P gets a visibly distinct blue
+    for kind, padj in (("ora", [1e-8, 1e-5, 1e-3, 0.01, 0.03, 0.049]), ("gsea", None)):
+        colours = result[kind]["colours"]
+        if padj is None:
+            continue
+        lum = [_luminance(c[:7]) for c in colours]
+        assert lum == sorted(lum) and len(set(colours)) == len(colours)
+        assert colours[0].upper().startswith(result["scale"][0].upper())  # the most significant term in the darkest stop
+        assert all(int(c[5:7], 16) > int(c[1:3], 16) for c in colours)  # all blue
+    assert result["ora_rec"]["column"] == "p.adjust" and result["ora_rec"]["scale"] == "nf-rna Standard Enrichment Scale v3 (Blues)"
+    assert result["ora_rec"]["transform"] == "-log10(adjusted P)" and result["ora_rec"]["limits"] == [1e-8, 0.05]
     assert "NES is drawn on the x axis" in result["gsea_rec"]["signed_statistic"]
     assert result["gsea_x"] == "Normalized enrichment score (Tumor vs Normal)"
     assert result["ora_xlabel"] == "−log₁₀(adjusted P value)" and result["legacy_xlabel"] == "-log10(GO BP adjusted P, BH)"
     assert result["ora_subtitle"].startswith("GO BP: Tumor vs Normal")
     assert result["unchanged"] is True  # the enrichment tables handed to the plots are not modified
+    for caption in (result["ora_caption"], result["gsea_caption"]):
+        assert "−log₁₀ scale" in caption and "darker = more significant" in caption and "Benjamini–Hochberg" in caption
+    assert "NES > 0: enriched among genes higher in Tumor" in result["gsea_caption"]
 
 
 def test_dotplot_source_tables_are_byte_identical_across_presets(tmp_path):

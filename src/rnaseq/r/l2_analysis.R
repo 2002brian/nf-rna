@@ -197,7 +197,8 @@ for (item in cfg$contrasts) {
   # LFC and say so.  Colour (significance) always follows the raw DEG definition.
   shrunk_shown <- identical(shrink$info$status, "success")
   shown_lfc <- if (shrunk_shown) deg_df$log2FoldChange_shrunk else result_df$log2FoldChange
-  # Axis titles and caption name exactly the plotted statistics (legacy keeps its historical text).
+  # Standard preset: concise axis titles, no in-image caption; the exact statistics and the DEG rule go to the
+  # manifest's figure_caption (shown under the figure in the HTML report).  Legacy keeps its historical text.
   deg_text <- nf_rna_deg_plot_text(vfig, numerator, denominator, shrunk_shown, shrink$info$method, cfg$thresholds$padj, cfg$thresholds$abs_log2fc)
   deg_rule <- deg_text$caption
   drawable <- is.finite(shown_lfc) & !is.na(result_df$padj)
@@ -226,7 +227,7 @@ for (item in cfg$contrasts) {
     labs(x = deg_text$volcano_x, y = deg_text$volcano_y, caption = deg_rule) + nf_rna_theme(vfig) + theme(legend.position = "bottom") +
     (if (!is.null(nf_rna_layout_value(vfig, "volcano", "legend_ncol"))) theme(legend.key.height = grid::unit(3, "mm"), legend.key.spacing.y = grid::unit(0.5, "mm"))) +
     (if (!is.null(nf_rna_layout_value(vfig, "volcano", "legend_ncol"))) guides(color = guide_legend(ncol = nf_rna_layout_value(vfig, "volcano", "legend_ncol"), order = 1), shape = guide_legend(order = 2)))
-  nf_rna_save_figure(vfig, p, file.path(directory, "volcano"), volcano_width_mm, volcano_height_mm, cfg$output_dir, list(
+  nf_rna_save_figure(vfig, p, file.path(directory, "volcano"), volcano_width_mm, volcano_height_mm, cfg$output_dir, c(list(
     kind = "volcano", contrast = list(contrast_id = contrast_id, factor = factor, numerator = numerator, denominator = denominator, direction = "log2FC > 0: higher in numerator"),
     statistics = list(fold_change = if (shrunk_shown) sprintf("log2FoldChange_shrunk (%s); display only", shrink$info$method) else "DESeq2 unshrunken log2FoldChange (fallback: shrinkage failed)",
                       significance_colour = "raw DESeq2 log2FoldChange and padj (unchanged DEG definition)", adjusted_p = "DESeq2 padj (Benjamini-Hochberg, independent filtering)"),
@@ -238,7 +239,7 @@ for (item in cfg$contrasts) {
                    labelled_genes = as.list(label_ids), legend_counts = "drawn genes only (finite shown LFC and non-NA padj)", genes_not_drawn = sum(!drawable)),
     counts = as.list(counts), colours = as.list(nf_rna_direction_colours(vfig)),
     source_data = list(nf_rna_source_data(file.path(directory, "all_genes.tsv"), cfg$output_dir, "all DESeq2 results for this contrast"))
-  ), formats = deg_figure_formats)
+  ), if (!is.null(deg_text$volcano_caption)) list(figure_caption = deg_text$volcano_caption)), formats = deg_figure_formats)
   ma_df <- data.frame(x = log10(result_df$baseMean), y = shown_lfc, group = direction)
   ma_drawable <- is.finite(ma_df$x) & is.finite(ma_df$y)
   ma_df <- ma_df[ma_drawable, , drop = FALSE]
@@ -249,7 +250,7 @@ for (item in cfg$contrasts) {
     geom_point(size = 0.8, alpha = nf_rna_point_alpha(vfig)) +
     scale_color_manual(values = nf_rna_direction_colours(vfig), labels = ma_labels, breaks = names(nf_rna_direction_colours(vfig)), name = NULL) +
     labs(x = deg_text$ma_x, y = deg_text$ma_y, caption = deg_rule) + nf_rna_theme(vfig) + theme(legend.position = "bottom")
-  nf_rna_save_figure(vfig, p_ma, file.path(directory, "ma_plot"), volcano_width_mm, volcano_height_mm, cfg$output_dir, list(
+  nf_rna_save_figure(vfig, p_ma, file.path(directory, "ma_plot"), volcano_width_mm, volcano_height_mm, cfg$output_dir, c(list(
     kind = "MA plot", contrast = list(contrast_id = contrast_id, factor = factor, numerator = numerator, denominator = denominator, direction = "log2FC > 0: higher in numerator"),
     statistics = list(x = "log10(DESeq2 baseMean)", y = if (shrunk_shown) sprintf("log2FoldChange_shrunk (%s); display only", shrink$info$method) else "DESeq2 unshrunken log2FoldChange (fallback: shrinkage failed)",
                       significance_colour = "raw DESeq2 log2FoldChange and padj (unchanged DEG definition)"),
@@ -257,7 +258,7 @@ for (item in cfg$contrasts) {
     display = list(genes_drawn = nrow(ma_df), genes_not_drawn = sum(!ma_drawable), genes_not_drawn_rule = "non-finite log10(baseMean) or shown LFC"),
     colours = as.list(nf_rna_direction_colours(vfig)),
     source_data = list(nf_rna_source_data(file.path(directory, "all_genes.tsv"), cfg$output_dir, "all DESeq2 results for this contrast"))
-  ), formats = deg_figure_formats)
+  ), if (!is.null(deg_text$ma_caption)) list(figure_caption = deg_text$ma_caption)), formats = deg_figure_formats)
   heatmap_status <- "NOT_APPLICABLE"; heatmap_reason <- "no significant genes"
   if (nrow(significant_df) > 0) {
     ordered <- significant_df[order(significant_df$padj, significant_df$gene_id), , drop = FALSE]
@@ -337,6 +338,11 @@ for (item in cfg$contrasts) {
                            nf_rna_source_data(file.path(directory, "heatmap_genes.tsv"), cfg$output_dir, "selected genes"),
                            nf_rna_source_data(file.path(directory, "significant.tsv"), cfg$output_dir, "complete significant result set"))
       ), if (standard_heatmap) list(
+        figure_caption = paste0(sprintf("DEG heatmap, %s vs %s. Rows: %s by DESeq2 adjusted P", numerator, denominator,
+                                        if (nrow(display) == nrow(selected)) sprintf("the top %d DEGs", nrow(selected)) else sprintf("the top %d DEGs (%d with a defined z-score drawn)", nrow(selected), nrow(display))),
+                                if (is.null(row_tree)) " (not clustered)" else ", clustered (complete linkage, Euclidean distance)",
+                                sprintf(". Columns: samples of the two groups, not clustered; order: %s. ", column_order_rule),
+                                sprintf("Colour: per-gene z-score of the blind VST expression across the drawn samples, saturated at \u00b1%d (exact values in heatmap_zscores.tsv).", z_limit)),
         layout = list(cell_width_mm = fit$cw, cell_height_mm = fit$ch, sample_labels = if (fit$show_cols) "shown" else "hidden: too many samples to label legibly within the profile maximum"),
         display_order = list(rows = if (is.null(row_tree)) rownames(display) else rownames(display)[heat$tree_row$order],
                              columns = if (is.null(column_tree)) colnames(display) else colnames(display)[heat$tree_col$order]))), formats = deg_figure_formats)
