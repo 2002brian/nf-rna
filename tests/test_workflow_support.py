@@ -880,3 +880,26 @@ def test_report_marks_missing_ora_term_counts_as_unavailable_and_does_not_borrow
     assert "evaluated terms not available; significant terms not available." in go_section
     assert "evaluated terms not available; significant terms not available." in kegg_section
     assert "evaluated terms 12; significant terms not available." in kegg_section
+
+
+def test_report_shows_the_recorded_figure_caption_under_standard_figures(project_factory):
+    """Standard-preset figures keep statistical detail out of the image; the report prints the manifest caption."""
+
+    contract, contract_path, l2, inputs = _frozen_contract(project_factory, schema_version="1.1")
+    l1, go_root, kegg_root = _write_report_artifacts(inputs / "contrasts.csv", l2)
+    contrast_dir = l2 / "contrasts" / "Treatment_vs_Control"
+    (contrast_dir / "volcano.png").write_bytes(b"png-volcano")
+    (contrast_dir / "ma_plot.png").write_bytes(b"png-ma")
+    caption = "Volcano plot, Treatment vs Control. x: apeglm-shrunken log₂ fold change (log2FoldChange_shrunk); y: −log₁₀ of the DESeq2 adjusted P value (padj) <b>"
+    manifest = {"figures": [
+        {"id": "volcano", "files": [{"path": "contrasts/Treatment_vs_Control/volcano.png", "format": "png"}], "figure_caption": caption},
+        {"id": "ma_plot", "files": [{"path": "contrasts/Treatment_vs_Control/ma_plot.png", "format": "png"}]},  # legacy: no caption
+    ]}
+    (l2 / "figure_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    out = l2.parent / "report_captions"
+    report(contract_path, inputs, l1, l2, out, [go_root, kegg_root])
+    text = (out / "report.html").read_text(encoding="utf-8")
+    volcano = text.split("alt='volcano.png'")[1].split("</figure>")[0]
+    assert "<p class='figure-note'>" in volcano and "log2FoldChange_shrunk" in volcano and "padj) &lt;b&gt;" in volcano  # escaped
+    ma = text.split("alt='ma_plot.png'")[1].split("</figure>")[0]
+    assert "figure-note" not in ma  # no recorded caption: no note

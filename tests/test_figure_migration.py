@@ -282,7 +282,8 @@ def test_standard_run_changes_the_five_migrated_figure_kinds_and_embeds_arimo(ru
 
 
 def test_displayed_order_and_clustering_are_the_legacy_ones(runs):
-    """The order drawn by the standard figures equals the order of the legacy code path recomputed from the source data."""
+    """The drawn order equals the legacy code path's order recomputed from the source data, except the DEG heatmap
+    columns: since v1.7.0 the standard preset does not cluster samples and draws them by the documented rule."""
 
     out = runs["standard"]
     corr = next(out.rglob("sample_correlation.tsv"))
@@ -290,21 +291,26 @@ def test_displayed_order_and_clustering_are_the_legacy_ones(runs):
     l1_manifest = json.loads(next(out.rglob("l1/figure_manifest.json")).read_text(encoding="utf-8"))
     l2_manifest = json.loads(next(out.rglob("l2/figure_manifest.json")).read_text(encoding="utf-8"))
     drawn_corr = next(f for f in l1_manifest["figures"] if f["id"] == "sample_correlation")["display_order"]
-    drawn_deg = next(f for f in l2_manifest["figures"] if f["kind"] == "DEG heatmap")["display_order"]
+    deg_record = next(f for f in l2_manifest["figures"] if f["kind"] == "DEG heatmap")
+    drawn_deg = deg_record["display_order"]
+    metadata = runs["standard"].parent / "project" / "metadata.csv"
+    contrast = deg_record["contrast"]
     script = f'''
 suppressPackageStartupMessages(library(pheatmap)); source("{ROOT / 'src' / 'rnaseq' / 'r' / 'figures.R'}")
 c <- read.delim("{corr}", check.names = FALSE); m <- as.matrix(c[, -1]); rownames(m) <- c$sample_id
 legacy_corr <- pheatmap(m, silent = TRUE)
 z <- read.delim("{zscores}", check.names = FALSE); zm <- as.matrix(z[, -1]); rownames(zm) <- z$gene_id
 zm <- zm[rowSums(is.finite(zm)) >= 2, , drop = FALSE]
-rt <- nf_rna_cluster(zm); ct <- nf_rna_cluster(t(zm))
+rt <- nf_rna_cluster(zm)
+md <- read.csv("{metadata}", colClasses = "character"); rownames(md) <- md$sample_id
 cat(toJSON(list(corr_rows = rownames(m)[legacy_corr$tree_row$order], corr_cols = colnames(m)[legacy_corr$tree_col$order],
-  deg_rows = rownames(zm)[rt$order], deg_cols = colnames(zm)[ct$order]), auto_unbox = FALSE))
+  deg_rows = rownames(zm)[rt$order], deg_cols = nf_rna_heatmap_sample_order(colnames(zm), md[colnames(zm), "{contrast["factor"]}"], c("{contrast["denominator"]}", "{contrast["numerator"]}"))), auto_unbox = FALSE))
 '''
     from test_figures import run_r as _run
     result = _run('library(jsonlite)\n' + script, runs["standard"])
     assert drawn_corr["rows"] == result["corr_rows"] and drawn_corr["columns"] == result["corr_cols"]
     assert drawn_deg["rows"] == result["deg_rows"] and drawn_deg["columns"] == result["deg_cols"]
+    assert deg_record["clustering"]["columns"].startswith("off (not clustered); display order: denominator (reference) level then numerator level")
     # the full sample set is shown exactly once, in one order for rows and columns of a symmetric matrix
     assert sorted(drawn_corr["rows"]) == sorted(drawn_corr["columns"])
 

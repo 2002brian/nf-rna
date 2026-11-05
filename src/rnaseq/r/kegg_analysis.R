@@ -86,11 +86,11 @@ if (cfg$mode == "ora") {
     member_record <- nf_rna_write_members(significant, nf_rna_ora_member_pairs(significant, submap), lookup, file.path(dir, "kegg_members.tsv"))
     figures <- list(dotplot="not drawn: no significant pathways (p.adjust <= 0.05)")
     if (nrow(significant)) {
-      nf_rna_ora_dotplot(fig, head(significant, NF_RNA_DOTPLOT_TOP), sprintf("-log10(KEGG adjusted P, %s)", NF_RNA_ENRICHMENT_ADJUST), file.path(dir,"dotplot"), cfg$output_dir,
+      nf_rna_ora_dotplot(fig, head(significant, NF_RNA_DOTPLOT_TOP), nf_rna_ora_x_label(fig, "KEGG", NF_RNA_ENRICHMENT_ADJUST), file.path(dir,"dotplot"), cfg$output_dir,
         list(contrast=list(contrast_id=contrast$contrast_id, numerator=contrast$numerator, denominator=contrast$denominator), foreground=name, significance_semantics=NF_RNA_SIGNIFICANCE_SEMANTICS, kegg_snapshot=snapshot$id,
              display_subset=sprintf("top %d significant pathways by adjusted P, ties by ID, of %d significant (p.adjust <= %s)", NF_RNA_DOTPLOT_TOP, nrow(significant), NF_RNA_ENRICHMENT_PADJ),
              source_tables=list(nf_rna_source_data(file.path(dir,"kegg.tsv"), cfg$output_dir, "all significant pathways"))),
-        subtitle=nf_rna_ora_subtitle(fig, contrast, name), formats=NF_RNA_ENRICHMENT_FORMATS)
+        subtitle=nf_rna_ora_subtitle(fig, contrast, name, database="KEGG"), formats=NF_RNA_ENRICHMENT_FORMATS, padj_cutoff=NF_RNA_ENRICHMENT_PADJ, p_adjust_method=NF_RNA_ENRICHMENT_ADJUST)
       figures$dotplot <- "drawn"
     }
     universe_record <- c(universe$record, list(foreground_entrez_ids=length(targets), foreground_in_universe=length(intersect(targets, universe$genes)), clusterprofiler_bgratio_n=nf_rna_bgratio_n(terms)))

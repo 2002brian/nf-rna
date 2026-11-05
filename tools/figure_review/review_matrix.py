@@ -46,7 +46,8 @@ def order_identity(standard_run: Path) -> dict:
             key = (manifest.parent / figure["id"]).relative_to(standard_run).as_posix()
             want = expected.get(key)
             drawn = figure["display_order"]
-            verdicts[key] = bool(want) and drawn["rows"] == want["rows"] and drawn["columns"] == want["columns"]
+            columns_ok = sorted(drawn["columns"]) == sorted(want["column_set"]) if want and "column_set" in want else bool(want) and drawn["columns"] == want["columns"]
+            verdicts[key] = bool(want) and drawn["rows"] == want["rows"] and columns_ok
     return verdicts
 
 

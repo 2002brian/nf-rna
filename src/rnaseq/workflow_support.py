@@ -43,6 +43,10 @@ img.report-figure {
   object-fit: contain;
   margin-inline: auto;
 }
+p.figure-note {
+  font-size: 0.9em;
+  margin: 0.4rem 0 0;
+}
 @media print {
   figure.report-figure-container, img.report-figure {
     max-width: 100% !important;
@@ -377,22 +381,46 @@ def _read_json_artifact(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
-def _image_html(path: Path, caption: str) -> str:
+def _image_html(path: Path, caption: str, note: str | None = None) -> str:
     if not path.is_file():
         return f"<p>{escape(caption)}: not produced.</p>"
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    note_html = f"<p class='figure-note'>{escape(note)}</p>" if note else ""
     return (
         f"<figure class='report-figure-container'><figcaption>{escape(caption)}</figcaption>"
         f"<img class='report-figure' alt='{escape(path.name)}' "
-        f"src='data:image/png;base64,{encoded}'></figure>"
+        f"src='data:image/png;base64,{encoded}'>{note_html}</figure>"
     )
 
 
-def _image_or_unavailable(path: Path, caption: str, reason: str) -> str:
+def _figure_note(path: Path, module_root: Path) -> str | None:
+    """The external caption that the R backend recorded for this figure (figure_manifest.json `figure_caption`).
+
+    Standard-preset figures keep statistical detail (plotted statistic, shrinkage, DEG rule, colour mapping)
+    out of the image; the report shows it under the figure.  None when the figure or manifest has none.
+    """
+
+    manifest = module_root / "figure_manifest.json"
+    if not manifest.is_file():
+        return None
+    try:
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+        relative = path.relative_to(module_root).as_posix()
+    except (ValueError, OSError):
+        return None
+    for record in document.get("figures") or [] if isinstance(document, dict) else []:
+        if not isinstance(record, dict) or not isinstance(record.get("figure_caption"), str):
+            continue
+        if any(isinstance(item, dict) and item.get("path") == relative for item in record.get("files") or []):
+            return record["figure_caption"]
+    return None
+
+
+def _image_or_unavailable(path: Path, caption: str, reason: str, note: str | None = None) -> str:
     """A report figure, or an explicit "unavailable" line with its reason (never an empty frame)."""
 
     if path.is_file():
-        return _image_html(path, caption)
+        return _image_html(path, caption, note)
     return f"<p class='figure-unavailable'><strong>{escape(caption)}: unavailable</strong> &mdash; {escape(reason)}</p>"
 
 
@@ -984,9 +1012,10 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
             + _shrinkage_html(metadata) +
             f"<li>Client tables: <code>tables/l2/contrasts/{escape(contrast_id)}/</code></li>"
             "</ul>",
-            _image_html(root / "volcano.png", f"Volcano plot: {contrast_id}"),
-            _image_or_unavailable(root / "ma_plot.png", f"MA plot: {contrast_id}", "ma_plot.png was not produced (L2 results from before nf-rna v1.5)"),
-            _image_html(root / "heatmap.png", f"DEG heatmap: {contrast_id}"),
+            _image_html(root / "volcano.png", f"Volcano plot: {contrast_id}", _figure_note(root / "volcano.png", l2)),
+            _image_or_unavailable(root / "ma_plot.png", f"MA plot: {contrast_id}", "ma_plot.png was not produced (L2 results from before nf-rna v1.5)",
+                                  _figure_note(root / "ma_plot.png", l2)),
+            _image_html(root / "heatmap.png", f"DEG heatmap: {contrast_id}", _figure_note(root / "heatmap.png", l2)),
         ])
 
     indexed = {path.name: path for path in enrichment_dirs}
@@ -1029,10 +1058,12 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
                     if module == "go" and foreground == "significant":
                         # Redundancy-reduced GO terms of the all-DEG foreground; the full results are in the tables.
                         for ontology, record in (outcome.get("ontologies") or {"BP": {}, "MF": {}, "CC": {}}).items():
+                            figure = root / contrast["contrast_id"] / foreground / f"dotplot_{ontology}_simplified.png"
                             sections.append(_image_or_unavailable(
-                                root / contrast["contrast_id"] / foreground / f"dotplot_{ontology}_simplified.png",
+                                figure,
                                 f"GO {ontology} ORA, significant DE genes, simplified (cutoff 0.7): {contrast['contrast_id']}",
                                 _figure_reason(record, "dotplot_simplified", str(outcome.get("reason") or "not produced by this GO ORA backend")),
+                                _figure_note(figure, root),
                             ))
                     sections.append(
                         f"<p>{escape(str(foreground))}: state <strong>{escape(str(outcome.get('status', 'not available')))}</strong>; "
@@ -1115,9 +1146,10 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
                     f"<li>Positive / negative terms: {_value(outcome, 'positive_terms')} / {_value(outcome, 'negative_terms')}</li>"
                     f"<li>Client tables: <code>tables/l2/enrichment/gsea_go/{escape(contrast_id)}/{ontology}/</code></li>"
                     "</ul>",
-                    _image_html(root / "dotplot.png", f"GO {ontology} dotplot: {contrast_id}"),
+                    _image_html(root / "dotplot.png", f"GO {ontology} dotplot: {contrast_id}", _figure_note(root / "dotplot.png", go_root)),
                     _image_or_unavailable(root / "dotplot_simplified.png", f"GO {ontology} dotplot, simplified (cutoff 0.7): {contrast_id}",
-                                          _figure_reason(outcome, "dotplot_simplified", "not produced by this GO GSEA backend")),
+                                          _figure_reason(outcome, "dotplot_simplified", "not produced by this GO GSEA backend"),
+                                          _figure_note(root / "dotplot_simplified.png", go_root)),
                     *_running_score_html(root, outcome, f"GO {ontology} GSEA"),
                     _top_table_html(terms, ("ID", "Description", "NES", "pvalue", "p.adjust")),
                 ])
@@ -1134,7 +1166,7 @@ def report(contract_path: Path, inputs: Path, l1: Path, l2: Path | None, output:
                 f"snapshot {escape(str(kegg_summary.get('resource', {}).get('snapshot_id', 'not available')))}</li>"
                 f"<li>Client tables: <code>tables/l2/enrichment/gsea_kegg/{escape(contrast_id)}/</code></li>"
                 "</ul>",
-                _image_html(kegg_root / contrast_id / "dotplot.png", f"KEGG GSEA dotplot: {contrast_id}"),
+                _image_html(kegg_root / contrast_id / "dotplot.png", f"KEGG GSEA dotplot: {contrast_id}", _figure_note(kegg_root / contrast_id / "dotplot.png", kegg_root)),
                 *_running_score_html(kegg_root / contrast_id, kegg_item, "KEGG GSEA"),
                 _top_table_html(kegg_terms, ("ID", "Description", "NES", "pvalue", "p.adjust")),
             ])

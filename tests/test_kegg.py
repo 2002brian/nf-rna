@@ -205,7 +205,8 @@ def test_kegg_ora_dotplot_is_labelled_from_the_contrast_metadata_and_foreground(
 
     script = (Path(__file__).parents[1] / "src" / "rnaseq" / "r" / "kegg_analysis.R").read_text(encoding="utf-8")
     assert "run_fg <- function(ids, name, root, mapping, tested, universe, contrast, lookup)" in script
-    assert "subtitle=nf_rna_ora_subtitle(fig, contrast, name)" in script
+    assert "subtitle=nf_rna_ora_subtitle(fig, contrast, name, database=\"KEGG\")" in script  # the database leads the standard-preset subtitle
+    assert "nf_rna_ora_x_label(fig, \"KEGG\", NF_RNA_ENRICHMENT_ADJUST)" in script
     assert "foreground=name" in script and "numerator=contrast$numerator, denominator=contrast$denominator" in script
     assert "tested_mapping, tested, universe, contrast, lookup)" in script  # the contrast is passed explicitly, not read from the loop scope
 
