@@ -83,11 +83,12 @@ run_ontology <- function(targets, universe, ontology, directory, mapping, contra
   dotplot_meta <- function(table, path, what) list(ontology=ontology, contrast=list(contrast_id=contrast$contrast_id, numerator=contrast$numerator, denominator=contrast$denominator), foreground=foreground,
     display_subset=sprintf("top %d %s by adjusted P, ties by ID, of %d (p.adjust <= %s)", NF_RNA_DOTPLOT_TOP, what, nrow(table), NF_RNA_ENRICHMENT_PADJ),
     significance_semantics=NF_RNA_SIGNIFICANCE_SEMANTICS, source_tables=list(nf_rna_source_data(path, cfg$output_dir, what)))
-  x_label <- sprintf("-log10(GO %s adjusted P, %s)", ontology, NF_RNA_ENRICHMENT_ADJUST)
+  x_label <- nf_rna_ora_x_label(fig, paste("GO", ontology), NF_RNA_ENRICHMENT_ADJUST)
+  subtitle <- nf_rna_ora_subtitle(fig, contrast, foreground, database=paste("GO", ontology))
   nf_rna_ora_dotplot(fig, head(significant, NF_RNA_DOTPLOT_TOP), x_label, file.path(directory, paste0("dotplot_", ontology)), cfg$output_dir,
-    dotplot_meta(significant, out, "significant terms"), subtitle=nf_rna_ora_subtitle(fig, contrast, foreground), formats=NF_RNA_ENRICHMENT_FORMATS)
+    dotplot_meta(significant, out, "significant terms"), subtitle=subtitle, formats=NF_RNA_ENRICHMENT_FORMATS, padj_cutoff=NF_RNA_ENRICHMENT_PADJ, p_adjust_method=NF_RNA_ENRICHMENT_ADJUST)
   nf_rna_ora_dotplot(fig, head(simplified$table, NF_RNA_DOTPLOT_TOP), x_label, file.path(directory, paste0("dotplot_", ontology, "_simplified")), cfg$output_dir,
-    dotplot_meta(simplified$table, simplified_path, "simplified significant terms"), subtitle=nf_rna_ora_subtitle(fig, contrast, foreground), formats=NF_RNA_ENRICHMENT_FORMATS)
+    dotplot_meta(simplified$table, simplified_path, "simplified significant terms"), subtitle=subtitle, formats=NF_RNA_ENRICHMENT_FORMATS, padj_cutoff=NF_RNA_ENRICHMENT_PADJ, p_adjust_method=NF_RNA_ENRICHMENT_ADJUST)
   c(list(status="SUCCESS"), base, list(simplified=nf_rna_simplify_record(significant, simplified), figures=list(dotplot="drawn", dotplot_simplified="drawn")))
 }
 

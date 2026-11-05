@@ -48,7 +48,7 @@ def preamble(preset: str, profile: str = "general") -> str:
 # ------------------------------------------------------------------ continuous enrichment scale
 
 
-def test_the_enrichment_scale_is_its_own_sequential_scale_separate_from_group_and_expression_colours(tmp_path):
+def test_the_enrichment_scale_is_its_own_red_to_blue_scale_separate_from_group_and_expression_colours(tmp_path):
     result = run_r('''
 std <- NF_RNA_STYLE_PRESETS$standard; leg <- NF_RNA_STYLE_PRESETS$legacy
 ctx_std <- nf_rna_figure_scope(nf_rna_figure_context(list(figure_style = list(preset = "standard"))), "dotplot"); ctx_leg <- nf_rna_figure_context(list())
@@ -60,7 +60,8 @@ cat(toJSON(list(standard = nf_rna_enrichment_colours(ctx_std), legacy = nf_rna_e
     assert result["mark_legacy"] == result["primary_legacy"]
     scale = result["standard"]
     assert len(scale) >= 4 and not set(scale) & set(result["categorical"] + result["diverging"] + result["batch"])  # nothing shared with the discrete or diverging palettes
-    assert result["lightness"] == sorted(result["lightness"])  # most significant (first) is darkest, lightness rises monotonically
+    first, last = scale[0], scale[-1]
+    assert int(first[1:3], 16) > int(first[5:7], 16) and int(last[5:7], 16) > int(last[1:3], 16)  # v2: most significant (first) red, cutoff blue
     assert result["mark_std"] == [scale[0]] or result["mark_std"] == scale[0]
 
 
