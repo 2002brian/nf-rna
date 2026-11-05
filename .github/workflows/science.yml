@@ -1,0 +1,200 @@
+name: Scientific validation
+
+# Runs every scientific test against the exact locked downstream R runtime that
+# `rnaseq run` provisions (workflow/envs/locks/nf-rna-downstream-linux-64.lock.yml)
+# and the pinned HISAT2/featureCounts environment, with NF_RNA_REQUIRE_R=1 so a
+# missing R package fails instead of skipping.  scripts/ci/pytest_gate.py then
+# refuses any skip not listed in ci/approved_skips.json and requires the
+# independent regression modules in tests/science to pass in full.
+#
+# The fast Python/build/smoke checks stay in release-gate.yml.
+
+on:
+  pull_request:
+  push:
+    branches: [main, "feature/**", "release/**", "fix/**"]
+  workflow_dispatch:
+    inputs:
+      rebuild_environments:
+        description: "Ignore cached Conda prefixes and rebuild them from the locks"
+        type: boolean
+        default: false
+  schedule:
+    # Weekly lock-reproducibility rebuild (no cache): detects upstream channel or
+    # Bioconductor data-package drift before a release needs the lock.
+    - cron: "41 2 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: science-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Conda is what nf-rna itself requires on PATH (rnaseq.execution.check_upstream_conda) and how it
+  # provisions the downstream runtime (`conda env create --prefix P --file LOCK`); CI uses the same.
+  MINIFORGE_VERSION: "26.9.4-1"
+  DOWNSTREAM_LOCK: workflow/envs/locks/nf-rna-downstream-linux-64.lock.yml
+  HISAT2_LOCK: workflow/envs/hisat2-featurecounts-linux-64.yml
+  R_PREFIX: /home/runner/nf-rna-ci/downstream
+  HISAT2_PREFIX: /home/runner/nf-rna-ci/hisat2
+  CONDA_PKGS_DIRS: /home/runner/nf-rna-ci/pkgs
+
+jobs:
+  scientific-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          # tests/test_hisat2_artifact_reuse.py compares the workflow with its base revision.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3  # v4.9.1
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: nf-core/setup-nextflow@6c2e22b4d901f0c42ca66c5069f8026df026d165  # v2.1.4
+        with:
+          version: "26.04.6"
+
+      - name: Install system tools used by figure-export tests
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
+
+      - name: Verify the lock files against their recorded SHA-256
+        run: |
+          (cd workflow/envs/locks && sha256sum -c SHA256SUMS)
+          python - <<'PY'
+          import hashlib, pathlib, re
+          text = pathlib.Path("src/rnaseq/execution.py").read_text()
+          expected = re.search(r'HISAT2_LINUX_CONDA_ENV_SHA256 = "([0-9a-f]{64})"', text).group(1)
+          actual = hashlib.sha256(pathlib.Path("${{ env.HISAT2_LOCK }}").read_bytes()).hexdigest()
+          assert actual == expected, f"HISAT2 lock SHA-256 {actual} != reviewed {expected}"
+          print("HISAT2 lock SHA-256 verified:", actual)
+          PY
+
+      - name: Install pinned Miniforge (conda)
+        uses: conda-incubator/setup-miniconda@fc2d68f6413eb2d87b895e92f8584b5b94a10167  # v3.3.0
+        with:
+          miniforge-version: ${{ env.MINIFORGE_VERSION }}
+          # The channel order nf-rna documents (README_latest.md, docs/quickstart.md); nf-core requires it.
+          channels: conda-forge,bioconda
+          channel-priority: strict
+          conda-remove-defaults: "true"
+          auto-activate-base: false
+          activate-environment: ""
+          auto-update-conda: false
+
+      - name: Put conda on PATH for every later step
+        run: |
+          echo "$CONDA/condabin" >> "$GITHUB_PATH"
+          "$CONDA/condabin/conda" --version
+          "$CONDA/condabin/conda" config --show channels channel_priority
+
+      - name: Restore locked Conda prefixes
+        id: prefixes
+        if: github.event_name != 'schedule' && inputs.rebuild_environments != true
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: |
+            ${{ env.R_PREFIX }}
+            ${{ env.HISAT2_PREFIX }}
+          key: nf-rna-prefixes-v2-${{ runner.os }}-miniforge-${{ env.MINIFORGE_VERSION }}-${{ hashFiles('workflow/envs/locks/nf-rna-downstream-linux-64.lock.yml', 'workflow/envs/hisat2-featurecounts-linux-64.yml') }}
+
+      - name: Create the locked downstream R and HISAT2/featureCounts prefixes
+        if: steps.prefixes.outputs.cache-hit != 'true'
+        run: |
+          rm -rf "$R_PREFIX" "$HISAT2_PREFIX"
+          # Exactly the operation rnaseq.downstream_runtime runs: `conda env create --prefix P --file LOCK`.
+          conda env create --yes --prefix "$R_PREFIX" --file "$DOWNSTREAM_LOCK"
+          conda env create --yes --prefix "$HISAT2_PREFIX" --file "$HISAT2_LOCK"
+
+      - name: Verify the prefixes contain exactly the locked packages
+        run: |
+          python scripts/ci/verify_conda_lock.py "$DOWNSTREAM_LOCK" "$R_PREFIX" --r-library
+          python scripts/ci/verify_conda_lock.py "$HISAT2_LOCK" "$HISAT2_PREFIX"
+
+      - name: Install nf-rna with pinned Python dependencies
+        run: |
+          python -m pip install --upgrade "pip==26.3"
+          python -m pip install -c ci/requirements-ci.txt -e '.[dev,gui]'
+          python -m pip check
+
+      - name: Check the downstream runtime is complete
+        run: |
+          export PATH="$(dirname "$(command -v python)"):$R_PREFIX/bin:$PATH"
+          python - <<'PY'
+          from rnaseq.downstream import r_runtime_checks
+          checks = r_runtime_checks()
+          for item in checks:
+              print(f"{item.state:10} {item.name}")
+          missing = [item.name for item in checks if item.state != "FOUND"]
+          raise SystemExit(f"downstream R runtime incomplete: {missing}" if missing else 0)
+          PY
+          Rscript -e 'for (p in c("DESeq2","apeglm","tximport","clusterProfiler","fgsea","org.Hs.eg.db","org.Mm.eg.db","GO.db")) cat(p, as.character(packageVersion(p)), "\n")'
+
+      - name: Run the full test suite (R required)
+        env:
+          NF_RNA_REQUIRE_R: "1"
+          NF_RNA_HISAT2_CONDA_PREFIX: ${{ env.HISAT2_PREFIX }}
+        run: |
+          # Development Python first, then the locked R, then the pinned SAMtools/featureCounts
+          # (docs/development.md); `Rscript` must resolve into the locked prefix.
+          # $JAVA_HOME/bin precedes the HISAT2 prefix, whose FastQC dependency ships its own openjdk 22.
+          export PATH="$(dirname "$(command -v python)"):$R_PREFIX/bin:$JAVA_HOME/bin:$HISAT2_PREFIX/bin:$PATH"
+          test "$(command -v Rscript)" = "$R_PREFIX/bin/Rscript"
+          test "$(command -v java)" = "$JAVA_HOME/bin/java"
+          # Every executable the suite needs must resolve; a missing one must fail here, not skip later.
+          for tool in conda nextflow java Rscript samtools featureCounts pdftocairo pdfinfo git; do
+            printf '%-14s %s\n' "$tool" "$(command -v "$tool" || { echo "MISSING: $tool" >&2; exit 1; })"
+          done
+          mkdir -p reports
+          set +e
+          python -m pytest -q -rs -p no:cacheprovider --durations=25 --junitxml=reports/pytest.xml
+          echo "PYTEST_EXIT=$?" >> "$GITHUB_ENV"
+
+      - name: Scientific gate (counts, skip policy, required modules)
+        run: |
+          python scripts/ci/pytest_gate.py reports/pytest.xml \
+            --policy ci/approved_skips.json \
+            --min-collected 1400 \
+            --require-module tests/science/test_deseq2_designs.py \
+            --require-module tests/science/test_enrichment_identifiers.py \
+            --require-module tests/science/test_tximport_input.py \
+            --require-module tests/science/test_low_count_filter.py \
+            --require-module tests/science/test_independent_filtering.py \
+            --require-module tests/test_ci_gate.py \
+            --require-module tests/test_execution.py \
+            --require-module tests/test_scientific_corrections_v161.py \
+            --require-module tests/test_l2.py \
+            --require-module tests/test_r_salmon_sample_identity.py \
+            --require-module tests/test_featurecounts_real_semantics.py \
+            --require-module tests/test_featurecounts_pinned_conda_semantics.py \
+            --summary "$GITHUB_STEP_SUMMARY" --json reports/gate.json
+          test "$PYTEST_EXIT" = 0
+
+      - name: Record the runtime identity
+        if: always()
+        run: |
+          {
+            echo "downstream_lock_sha256: $(sha256sum "$DOWNSTREAM_LOCK" | cut -d' ' -f1)"
+            echo "hisat2_lock_sha256: $(sha256sum "$HISAT2_LOCK" | cut -d' ' -f1)"
+            echo "miniforge: $MINIFORGE_VERSION ($(conda --version))"
+            echo "commit: $GITHUB_SHA"
+            echo "prefix_cache_hit: ${{ steps.prefixes.outputs.cache-hit }}"
+            "$R_PREFIX/bin/Rscript" -e 'cat(R.version.string, "\n")' 2>/dev/null || true
+          } > reports/runtime_identity.txt
+          cat reports/runtime_identity.txt
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        if: always()
+        with:
+          name: scientific-gate-reports
+          path: reports/
+          retention-days: 30
