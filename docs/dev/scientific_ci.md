@@ -9,8 +9,8 @@ skip policy, and what a release needs on top of CI.
 | Workflow | Trigger | What it proves | Typical time |
 |---|---|---|---|
 | `release-gate.yml` (fast) | every PR, push to `main` | Python tests, figure R packages, wheel/sdist build and inventories, fresh-install smoke | ~5 min |
-| `science.yml` → `scientific-gate` | every PR; push to `main`, `feature/**`, `release/**`, `fix/**`; manual | Runs the **full suite against the exact locked downstream R runtime** and the pinned HISAT2/featureCounts environment, with `NF_RNA_REQUIRE_R=1`. Then `scripts/ci/pytest_gate.py` enforces the skip policy and the required scientific modules | ~25–35 min with cached prefixes; +5–10 min to build them |
-| `science.yml` (weekly `schedule`, or manual with `rebuild_environments`) | Monday 02:41 UTC | Same as above, but without the prefix cache. The prefixes are rebuilt from the locks, so channel or Bioconductor download drift is caught before a release needs the lock | ~40 min |
+| `science.yml` → `scientific-gate` | every PR; push to `main`, `feature/**`, `release/**`, `fix/**`; manual | Runs the **full suite against the exact locked downstream R runtime** and the pinned HISAT2/featureCounts environment, with `NF_RNA_REQUIRE_R=1`. Then `scripts/ci/pytest_gate.py` enforces the skip policy and the required scientific modules | measured locally (4 cores, 2026-11-05): 92 min for the 1,420-test suite (the slowest are the R fixture builds: the enrichment fixture alone takes ~10 min); +5–10 min to build uncached prefixes. Job timeout: 180 min |
+| `science.yml` (weekly `schedule`, or manual with `rebuild_environments`) | Monday 02:41 UTC | Same as above, but without the prefix cache. The prefixes are rebuilt from the locks, so channel or Bioconductor download drift is caught before a release needs the lock | ~100–110 min |
 
 ### Runtime identity
 

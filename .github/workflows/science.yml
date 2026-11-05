@@ -44,7 +44,8 @@ env:
 jobs:
   scientific-gate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    # Measured: the full suite takes ~92 min on 4 cores (2026-11-05); a cache-miss prefix build adds ~5-10 min.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
