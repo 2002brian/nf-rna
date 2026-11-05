@@ -56,14 +56,15 @@ jobs:
         with:
           python-version: "3.11"
 
+      - uses: nf-core/setup-nextflow@6c2e22b4d901f0c42ca66c5069f8026df026d165  # v2.1.4
+        with:
+          version: "26.04.6"
+
+      # After setup-nextflow, which installs its own JDK and resets JAVA_HOME (observed: Zulu 17).
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3  # v4.9.1
         with:
           distribution: temurin
           java-version: "21"
-
-      - uses: nf-core/setup-nextflow@6c2e22b4d901f0c42ca66c5069f8026df026d165  # v2.1.4
-        with:
-          version: "26.04.6"
 
       - name: Install system tools used by figure-export tests
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
@@ -88,7 +89,7 @@ jobs:
           channels: conda-forge,bioconda
           channel-priority: strict
           conda-remove-defaults: "true"
-          auto-activate-base: false
+          auto-activate: false
           activate-environment: ""
           auto-update-conda: false
 
@@ -151,6 +152,7 @@ jobs:
           export PATH="$(dirname "$(command -v python)"):$R_PREFIX/bin:$JAVA_HOME/bin:$HISAT2_PREFIX/bin:$PATH"
           test "$(command -v Rscript)" = "$R_PREFIX/bin/Rscript"
           test "$(command -v java)" = "$JAVA_HOME/bin/java"
+          java -version 2>&1 | grep -q 'version "21\.' || { echo "expected the pinned Java 21" >&2; java -version >&2; exit 1; }
           # Every executable the suite needs must resolve; a missing one must fail here, not skip later.
           for tool in conda nextflow java Rscript samtools featureCounts pdftocairo pdfinfo git; do
             printf '%-14s %s\n' "$tool" "$(command -v "$tool" || { echo "MISSING: $tool" >&2; exit 1; })"
@@ -187,7 +189,8 @@ jobs:
             echo "downstream_lock_sha256: $(sha256sum "$DOWNSTREAM_LOCK" | cut -d' ' -f1)"
             echo "hisat2_lock_sha256: $(sha256sum "$HISAT2_LOCK" | cut -d' ' -f1)"
             echo "miniforge: $MINIFORGE_VERSION ($(conda --version))"
-            echo "commit: $GITHUB_SHA"
+            echo "commit: $GITHUB_SHA (pull_request runs test the merge of the head into the base)"
+            echo "java: $(java -version 2>&1 | head -1) at $JAVA_HOME"
             echo "prefix_cache_hit: ${{ steps.prefixes.outputs.cache-hit }}"
             "$R_PREFIX/bin/Rscript" -e 'cat(R.version.string, "\n")' 2>/dev/null || true
           } > reports/runtime_identity.txt
