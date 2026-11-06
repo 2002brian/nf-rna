@@ -1,0 +1,28 @@
+{
+  "_doc": "Skips the scientific gate accepts (scripts/ci/pytest_gate.py). Every other skip fails the gate: a missing R package, tool or fixture is missing coverage, not a platform difference. Add an entry only with a justification a reviewer can check.",
+  "approved_skips": [
+    {
+      "reason_regex": "^real SJ project not present$",
+      "module_regex": "tests/test_run_status\\.py$",
+      "category": "local-real-data",
+      "justification": "Reads a maintainer-local production run (V130-HISAT2). Real-data evidence is a release-checklist item, not a CI fixture."
+    },
+    {
+      "reason_regex": "^local nf-rna-figures skill not present$",
+      "module_regex": "tests/test_figure_review_tools\\.py$",
+      "category": "local-developer-tool",
+      "justification": "The figure-review skill is deliberately not tracked in Git (commit 2520ef6)."
+    },
+    {
+      "reason_regex": "^root (bypasses directory permissions|ignores file permissions)$",
+      "category": "platform",
+      "justification": "Permission-denial tests cannot fail as root; GitHub-hosted runners run as a non-root user, so this applies only to root containers."
+    },
+    {
+      "reason_regex": "^procfs start times unavailable$",
+      "module_regex": "tests/test_run_status\\.py$",
+      "category": "platform",
+      "justification": "Linux procfs process start times; absent only in restricted sandboxes."
+    }
+  ]
+}
