@@ -7,6 +7,11 @@ __pycache__/
 htmlcov/
 build/
 dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
 
 # Editor, operating-system, and AppleDouble metadata
 .DS_Store
@@ -14,6 +19,8 @@ dist/
 *.swp
 *.swo
 *~
+.idea/
+.vscode/
 
 # Local secrets and machine-specific environment exports
 .env
