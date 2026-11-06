@@ -85,7 +85,7 @@ jobs:
         uses: conda-incubator/setup-miniconda@fc2d68f6413eb2d87b895e92f8584b5b94a10167  # v3.3.0
         with:
           miniforge-version: ${{ env.MINIFORGE_VERSION }}
-          # The channel order nf-rna documents (README_latest.md, docs/quickstart.md); nf-core requires it.
+          # The channel order nf-rna documents (README.md, docs/quickstart.md); nf-core requires it.
           channels: conda-forge,bioconda
           channel-priority: strict
           conda-remove-defaults: "true"

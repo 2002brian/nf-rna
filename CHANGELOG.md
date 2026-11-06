@@ -91,6 +91,7 @@ Validation is stricter in the cases below; projects that pass were never affecte
 - **Upstream reuse across versions.** The frozen upstream identity that `rnaseq run --reuse-upstream` compares includes the nf-rna version (`input_manifest.yaml` `pipeline.version`), so a v1.7.0 run refuses a source run made by v1.6.1 or earlier (`frozen input_manifest.yaml differs in its input, upstream, or reference identity`), as every earlier release did across versions. Rerun the upstream stage with v1.7.0 once; reuse between v1.7.0 runs works as before. The GUI's reuse hint now lists such runs as not reusable with this reason instead of offering them.
 - The runtime environment is keyed by lock and nf-rna build, so the first v1.7.0 run provisions a fresh downstream environment from the unchanged lock.
 - GUI page names changed: *Dashboard* → *Projects*, *Run* → *Validate & Run*; new pages *Datasets* and *Project overview*. The CLI is unchanged.
+- **Documentation entry point.** `README.md` is again the current-release README (it is the GitHub homepage and the package description); `README_latest.md` is removed and its content moved to `README.md`. The historical v1.3.0 README is archived as `docs/archive/README_v1.3.0.md`, and `docs/README.md` indexes user, developer and archived documentation. Links to `README_latest.md` on `main` stop working; links at earlier tags are unaffected.
 
 ### Known limitations
 

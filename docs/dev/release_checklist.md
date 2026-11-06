@@ -3,7 +3,7 @@
 State (2026-11-06): v1.7.0 is finalized on `chore/v1.7.0-release-finalization`,
 branched from `feature/v1.7.0` at `c81d789`, with release date **2026-11-06**
 (CHANGELOG `## 1.7.0 — 2026-11-06`, CITATION.cff `date-released: 2026-11-06`,
-`#170--2026-11-06` anchors in README_latest.md, README_zh-TW.md,
+`#170--2026-11-06` anchors in README.md, README_zh-TW.md,
 docs/quickstart.md and the release notes). It replaces the 2026-10-31 date of
 the first finalization (`ac6471d`), which was never tagged. `main` and
 `origin/main` are at `v1.6.1` (`7a92bdd`), an ancestor, so `main`

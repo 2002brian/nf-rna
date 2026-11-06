@@ -233,3 +233,15 @@ Non-blocking implementation choices, recorded as they are made.
 | The "no figure file / manifest changes" statements in the CHANGELOG summary, *Compatibility* and the release notes are corrected rather than left as written. | They predate the L2 figure and HISAT2 merges and would misdescribe the release. |
 | Low-depth VST failure (`scientific_ci_mutations.md`) is a documented known limitation, not a release blocker, and the fallback condition is unchanged. | It fails L1 loudly instead of producing a wrong result; changing it changes the L1 analysis path, which is out of scope for finalization. |
 | No new release gate is added; the outstanding gates are the existing CI runs on the final commit. | Brief. |
+
+## v1.7.0 public repository entry point (2026-11-06)
+
+Supersedes the README row of "v1.7.0 Phase 7a" (historical `README.md` with a pointer line, feature text in `README_latest.md`).
+
+| Decision | Reason |
+|---|---|
+| `README.md` is the canonical current-release README; `README_latest.md` is removed after its references (`pyproject.toml` `readme`, `tests/test_user_workflow.py`, `docs/runtime.md`, `docs/development.md`, the science workflow comment, the release checklist) moved to `README.md`. | GitHub renders `README.md` as the homepage; showing the v1.3.0 README there misdescribed the software. One current README avoids two independently edited copies. Historical records under `docs/dev/` keep their original wording. |
+| The v1.3.0 README moves with `git mv` to `docs/archive/README_v1.3.0.md`; its body is unchanged and links to the `v1.3.0` tag; only the 2026 pointer banner is replaced by an archive notice. | Preserve the historical text and its history without re-stating current behaviour in it. |
+| The homepage is concise (workflows, requirements, install, quick start, L1, L2, enrichment, commands and GUI, outputs, reproducibility and limitations, documentation, license); details stay in `docs/quickstart.md`, `docs/runtime.md`, `docs/gui.md` and `docs/scientific_contract.md`, indexed by `docs/README.md`. | Readability for first-time visitors; the detailed pages already contain every removed section. |
+| `README_zh-TW.md` follows the same structure, commands and limitations; detailed pages remain English. | The two READMEs must state the same capabilities and limitations. |
+

@@ -55,8 +55,8 @@ Streamlit). Existing formal runs were not modified (SHA-256 checks in §4, §5).
 | `CHANGELOG.md` | `## 1.7.0 — 2026-11-06` (first heading) |
 | Wheel / sdist METADATA | `Version: 1.7.0` |
 | `rnaseq --version` from each installed artifact; GUI sidebar | `1.7.0` |
-| README_latest.md, README_zh-TW.md, docs/quickstart.md, docs/gui.md, docs/runtime.md | name `v1.7.0` as the latest release, install from `@v1.7.0`, CHANGELOG anchor `#170--2026-11-06` |
-| README.md (historical v1.3.0 README) | pointer line names v1.7.0 |
+| README.md, README_zh-TW.md, docs/quickstart.md, docs/gui.md, docs/runtime.md | name `v1.7.0` as the latest release, install from `@v1.7.0`, CHANGELOG anchor `#170--2026-11-06` |
+| docs/archive/README_v1.3.0.md (historical v1.3.0 README; was README.md until 2026-11-06) | archive notice points to the current README |
 
 If the tag is made on a later day, change the date in `CHANGELOG.md` and
 `CITATION.cff` together (`tests/test_release_metadata.py`) and the
@@ -184,7 +184,7 @@ changes `publishDir` patterns and adds a sample-ID guard;
 `git diff v1.6.1 HEAD -- workflow/main.nf workflow/envs` is empty.
 
 **Metadata.** Release date 2026-11-06 in CHANGELOG, CITATION.cff and the
-`#170--2026-11-06` anchors (README_latest.md, README_zh-TW.md,
+`#170--2026-11-06` anchors (README.md, formerly README_latest.md; README_zh-TW.md,
 docs/quickstart.md, release notes). The CHANGELOG summary and *Compatibility*,
 the release notes and the README/quickstart summaries now describe the merged
 figure, HISAT2 and validation changes (they still said "no figure file or
