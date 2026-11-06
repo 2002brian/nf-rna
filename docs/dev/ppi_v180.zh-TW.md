@@ -3,6 +3,11 @@
 狀態：實驗性前處理，尚未接入正式 `rnaseq run`、Nextflow、GUI 或交付報告。
 目前套件版本仍為 1.7.0；分支名稱不代表已發布 1.8.0。
 
+第二階段已加入 `ppi_network.py`：離線 snapshot 匯入、明確 ID namespace 映射、
+一對多排除與稽核、保留孤立節點的 induced network 擷取、證據分數保留及輸出
+checksum。操作與格式見 [PPI 文件](../ppi.md)。目前仍需操作者提供正規化映射表，
+尚未提供原始 aliases／API 自動轉換器；版本與來源真實性仍屬操作者宣告。
+
 ## 本階段已實作
 
 `src/rnaseq/ppi.py` 使用 Python 標準函式庫，讀取同一個 L2 contrast 的
@@ -31,7 +36,7 @@ PYTHONPATH=src python -m rnaseq.ppi \
   --organism 'Homo sapiens' --input-id-type ENSEMBL
 ```
 
-## 後續分段
+## 整合路線（1、2 的離線核心已實作）
 
 1. **STRING 資源與映射**：先準備指定版本、物種的本機 snapshot；manifest 記錄
    provider、版本、taxon ID、原始 URL、取得時間與每個檔案 checksum。
