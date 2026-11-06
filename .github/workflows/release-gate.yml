@@ -5,6 +5,10 @@ on:
   push:
     branches: [main]
 
+env:
+  # Same pinned Miniforge as science.yml.
+  MINIFORGE_VERSION: "26.9.4-1"
+
 jobs:
   test-build-and-smoke:
     runs-on: ubuntu-latest
@@ -19,6 +23,25 @@ jobs:
       - uses: nf-core/setup-nextflow@v2
         with:
           version: "26.04.6"
+      # nf-rna requires conda on PATH to provision the locked downstream runtime
+      # (rnaseq.downstream_runtime); tests that mock that provisioning still check for it.
+      # The runner image no longer provides conda, so install the same pinned Miniforge as
+      # science.yml. No environment is created here.
+      - name: Install pinned Miniforge (conda)
+        uses: conda-incubator/setup-miniconda@fc2d68f6413eb2d87b895e92f8584b5b94a10167  # v3.3.0
+        with:
+          miniforge-version: ${{ env.MINIFORGE_VERSION }}
+          # The channel order nf-rna documents (README.md, docs/quickstart.md); nf-core requires it.
+          channels: conda-forge,bioconda
+          channel-priority: strict
+          conda-remove-defaults: "true"
+          auto-activate: false
+          activate-environment: ""
+          auto-update-conda: false
+      - name: Put conda on PATH for every later step
+        run: |
+          echo "$CONDA/condabin" >> "$GITHUB_PATH"
+          "$CONDA/condabin/conda" --version
       - name: Verify base R runtime
         run: Rscript --version
       - name: Install figure R packages
