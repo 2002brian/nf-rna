@@ -13,7 +13,7 @@ The frozen Phase 2 evidence is on branch `validation/v1.6.0` (commit `b886f11`) 
 | `u1/` | U-1 investigation: minimal reproductions (`u1_repro.R`), per-set permutation counts (`u1_counts.R`), the permutations involved (`u1_tie.R`, `u1_tie_es.R`), size against Monte Carlo error (`u1_mc.py`); `run_u1.sh` runs them all and writes `u1/results/` |
 | `evidence/` | Run identities (`fixed_runs.tsv`), install record (`direct_url.json`), the seed-42 project file and its diff from D1 |
 
-Large data stays outside Git, in `/home/brian/nf-rna-validation/`:
+Large data stays outside Git, in a local validation directory:
 
 - `v1.6.0/`: the Phase 2 runs and the reference.
 - `v161/`: the corrected install (`env-nfrna`), the projects and runs, logs, and the D-1 isolation work directory.

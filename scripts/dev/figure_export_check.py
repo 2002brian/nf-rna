@@ -9,7 +9,7 @@ For every figure (one per PDF) under downstream/l1 and downstream/l2 of RUN_DIR:
   independent Ghostscript rendering of the same PDF, the dominant colours of the
   pipeline's own raster must all occur, and the axis-line displacement against
   that raster is reported (PDF and raster devices lay out text rows slightly
-  differently; see docs/dev/phase7b_report.md).
+  differently).
 
 Writes nothing into the run.  Usage:
   python scripts/dev/figure_export_check.py RUN_DIR OUT_JSON [--save DIR]

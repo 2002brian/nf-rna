@@ -297,7 +297,7 @@ The release date is set when the release is finalised.
 
 `test_figure_dotplots.py`, `test_figure_review_tools.py`, `test_release_metadata.py`, `test_packaging_contract.py` and `test_cli.py` then pass: 70 tests.
 
-**Full suite on `1cbe8fb`** (locked runtime `0e721ff3…`, `NF_RNA_REQUIRE_R=1`, log in `/home/brian/nf-rna-validation/v161/fullsuite/pytest_1cbe8fb.log`): **1,091 passed, 2 skipped, 0 failed** in 26 min 43 s. All four earlier failures are resolved.
+**Full suite on `1cbe8fb`** (locked runtime `0e721ff3…`, `NF_RNA_REQUIRE_R=1`): **1,091 passed, 2 skipped, 0 failed** in 26 min 43 s. All four earlier failures are resolved.
 
 Both skips are environment-gated and were also skipped on `3cf0386`:
 

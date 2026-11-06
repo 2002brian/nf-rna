@@ -138,7 +138,7 @@ The handler records each warning's step, message and call, and returns without `
 
 ### Acceptance runs
 
-The acceptance runs used nf-rna `9c37d84`, installed from the commit. They are small runs with no large FASTQ pipeline. Data are under `/home/brian/nf-rna-validation/v161-reliability/`; the script is `validation/reliability_v161/scripts/compare_acceptance.py`; the results are `validation/reliability_v161/results/acceptance.tsv`, with 61 checks and 1 triage row.
+The acceptance runs used nf-rna `9c37d84`, installed from the commit. They are small runs with no large FASTQ pipeline. Their data are kept outside Git; the script is `validation/reliability_v161/scripts/compare_acceptance.py`; the results are `validation/reliability_v161/results/acceptance.tsv`, with 61 checks and 1 triage row.
 
 | Run | Input | Result |
 |---|---|---|

@@ -6,13 +6,13 @@
 # airway is NOT part of the nf-rna downstream runtime.  Run this script with an
 # R that has airway installed separately, for example:
 #
-#   CONDARC=/home/brian/nf-rna-work/conda/condarc.yml conda create -y \
-#     --prefix /home/brian/nf-rna-work/conda/airway-testdata-env \
+#   conda create -y --prefix ~/nf-rna-work/conda/airway-testdata-env \
+#     -c conda-forge -c bioconda \
 #     bioconductor-airway bioconductor-summarizedexperiment r-jsonlite
-#   /home/brian/nf-rna-work/conda/airway-testdata-env/bin/Rscript \
+#   ~/nf-rna-work/conda/airway-testdata-env/bin/Rscript \
 #     scripts/dev/make_airway_testdata.R [OUTPUT_DIR]
 #
-# OUTPUT_DIR defaults to /home/brian/nf-rna-work/testdata/airway and is kept
+# OUTPUT_DIR defaults to ~/nf-rna-work/testdata/airway and is kept
 # outside the repository.  The counts are written unchanged (all genes, no
 # filtering); only the metadata column names are mapped to the nf-rna schema:
 # dex -> condition (trt/untrt), cell -> cell.
@@ -24,7 +24,7 @@ suppressPackageStartupMessages({
 })
 
 args <- commandArgs(trailingOnly = TRUE)
-out <- if (length(args)) args[[1]] else "/home/brian/nf-rna-work/testdata/airway"
+out <- if (length(args)) args[[1]] else path.expand("~/nf-rna-work/testdata/airway")
 dir.create(out, recursive = TRUE, showWarnings = FALSE)
 
 data("airway", package = "airway", envir = environment())

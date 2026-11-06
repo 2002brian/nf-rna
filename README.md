@@ -146,7 +146,7 @@ All limitations: [CHANGELOG](CHANGELOG.md#170--2026-11-06) and [Browser GUI](doc
 ## Documentation
 
 - **Users:** [Quick Start](docs/quickstart.md) · [Browser GUI](docs/gui.md) · [Runtime and reproducibility](docs/runtime.md) · [Scientific contract](docs/scientific_contract.md) · [Figure standard](docs/figure-standard.md) · [CHANGELOG](CHANGELOG.md)
-- **Developers:** [Development installation and tests](docs/development.md) · [Architecture](docs/architecture.md) · [Scientific CI](docs/dev/scientific_ci.md) · [Development records](docs/dev/)
+- **Developers:** [Development installation and tests](docs/development.md) · [Architecture](docs/architecture.md) · [Scientific CI](docs/dev/scientific_ci.md) · [Release notes and scientific records](docs/README.md#developer-documentation)
 - **Archive:** [v1.3.0 README](docs/archive/README_v1.3.0.md); documentation of any release is at its tag.
 
 Full index: [docs/README.md](docs/README.md).

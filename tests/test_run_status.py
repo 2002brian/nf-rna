@@ -658,7 +658,8 @@ def test_released_v130_run_layout_remains_readable(tmp_path):
     assert "(no per-run rnaseq.log; run predates it)" in legacy
 
 
-REAL_SJ = Path("/mnt/d/mrpan_rna/SJ_ctrl_vs_Gy22")
+# A maintainer-local completed production project; absent from clones and CI (approved skip).
+REAL_SJ = Path(os.environ.get("NF_RNA_REAL_SJ_PROJECT", "/nonexistent/nf-rna-real-sj-project"))
 
 
 @pytest.mark.skipif(not (REAL_SJ / "runs" / "V130-HISAT2" / "20260926-174337+0800" / "run_state.json").is_file(), reason="real SJ project not present")

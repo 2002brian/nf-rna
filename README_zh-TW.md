@@ -146,7 +146,7 @@ run ID 為台北時間的開始時間（`YYYYMMDD-HHMMSS+0800`）。Nextflow 工
 ## 文件
 
 - **使用者：** [Quick Start](docs/quickstart.md) · [Browser GUI](docs/gui.md) · [Runtime 與可重現性](docs/runtime.md) · [Scientific contract](docs/scientific_contract.md) · [圖表標準](docs/figure-standard.md) · [CHANGELOG](CHANGELOG.md)
-- **開發者：** [開發環境安裝與測試](docs/development.md) · [Architecture](docs/architecture.md) · [Scientific CI](docs/dev/scientific_ci.md) · [開發紀錄](docs/dev/)
+- **開發者：** [開發環境安裝與測試](docs/development.md) · [Architecture](docs/architecture.md) · [Scientific CI](docs/dev/scientific_ci.md) · [發行說明與科學紀錄](docs/README.md#developer-documentation)
 - **封存：** [v1.3.0 README](docs/archive/README_v1.3.0.md)；任一版本的文件請見其 Git tag。
 
 完整索引：[docs/README.md](docs/README.md)。上述文件除本頁外皆為英文。

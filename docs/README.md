@@ -21,9 +21,8 @@ The project homepage is the [README](../README.md) ([繁體中文](../README_zh-
 | [Development installation](development.md) | source checkout, editable install, development runs, tests |
 | [Architecture](architecture.md) | project contracts, execution ownership, run lifecycle, reproducibility boundaries |
 | [Scientific CI](dev/scientific_ci.md) | the scientific release gate and its [mutation evidence](dev/scientific_ci_mutations.md) |
-| [Release checklist](dev/release_checklist.md) and [readiness](dev/release_readiness_v170.md) | v1.7.0 release procedure and evidence |
-| [Decisions](dev/DECISIONS.md) | design and release decisions with their reasons |
-| [Development records](dev/) | phase reports, audits, release notes and acceptance evidence (kept in Git, not shipped in the sdist) |
+| [v1.6.1 scientific corrections](dev/scientific_corrections_v161.md) and [reliability fixes](dev/scientific_reliability_v161.md) | the result-changing corrections of v1.6.1 and their evidence |
+| Release notes: [v1.7.0](dev/release_notes_v1.7.0.md), [v1.6.1](dev/release_notes_v1.6.1.md), [v1.6.0](dev/release_notes_v1.6.0.md) | the GitHub Release texts |
 
 Scientific validation evidence of earlier releases is in [`validation/`](../validation/).
 
