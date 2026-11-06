@@ -1,14 +1,16 @@
 # nf-rna v1.7.0 — Local Research Workspace & Publication Figure Export
 
-> **No analysis changes.** v1.7.0 changes the optional browser GUI and how the
-> L1 figures are drawn. DESeq2, tximport, LFC shrinkage, GO/KEGG ORA, GSEA,
-> Salmon, HISAT2 + featureCounts, scientific thresholds, references and
-> annotation, the R analysis code, the Nextflow workflows and the Conda locks are
-> identical to v1.6.1; every numerical output is unchanged. L1 figures gain a
-> 300 dpi PNG, and the standard sample-correlation heatmap's text now matches
-> the other figures. v1.6.1 results do not need to be recomputed.
+> **No analysis value changes.** DESeq2, tximport, LFC shrinkage, GO/KEGG ORA,
+> GSEA, Salmon, HISAT2 + featureCounts commands and parameters, scientific
+> thresholds, references and annotation and the Conda locks are identical to
+> v1.6.1, and every numerical table is unchanged for projects that pass
+> validation; v1.6.1 results do not need to be recomputed. What changes: the
+> optional browser GUI, how L1 and L2 figures are drawn, which HISAT2-route
+> files are published and copied on reuse, and stricter input validation —
+> **FASTQ sample IDs and contrast IDs must match `^[A-Za-z0-9][A-Za-z0-9._-]*$`**
+> (breaking for names with spaces, non-ASCII letters or shell characters).
 
-Full list of changes: [CHANGELOG](https://github.com/2002brian/nf-rna/blob/v1.7.0/CHANGELOG.md#170--2026-10-31).
+Full list of changes: [CHANGELOG](https://github.com/2002brian/nf-rna/blob/v1.7.0/CHANGELOG.md#170--2026-11-06).
 Release readiness: [`docs/dev/release_readiness_v170.md`](https://github.com/2002brian/nf-rna/blob/v1.7.0/docs/dev/release_readiness_v170.md).
 
 ## Local Research Workspace
@@ -80,6 +82,42 @@ Found in a usability review and fixed before release
   list show *Salmon (pseudoalignment)* (the default) and *HISAT2 +
   featureCounts (genome alignment)*. Project files are unchanged.
 
+## Figures (standard preset)
+
+- **Volcano and MA plots** have concise axis titles; the statistics, the
+  display-only shrinkage and the DEG rule move to an external caption
+  (`figure_caption`, shown under the figure in the HTML report).
+- **DEG heatmap samples are no longer clustered**: they are ordered by pair
+  (paired designs) or by group, then sample-sheet order. Genes stay clustered;
+  `heatmap_zscores.tsv` is unchanged.
+- **Enrichment dotplots** (GO/KEGG ORA and GSEA) use one blue scale on
+  −log₁₀(adjusted P) with per-figure limits, so significant terms no longer
+  share one colour. NES is never coloured with it.
+- **L1 figures** gain a 300 dpi PNG; with a custom formula such as
+  `~ condition + batch` they are coloured by `condition`, as the control plane
+  groups samples. The legacy preset is unchanged.
+
+## HISAT2 storage and upstream reuse
+
+- Lane SAMs (≈242 GB for an 8-sample, ~30 M-pair project) and fastp
+  prepared FASTQs are no longer published; only the fastp and HISAT2 reports
+  are. BAMs, counts, strandedness evidence and MultiQC are published as before.
+- `--reuse-upstream` and retries copy only what downstream and delivery read
+  and reference the source run's alignment files in
+  `referenced_alignment_artifacts.json`. No links are created; the copy is
+  staged and verified before it is moved into place.
+- L1 → L2 reuse no longer fails on checksum bookkeeping (`sha256_source`); the
+  SHA-256 itself must still match.
+
+## Stricter validation and safer run files (2026-11-04 audit)
+
+- Unsafe FASTQ sample IDs and contrast IDs, literal `NA` identifiers and
+  design values that R would read as missing, non-ASCII or underscore-grouped
+  numbers, and a merged FASTQ next to the per-lane files of the same sample
+  are rejected before anything runs.
+- `run_state.json` and control-plane files are written atomically; the
+  delivered run state is the final `SUCCESS` state.
+
 ## Install
 
 ```bash
@@ -101,8 +139,12 @@ v1.7.0 run provisions a fresh downstream environment from the unchanged lock.
 
 ## Compatibility
 
-- Results, tables, figure files, manifests, reports and delivery packages are
-  unchanged. New runs record `nf_rna_version` 1.7.0.
+- Result tables and statistics are unchanged. Figure images and their records
+  change (above); the HISAT2 route publishes fewer files and its handoff
+  manifest records `alignment.storage` and `reuse.source_pipeline`. Projects
+  that use IDs outside the safe character set must rename the FASTQ files
+  together with the metadata `sample_id`, or the contrast IDs. New runs record
+  `nf_rna_version` 1.7.0.
 - **`--reuse-upstream` does not accept a v1.6.1 (or earlier) source run**: the
   frozen upstream identity includes the nf-rna version, as in every release.
   Run the upstream stage once with v1.7.0. The GUI lists such runs as not
@@ -131,5 +173,18 @@ v1.7.0 run provisions a fresh downstream environment from the unchanged lock.
 - FASTQ copying shows no progress bar (the importer has none). Result-table
   numbers are displayed with 6 significant digits; the TSV files are
   unchanged.
+- **Interrupted upstream reuse**: a reuse interrupted while copying ends
+  `INTERRUPTED`/`FAILED` with an empty `upstream/`. Do not `rnaseq retry` a run
+  interrupted before its upstream handoff was frozen (it would recompute the
+  whole upstream); start a new `--reuse-upstream` run.
+- **KEGG snapshot**: an unpinned project uses the latest local snapshot, so a
+  newer snapshot changes KEGG results (`rnaseq validate` warns). Pin
+  `annotation.enrichment.kegg.snapshot` for published results.
+- **FASTQ identity caching**: a FASTQ's SHA-256 is reused while its resolved
+  path, size and mtime are unchanged; an in-place rewrite that keeps size and
+  mtime keeps the old digest. Replace FASTQs by new files.
+- **Low-depth VST**: a project with ≥ 1,000 retained genes but fewer than
+  1,000 with mean normalized count > 5 stops in L1 (DESeq2 `vst()` `nsub`
+  error); no result is produced.
 - The scientific limitations of v1.6.1 are unchanged (CHANGELOG 1.6.1, Known
   limitations).

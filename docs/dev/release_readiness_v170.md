@@ -1,7 +1,11 @@
 # nf-rna v1.7.0 release readiness
 
 Release: **v1.7.0 — Local Research Workspace & Publication Figure Export**,
-release date 2026-10-31. Branch `feature/v1.7.0`. This review reuses the
+release date 2026-11-06 (first finalized for 2026-10-31, never tagged).
+Branch `feature/v1.7.0`.
+
+> §1–§9 record the state of each review step when it was made; later merges
+> supersede their scope statements. **§10 is the final release state.** This review reuses the
 Phase 7a/7b acceptance evidence and adds only version, packaging and GUI smoke
 checks (§5); no analysis and no FASTQ pipeline was run.
 
@@ -47,16 +51,16 @@ Streamlit). Existing formal runs were not modified (SHA-256 checks in §4, §5).
 | Where | Value |
 |---|---|
 | `src/rnaseq/__init__.py` (single version source; Hatch metadata and `PIPELINE_VERSION`) | `1.7.0` |
-| `CITATION.cff` | `version: "1.7.0"`, `date-released: 2026-10-31` |
-| `CHANGELOG.md` | `## 1.7.0 — 2026-10-31` (first heading) |
+| `CITATION.cff` | `version: "1.7.0"`, `date-released: 2026-11-06` |
+| `CHANGELOG.md` | `## 1.7.0 — 2026-11-06` (first heading) |
 | Wheel / sdist METADATA | `Version: 1.7.0` |
 | `rnaseq --version` from each installed artifact; GUI sidebar | `1.7.0` |
-| README_latest.md, README_zh-TW.md, docs/quickstart.md, docs/gui.md, docs/runtime.md | name `v1.7.0` as the latest release, install from `@v1.7.0`, CHANGELOG anchor `#170--2026-10-31` |
+| README_latest.md, README_zh-TW.md, docs/quickstart.md, docs/gui.md, docs/runtime.md | name `v1.7.0` as the latest release, install from `@v1.7.0`, CHANGELOG anchor `#170--2026-11-06` |
 | README.md (historical v1.3.0 README) | pointer line names v1.7.0 |
 
 If the tag is made on a later day, change the date in `CHANGELOG.md` and
 `CITATION.cff` together (`tests/test_release_metadata.py`) and the
-`#170--2026-10-31` anchors in the READMEs, quickstart and release notes.
+`#170--2026-11-06` anchors in the READMEs, quickstart and release notes.
 
 ## 4. Feature evidence (existing, Phase 7a/7b)
 
@@ -161,3 +165,51 @@ and in the standard preset only the sample-correlation heatmap's typography chan
 Each L1 figure also gains `<name>_300dpi.png`. Because `src/` changed, the first
 `rnaseq run` after this change builds a new downstream runtime prefix (several
 minutes). Re-check §2 and the release notes before tagging.
+
+## 10. Final release preparation (2026-11-06)
+
+Branch `chore/v1.7.0-release-finalization` from `feature/v1.7.0` at `c81d789`
+(the cleanup merge on top of `9a983db`). Documentation and metadata only; no
+code, test, workflow, lock or validation file changed.
+
+**Scope since §2.** Besides the GUI, the release now contains the 2026-11-04
+audit remediation (stricter validation, atomic state files, final delivered
+run state, L1 grouping factor; `5cba156`), the HISAT2 artifact lifecycle and
+reuse fix (`publishDir` patterns, selective upstream copy; `1de489e`), the L2
+figure standardization (`ddb6807`) and the scientific CI gates (PR #10).
+`git diff v1.6.1 HEAD -- src/rnaseq/r` touches figure code and figure records
+only (`figures.R`; figure sections of `l1_analysis.R`, `l2_analysis.R`,
+`go_analysis.R`, `kegg_analysis.R`); `workflow/hisat2_featurecounts.nf`
+changes `publishDir` patterns and adds a sample-ID guard;
+`git diff v1.6.1 HEAD -- workflow/main.nf workflow/envs` is empty.
+
+**Metadata.** Release date 2026-11-06 in CHANGELOG, CITATION.cff and the
+`#170--2026-11-06` anchors (README_latest.md, README_zh-TW.md,
+docs/quickstart.md, release notes). The CHANGELOG summary and *Compatibility*,
+the release notes and the README/quickstart summaries now describe the merged
+figure, HISAT2 and validation changes (they still said "no figure file or
+manifest changes"), including the breaking FASTQ/contrast ID rule. Known
+limitations added: interrupted upstream reuse, KEGG snapshot, FASTQ identity
+caching, low-depth VST.
+
+**Checks.**
+
+| Check | Result |
+|---|---|
+| `test_release_metadata`, `test_packaging_contract`, `test_cli`, `test_ci_gate`, `test_workflow_assets`, `test_workflow`, `test_downstream_runtime_contract`, `test_figure_review_tools`, `tests/audit` | 225 passed (locked runtime `0e721ff3…-200d98f8759eaf17`) |
+| `test_user_workflow` (reads the docs) | 18 passed |
+| Two builds with `SOURCE_DATE_EPOCH` = HEAD commit time | wheel and sdist byte-identical (SHA-256 equal) |
+| Wheel / sdist METADATA | `nf-rna` 1.7.0, Python ≥ 3.11, extras `dev`, `gui`, `gui-dev`; `docs/dev/` not in the sdist |
+| `tests/release_smoke.py` from each artifact in a fresh venv | pass (both); `rnaseq --version` 1.7.0 |
+| `workflow/envs/locks/SHA256SUMS` | OK for both locks |
+| `tests/science`, `ci/`, `scripts/ci/`, `workflow/envs`, `src/rnaseq/fonts` vs `9a983db` | unchanged |
+| GitHub `Scientific validation` / `Release gate` on PR #10 (`0246d15`) | success / success |
+| `Scientific validation` on the pushed `9a983db` | in progress at finalization |
+
+The full 90-minute scientific suite was not rerun locally: this commit changes
+documentation only, and the suite passed on GitHub for PR #10.
+
+**Verdict.** Ready for release. Outstanding: `Scientific validation` on the
+pushed final `feature/v1.7.0` head and `Release gate` on the pushed `main`
+must be green before tagging (`release_checklist.md`). No release blocker is
+known.

@@ -224,3 +224,12 @@ Non-blocking implementation choices, recorded as they are made.
 | The New Project reference selectbox is keyed per species and backend. | With a single key, "Other" (the only Human option) stayed selected after switching to Mouse and hid the registered Mouse reference. |
 | No registered fit → "<species> <backend> reference not prepared", with unusable registered references, their reason and the preparation command; no path filled in. | Brief: never populate an invalid path; give preparation instructions; nothing is downloaded or built. |
 | A managed reference is re-checked (same loader, same species/index rule as the registry) before creation and live under *Other*; the validator's run-time check is unchanged. | Compatibility must not depend on the dropdown alone; a Salmon index never stands in for a HISAT2 index. |
+
+## v1.7.0 final release preparation (2026-11-06)
+
+| Decision | Reason |
+|---|---|
+| Release date moves from 2026-10-31 to 2026-11-06 in CHANGELOG, CITATION.cff and the `#170--…` anchors; earlier dated entries (DECISIONS, phase reports, v1.6.x) keep their dates. | v1.7.0 was not tagged on 2026-10-31 and gained the audit, HISAT2 and L2 figure merges since; only references to the pending release change. |
+| The "no figure file / manifest changes" statements in the CHANGELOG summary, *Compatibility* and the release notes are corrected rather than left as written. | They predate the L2 figure and HISAT2 merges and would misdescribe the release. |
+| Low-depth VST failure (`scientific_ci_mutations.md`) is a documented known limitation, not a release blocker, and the fallback condition is unchanged. | It fails L1 loudly instead of producing a wrong result; changing it changes the L1 analysis path, which is out of scope for finalization. |
+| No new release gate is added; the outstanding gates are the existing CI runs on the final commit. | Brief. |
